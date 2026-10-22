@@ -1,0 +1,68 @@
+# JBOT-WheeledBiped baseline model configuration.
+#
+# Status: Phase 1 preliminary values. Every number is a design estimate that
+# must be replaced by CAD or bench measurement before Gate G1. The uncertainty
+# is recorded next to each block; the validator rejects values that are
+# non-physical or that leave the four-bar leg with less than 100 mm of travel.
+
+schema_version = 1
+
+[mechanical]
+# Source: mass budget for a 15 kg dry robot (MOB-28), steel/Al frame and two
+# M18-class batteries excluded from the body figure. Uncertainty: +/- 1.0 kg.
+body_mass_kg = 6.0
+# Source: uniform-body estimate about the wheel axle. Uncertainty: +/- 0.10.
+body_pitch_inertia_kg_m2 = 0.35
+# Source: hub motor, rim, and tyre estimate. Uncertainty: +/- 0.2 kg.
+wheel_mass_kg = 0.9
+# Source: 180 mm nominal wheel diameter. Uncertainty: +/- 5 mm.
+wheel_radius_m = 0.09
+# Source: solid-disc estimate 0.5 * m * r^2 plus hub inertia. Uncertainty: +/- 20%.
+wheel_inertia_kg_m2 = 0.0040
+# Source: packaging sketch with the two legs outside the body. Uncertainty: +/- 20 mm.
+track_width_m = 0.42
+# Source: body centre of mass above the axle in the nominal stance. Uncertainty: +/- 50 mm.
+com_height_m = 0.25
+
+[leg]
+# Planar four-bar in the fore-aft/vertical leg plane.
+# Source: preliminary linkage synthesis; see docs/kinematics.md. These values
+# produce about 141 mm of wheel-axle vertical travel over the configured hip
+# window. Uncertainty: +/- 5 mm per link until CAD is frozen.
+base_m = 0.14
+crank_m = 0.11
+rocker_m = 0.13
+coupler_m = 0.06
+fork_de_m = 0.18
+fork_ce_m = 0.17
+# Assembly branch of the lower rocker and the rigid wheel fork.
+rocker_branch = "negative"
+fork_branch = "negative"
+# Hip travel window that stays clear of the linkage toggle positions.
+# Source: synthesis; limits are in hip-joint coordinates (rad).
+hip_min_rad = -1.55
+hip_max_rad = -0.70
+# Source: QDD vendor ratio placeholder. Uncertainty: +/- 1.
+hip_gear_ratio = 10.0
+# Optional spring between the base and the upper crank; zero means not fitted.
+spring_stiffness_nm_per_rad = 0.0
+spring_travel_rad = 0.0
+
+[drive]
+# Source: hub-motor datasheet placeholder for the 18 V baseline. Uncertainty: +/- 20%.
+max_wheel_torque_nm = 8.0
+max_wheel_speed_rad_s = 40.0
+max_wheel_accel_rad_s2 = 120.0
+
+[hip]
+# Source: QDD datasheet placeholder. Uncertainty: +/- 20%.
+max_torque_nm = 25.0
+max_speed_rad_s = 8.0
+
+[control]
+# Source: architecture timing budget. Balance loop runs on the MCU at 1 kHz.
+balance_rate_hz = 1000.0
+# 30 degrees, inside the 25-35 degree requirement range.
+tilt_limit_rad = 0.5235987755982988
+# Source: SAF command-timeout budget.
+command_timeout_ms = 100

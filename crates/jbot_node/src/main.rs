@@ -1,12 +1,32 @@
 //! Main high-level executable node for JBOT running on Raspberry Pi 5.
 
+use anyhow::Context;
+use jbot_common::config::{config_hash, RobotConfig};
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     println!("Starting JBOT High-Level Node (Raspberry Pi 5)...");
 
-    let _estimator = jbot_estimation::Estimator::new();
+    let path = std::env::var("JBOT_CONFIG").unwrap_or_else(|_| "config/robot.toml".to_owned());
+    let raw = std::fs::read_to_string(&path)
+        .with_context(|| format!("failed to read configuration from {path}"))?;
+    let config = RobotConfig::from_toml_str(&raw)
+        .with_context(|| format!("invalid configuration in {path}"))?;
+
+    println!(
+        "Loaded configuration {path} (schema {}, hash {:016x})",
+        config.schema_version,
+        config_hash(raw.as_bytes())
+    );
+
+    let _drive = config
+        .to_differential_drive()
+        .context("failed to build differential-drive model")?;
+    let _leg = config
+        .to_leg_kinematics()
+        .context("failed to build four-bar leg model")?;
     let _controller = jbot_control::BalanceController::new(10.0, 1.5);
 
-    println!("Estimator and Controller initialized successfully.");
+    println!("Estimator, drive, leg, and controller initialized successfully.");
     Ok(())
 }

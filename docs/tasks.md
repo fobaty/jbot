@@ -95,18 +95,18 @@ In parallel: `M2` (power), `M7` (safety), `M10` (CI, documentation, procurement)
 
 | ID | Task | Priority | Depends on | Acceptance criterion |
 |---|---|---|---|---|
-| [ ] M1-01 | Fix the mass-inertial parameters: mass of the body, wheels and legs, CoM height, moments of inertia, wheel radius, track width | P1 | — | Parameters are consolidated into a table, with the source and uncertainty of each value indicated |
+| [x] M1-01 | Fix the mass-inertial parameters: mass of the body, wheels and legs, CoM height, moments of inertia, wheel radius, track width | P1 | — | Parameters are consolidated into a table, with the source and uncertainty of each value indicated |
 | [ ] M1-02 | Determine actuator limits: maximum torque, speed, current, acceleration; verify sufficiency for a 10 N·s impulse | P1 | M1-01 | The calculation confirms recovery after 10 N·s with margin; limits are entered into the configuration |
-| [ ] M1-03 | Describe the 1-DOF four-bar leg: base A–B, upper crank A–C, lower rocker B–D, wheel fork C–D–E, hip gear ratio, height range of at least 100 mm, optional spring rate/travel, static load | P1 | M1-01 | Design and parameters are described; the coupler curve and height/fore-aft coupling are documented; whether the hip needs a 1 kHz loop is determined |
+| [~] M1-03 | Describe the 1-DOF four-bar leg: base A–B, upper crank A–C, lower rocker B–D, wheel fork C–D–E, hip gear ratio, height range of at least 100 mm, optional spring rate/travel, static load | P1 | M1-01 | Design and parameters are described; the coupler curve and height/fore-aft coupling are documented; whether the hip needs a 1 kHz loop is determined |
 | [ ] M1-04 | Fix the model assumptions: rigid dry surface, no slip during synthesis, small linearization angles | P1 | M1-01 | Assumptions and validity limits are recorded in the report |
-| [ ] M1-05 | Implement `config/robot.toml`: typed schema, range validation, versioning, hash logging | P1 | M1-01…M1-04 | Invalid config is rejected with a clear error; hash is written to the log at startup |
+| [x] M1-05 | Implement `config/robot.toml`: typed schema, range validation, versioning, hash logging | P1 | M1-01…M1-04 | Invalid config is rejected with a clear error; hash is written to the log at startup |
 
 ### 1.2. Kinematics and coordinate frames
 
 | ID | Task | Priority | Depends on | Acceptance criterion |
 |---|---|---|---|---|
-| [ ] M1-06 | Implement forward and inverse kinematics of the differential drive: `v`, `ω`, `v_l`, `v_r`, track width | P1 | M1-01 | Unit tests for forward and inverse transforms, including zero speed and in-place rotation |
-| [ ] M1-07 | Implement four-bar leg kinematics: FK, IK, Jacobian, coupler curve, relationship of body height and fore-aft offset to hip angle (2-link model only for comparison) | P1 | M1-03 | Tests for boundary angles and singular configurations; IK returns an error outside the workspace; computed height range is at least 100 mm |
+| [x] M1-06 | Implement forward and inverse kinematics of the differential drive: `v`, `ω`, `v_l`, `v_r`, track width | P1 | M1-01 | Unit tests for forward and inverse transforms, including zero speed and in-place rotation |
+| [x] M1-07 | Implement four-bar leg kinematics: FK, IK, Jacobian, coupler curve, relationship of body height and fore-aft offset to hip angle (2-link model only for comparison) | P1 | M1-03 | Tests for boundary angles and singular configurations; IK returns an error outside the workspace; computed height range is at least 100 mm |
 | [ ] M1-08 | Define coordinate frames `map`, `odom`, `base_link`, `imu_link`, `laser_link` per REP-105 | P1 | M1-06 | Axis diagram and transform rules are documented; directions follow ROS conventions |
 | [ ] M1-09 | Implement pose and velocity transforms between coordinate frames in `jbot_common` | P1 | M1-08 | Round-trip tests for poses and velocities; no error accumulation on a typical trajectory |
 | [ ] M1-10 | Cover kinematics with tests: boundary angles, degenerate configurations, saturation, velocity signs | P1 | M1-06, M1-07, M1-09 | `cargo test` is green; all public kinematics functions are covered |
