@@ -580,10 +580,10 @@ Rules:
 
 | Crate | Responsibility | Status |
 |---|---|---|
-| `jbot_common` | Shared types, math, config, message definitions | Skeleton |
+| `jbot_common` | Shared types, math, config, message definitions | Kinematics and config baseline |
 | `jbot_hardware` | CAN/UART/USB transports, sensor and actuator drivers | Skeleton |
 | `jbot_estimation` | EKF, attitude filters, odometry fusion | Skeleton |
-| `jbot_control` | Balance, velocity, posture, safety envelope | Skeleton |
+| `jbot_control` | Balance, velocity, posture, safety envelope | 2D WIP and LQR baseline |
 | `jbot_navigation` | Costmaps, global/local planning, path tracking | Skeleton |
 | `jbot_node` | Runtime composition, middleware, supervision, CLI | Skeleton |
 

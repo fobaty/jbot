@@ -2,6 +2,7 @@
 
 use anyhow::Context;
 use jbot_common::config::{config_hash, RobotConfig};
+use jbot_control::{solve_discrete_lqr, LqrWeights, WheeledInvertedPendulum, WipParameters};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -25,7 +26,24 @@ async fn main() -> anyhow::Result<()> {
     let _leg = config
         .to_leg_kinematics()
         .context("failed to build four-bar leg model")?;
-    let _controller = jbot_control::BalanceController::new(10.0, 1.5);
+    let wip = WheeledInvertedPendulum::new(WipParameters::from_config(&config))
+        .context("failed to build the reduced-order WIP model")?;
+    let discrete = wip
+        .discrete(1.0 / config.control.balance_rate_hz)
+        .context("failed to discretize the WIP model")?;
+    let lqr = solve_discrete_lqr(&discrete, &LqrWeights::default())
+        .context("failed to solve the discrete LQR problem")?;
+
+    println!(
+        "WIP 2D model: dt {:.6} s, controllable {}, LQR iterations {}, K [{:.5}, {:.5}, {:.5}, {:.5}]",
+        discrete.dt_s,
+        discrete.is_controllable(),
+        lqr.iterations,
+        lqr.gain[(0, 0)],
+        lqr.gain[(0, 1)],
+        lqr.gain[(0, 2)],
+        lqr.gain[(0, 3)]
+    );
 
     println!("Estimator, drive, leg, and controller initialized successfully.");
     Ok(())

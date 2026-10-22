@@ -85,25 +85,25 @@ Running in parallel with the critical path: procurement, power design, safety an
 
 #### 1.1. Model parameters and assumptions
 
-- [ ] Fix mass-inertia parameters: body mass, wheels, legs, center-of-mass height, moments of inertia, wheel radius, track width.
+- [x] Fix mass-inertia parameters: body mass, wheels, legs, center-of-mass height, moments of inertia, wheel radius, track width.
 - [ ] Determine actuator limits: maximum torque, speed, current, acceleration; assess sufficiency for recovery after a 10 N·s impulse.
 - [ ] Describe the 1-DOF four-bar leg: link lengths A–B, A–C, B–D, C–D–E, hip gear ratio, height change range (target ≥ 100 mm), optional spring rate/travel, static load.
-- [ ] Fix assumptions: solid dry surface, no slip during synthesis, small angles during linearization.
-- [ ] Consolidate parameters in `config/robot.toml` with validation and versioning.
+- [x] Fix assumptions: solid dry surface, no slip during synthesis, small angles during linearization.
+- [x] Consolidate parameters in `config/robot.toml` with validation and versioning.
 
 #### 1.2. Kinematics
 
-- [ ] Implement differential drive: `v = (v_l + v_r) / 2`, `ω = (v_r - v_l) / L`, and the inverse transform.
-- [ ] Implement four-bar leg kinematics (closed loop): forward/inverse solution, Jacobian, coupler curve, relationship of body height and fore-aft offset to hip angle; keep the 2-link model only as a comparison.
+- [x] Implement differential drive: `v = (v_l + v_r) / 2`, `ω = (v_r - v_l) / L`, and the inverse transform.
+- [x] Implement four-bar leg kinematics (closed loop): forward/inverse solution, Jacobian, coupler curve, relationship of body height and fore-aft offset to hip angle; keep the 2-link model only as a comparison.
 - [ ] Define coordinate frames `map`, `odom`, `base_link`, `imu_link`, `laser_link` in accordance with REP-105.
 - [ ] Implement pose and velocity transforms between coordinate frames in `jbot_common`.
 - [ ] Cover kinematics with unit tests: boundary angles, degenerate configurations, round-trip transforms.
 
 #### 1.3. WIP dynamics
 
-- [ ] Derive the 2D WIP model as a reduced-order baseline using the Lagrangian method, then extend to 3D with roll, yaw, and the four-bar height/offset coupling.
-- [ ] Perform linearization around the vertical position and zero velocity.
-- [ ] Obtain state and control matrices:
+- [~] Derive the 2D WIP model as a reduced-order baseline using the Lagrangian method, then extend to 3D with roll, yaw, and the four-bar height/offset coupling.
+- [x] Perform linearization around the vertical position and zero velocity.
+- [x] Obtain state and control matrices:
 
   ```
   x = [x, ẋ, θ, θ̇]ᵀ
@@ -111,14 +111,14 @@ Running in parallel with the critical path: procurement, power design, safety an
   u = [T_l, T_r]ᵀ  or  u = [F, τ_yaw]ᵀ
   ```
 
-- [ ] Verify controllability and observability; record the parameter range in which the system remains controllable.
-- [ ] Perform discretization with a 1 ms step (ZOH) for the 1 kHz loop.
+- [~] Verify controllability and observability; record the parameter range in which the system remains controllable.
+- [x] Perform discretization with a 1 ms step (ZOH) for the 1 kHz loop.
 - [ ] Account for limits: torque saturation, dead zone, friction, slip, 5–10 ms command delay.
 
 #### 1.4. LQR synthesis and auxiliary loops
 
-- [ ] Implement the Riccati equation solution and `K` matrix (LQR) computation in `jbot_control` using `nalgebra`.
-- [ ] Set weights `Q` and `R`; formalize the tuning procedure and document the trade-off "recovery time / current / oscillation".
+- [x] Implement the Riccati equation solution and `K` matrix (LQR) computation in `jbot_control` using `nalgebra`.
+- [~] Set weights `Q` and `R`; formalize the tuning procedure and document the trade-off "recovery time / current / oscillation".
 - [ ] Implement the velocity loop and yaw loop as outer loops relative to balancing.
 - [ ] Implement a 25–35° tilt limit with transition to `DAMPING` and fall detection.
 - [ ] Implement torque distribution between wheels accounting for saturation and balancing priority over yaw.
@@ -682,9 +682,9 @@ Running in parallel with the critical path: procurement, power design, safety an
 ## 12. Immediate actions (first 2 weeks)
 
 - [ ] Approve the model parameters and order long-lead components (actuators, RPi 5, lidar, CAN FD HAT).
-- [ ] Create `config/robot.toml` with WIP parameters and validation.
-- [ ] Implement differential drive kinematics and tests in `jbot_common`.
-- [ ] Implement the linearized WIP model and LQR in `jbot_control`.
+- [x] Create `config/robot.toml` with WIP parameters and validation.
+- [x] Implement differential drive kinematics and tests in `jbot_common`.
+- [x] Implement the linearized WIP model and LQR in `jbot_control`.
 - [ ] Create the `jbot_sim` skeleton with RK4 and trace recording.
 - [ ] Conduct the first run: 10 min holding, 10 N·s impulse, 10° deviation.
 - [ ] Prepare ADR-001 (MCU) and the ADR on drivers.

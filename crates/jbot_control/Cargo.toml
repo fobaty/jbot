@@ -6,3 +6,4 @@ authors = ["Chief Robotics Architect"]
 
 [dependencies]
 jbot_common = { path = "../jbot_common" }
+nalgebra = "0.33"

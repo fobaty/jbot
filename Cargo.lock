@@ -93,6 +93,7 @@ name = "jbot_control"
 version = "0.1.0"
 dependencies = [
  "jbot_common",
+ "nalgebra",
 ]
 
 [[package]]
