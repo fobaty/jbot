@@ -1,5 +1,14 @@
 //! Balance control algorithms and trajectory generators.
 
+pub mod lqr;
+pub mod wip;
+
+pub use lqr::{solve_discrete_lqr, LqrController, LqrError, LqrGain, LqrWeights};
+pub use wip::{
+    ContinuousModel, DiscreteModel, StateMatrix, StateVector, WheeledInvertedPendulum, WipError,
+    WipParameters,
+};
+
 pub struct BalanceController {
     kp: f32,
     kd: f32,

@@ -98,7 +98,7 @@ In parallel: `M2` (power), `M7` (safety), `M10` (CI, documentation, procurement)
 | [x] M1-01 | Fix the mass-inertial parameters: mass of the body, wheels and legs, CoM height, moments of inertia, wheel radius, track width | P1 | — | Parameters are consolidated into a table, with the source and uncertainty of each value indicated |
 | [ ] M1-02 | Determine actuator limits: maximum torque, speed, current, acceleration; verify sufficiency for a 10 N·s impulse | P1 | M1-01 | The calculation confirms recovery after 10 N·s with margin; limits are entered into the configuration |
 | [~] M1-03 | Describe the 1-DOF four-bar leg: base A–B, upper crank A–C, lower rocker B–D, wheel fork C–D–E, hip gear ratio, height range of at least 100 mm, optional spring rate/travel, static load | P1 | M1-01 | Design and parameters are described; the coupler curve and height/fore-aft coupling are documented; whether the hip needs a 1 kHz loop is determined |
-| [ ] M1-04 | Fix the model assumptions: rigid dry surface, no slip during synthesis, small linearization angles | P1 | M1-01 | Assumptions and validity limits are recorded in the report |
+| [x] M1-04 | Fix the model assumptions: rigid dry surface, no slip during synthesis, small linearization angles | P1 | M1-01 | Assumptions and validity limits are recorded in the report |
 | [x] M1-05 | Implement `config/robot.toml`: typed schema, range validation, versioning, hash logging | P1 | M1-01…M1-04 | Invalid config is rejected with a clear error; hash is written to the log at startup |
 
 ### 1.2. Kinematics and coordinate frames
@@ -115,18 +115,18 @@ In parallel: `M2` (power), `M7` (safety), `M10` (CI, documentation, procurement)
 
 | ID | Task | Priority | Depends on | Acceptance criterion |
 |---|---|---|---|---|
-| [ ] M1-11 | Derive the 2D WIP model as a reduced-order baseline using the Lagrangian method, then extend to 3D with roll, yaw, and four-bar height/offset coupling | P1 | M1-01, M1-06 | Equations and intermediate derivations are documented in the report; both models are compared; dimensions are consistent |
-| [ ] M1-12 | Linearize the model in the vicinity of the vertical and zero speed; obtain matrices `A`, `B` | P1 | M1-11 | Matrices are reproduced from configuration parameters; verified by numerical linearization |
-| [ ] M1-13 | Verify controllability and observability; determine the parameter range where the system is controllable | P1 | M1-12 | Report contains matrix ranks and parameter bounds; there is a test for loss of controllability |
-| [ ] M1-14 | Perform ZOH discretization with a 1 ms step for the 1 kHz loop | P1 | M1-12 | Discrete model is compared with the continuous one; stability preservation test |
+| [~] M1-11 | Derive the 2D WIP model as a reduced-order baseline using the Lagrangian method, then extend to 3D with roll, yaw, and four-bar height/offset coupling | P1 | M1-01, M1-06 | Equations and intermediate derivations are documented in the report; both models are compared; dimensions are consistent |
+| [x] M1-12 | Linearize the model in the vicinity of the vertical and zero speed; obtain matrices `A`, `B` | P1 | M1-11 | Matrices are reproduced from configuration parameters; verified by numerical linearization |
+| [~] M1-13 | Verify controllability and observability; determine the parameter range where the system is controllable | P1 | M1-12 | Report contains matrix ranks and parameter bounds; there is a test for loss of controllability |
+| [x] M1-14 | Perform ZOH discretization with a 1 ms step for the 1 kHz loop | P1 | M1-12 | Discrete model is compared with the continuous one; stability preservation test |
 | [ ] M1-15 | Account for non-idealities: torque saturation, dead zone, friction, slip, optional spring compliance, 5–10 ms command delay | P1 | M1-12 | Non-ideality model is parameterized and verified in simulation |
 
 ### 1.4. Controller synthesis
 
 | ID | Task | Priority | Depends on | Acceptance criterion |
 |---|---|---|---|---|
-| [ ] M1-16 | Implement the Riccati equation solution and LQR matrix `K` calculation in `jbot_control` on `nalgebra` | P1 | M1-14 | Test on a known system; `K` is stable, closed-loop eigenvalues inside the unit circle |
-| [ ] M1-17 | Set weights `Q` and `R`; document the tuning procedure and the "recovery time / current / oscillation" trade-off | P1 | M1-16 | Table of runs and selected weights; justification in the report |
+| [x] M1-16 | Implement the Riccati equation solution and LQR matrix `K` calculation in `jbot_control` on `nalgebra` | P1 | M1-14 | Test on a known system; `K` is stable, closed-loop eigenvalues inside the unit circle |
+| [~] M1-17 | Set weights `Q` and `R`; document the tuning procedure and the "recovery time / current / oscillation" trade-off | P1 | M1-16 | Table of runs and selected weights; justification in the report |
 | [ ] M1-18 | Implement outer speed and yaw loops with anti-windup and output limiting | P1 | M1-16 | Step response without sustained overshoot; limits are respected |
 | [ ] M1-19 | Implement a tilt limit of 25–35°, fall detection and transition to `DAMPING` | P1 | M1-16 | Threshold exceedance test; transition occurs before loss of stability |
 | [ ] M1-20 | Implement torque distribution between wheels taking into account saturation and balance priority over yaw | P1 | M1-16, M1-18 | When one wheel saturates, balance is preserved; yaw degrades predictably |
