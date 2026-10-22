@@ -66,7 +66,7 @@ Estimates are given for a team of 2–3 engineers (mechanics/electronics, embedd
 ### 1.3. Critical path
 
 ```
-WIP model → LQR in simulation → one motor/FOC on the test bench → two motors on the test bench
+WIP model → LQR in simulation → one hip QDD + one wheel on the test bench → all four actuators on the test bench
 → balancing on the safety frame → RPi–MCU link → EKF/odometry
 → SLAM and localization → planners → autonomous runs → extensions → acceptance
 ```
@@ -75,7 +75,7 @@ Running in parallel with the critical path: procurement, power design, safety an
 
 ---
 
-## 2. Phase 1. Simulation, kinematics, and balancing mathematics (LQR/WIP)
+## 2. Phase 1. Simulation, four-bar kinematics, and balancing mathematics (LQR/WIP)
 
 **Goal:** obtain a reproducible mathematical model of the robot and synthesize the balance controller before hardware assembly.
 
@@ -87,21 +87,21 @@ Running in parallel with the critical path: procurement, power design, safety an
 
 - [ ] Fix mass-inertia parameters: body mass, wheels, legs, center-of-mass height, moments of inertia, wheel radius, track width.
 - [ ] Determine actuator limits: maximum torque, speed, current, acceleration; assess sufficiency for recovery after a 10 N·s impulse.
-- [ ] Describe the leg scheme: number of joints, gear ratios, height change range (target ≥ 100 mm), static load.
+- [ ] Describe the 1-DOF four-bar leg: link lengths A–B, A–C, B–D, C–D–E, hip gear ratio, height change range (target ≥ 100 mm), optional spring rate/travel, static load.
 - [ ] Fix assumptions: solid dry surface, no slip during synthesis, small angles during linearization.
 - [ ] Consolidate parameters in `config/robot.toml` with validation and versioning.
 
 #### 1.2. Kinematics
 
 - [ ] Implement differential drive: `v = (v_l + v_r) / 2`, `ω = (v_r - v_l) / L`, and the inverse transform.
-- [ ] Implement leg kinematics (2-link model): forward/inverse solution, Jacobian, relationship of body height and tilt angle to joint positions.
+- [ ] Implement four-bar leg kinematics (closed loop): forward/inverse solution, Jacobian, coupler curve, relationship of body height and fore-aft offset to hip angle; keep the 2-link model only as a comparison.
 - [ ] Define coordinate frames `map`, `odom`, `base_link`, `imu_link`, `laser_link` in accordance with REP-105.
 - [ ] Implement pose and velocity transforms between coordinate frames in `jbot_common`.
 - [ ] Cover kinematics with unit tests: boundary angles, degenerate configurations, round-trip transforms.
 
 #### 1.3. WIP dynamics
 
-- [ ] Derive the nonlinear equations of motion of the wheeled inverted pendulum using the Lagrangian method.
+- [ ] Derive the 2D WIP model as a reduced-order baseline using the Lagrangian method, then extend to 3D with roll, yaw, and the four-bar height/offset coupling.
 - [ ] Perform linearization around the vertical position and zero velocity.
 - [ ] Obtain state and control matrices:
 
@@ -144,6 +144,7 @@ Running in parallel with the critical path: procurement, power design, safety an
 
 - [ ] Verify the response to a step velocity command: overshoot, settling time, current.
 - [ ] Verify recovery after a 10 N·s impulse (MOB-07) and a 10° deviation (MOB-08).
+- [ ] Verify 3D recovery: roll deviation, yaw disturbance, and height step (MOB-31).
 - [ ] Verify holding on a 10° slope (MOB-20/MOB-21) in simulation.
 - [ ] Verify stability with a 10 ms delay, sensor noise, and torque saturation.
 - [ ] Run a Monte Carlo over mass, friction, and CoM position spread.
@@ -162,6 +163,7 @@ Running in parallel with the critical path: procurement, power design, safety an
 ### 2.3. Gate G1 — pass criteria
 
 - [ ] The WIP model is reproducible; parameters are documented.
+- [ ] The four-bar coupler curve and height range are validated; the 2D model is shown to be a valid reduced-order approximation of the 3D model.
 - [ ] LQR stabilizes the model at zero command for at least 10 minutes of simulation without falling.
 - [ ] Recovery after a 10 N·s impulse and a 10° deviation without falling.
 - [ ] Current and torque do not exceed specified limits during typical maneuvers.
@@ -179,30 +181,30 @@ Running in parallel with the critical path: procurement, power design, safety an
 
 ---
 
-## 3. Phase 2. Assembly of the power section, power supply, and low-level test bench (ESP32 + BLDC/FOC)
+## 3. Phase 2. Assembly of the power section, power supply, and low-level test bench (ESP32 + 4 actuators)
 
-**Goal:** assemble a safe power test bench with one, then two BLDC actuators, start FOC, IMU, and the communication protocol; obtain the first balancing platform on the safety frame.
+**Goal:** assemble a safe power test bench with one hip QDD and one wheel hub, then all four actuators; configure the integrated QDD loops, start the IMU and communication protocol; obtain the first balancing platform on the safety frame.
 
 **Indicative duration:** 6–10 weeks.
 
-> **Important:** ESP32-S3 is used as a prototype MCU. It does not have native CAN FD (only TWAI/classic CAN), so classic CAN 1 Mbit/s or UART with COBS+CRC is allowed on the test bench, and for CAN FD an external controller (MCP2518FD and similar) over SPI is used. The production candidate is STM32H723/H743 (ADR-001); firmware and protocol must allow porting.
+> **Important:** ESP32-S3 is used as a prototype MCU. It does not have native CAN FD (only TWAI/classic CAN), so classic CAN 1 Mbit/s or UART with COBS+CRC is allowed on the test bench, and for CAN FD an external controller (MCP2518FD and similar) over SPI is used. The RobStride-class hip QDDs use classic CAN 1 Mbit/s, not CAN FD. The production candidate is STM32H723/H743 (ADR-001); firmware and protocol must allow porting.
 
 ### 3.1. Tasks
 
 #### 2.1. Power and protection design
 
-- [ ] Develop the Milwaukee M18 connection scheme: adapter, reverse polarity protection, 30 A fuse, TVS, precharge, main contactor.
-- [ ] Calculate the power circuit: 20 A continuous, 30 A fuse, peak up to 40 A < 10 s; sag down to 15 V.
+- [ ] Develop the Milwaukee M18 connection scheme: adapter, reverse polarity protection, 40 A fuse (18 V baseline; 30 A at 24–36 V), TVS, precharge, main contactor.
+- [ ] Calculate the power circuit for four actuators: 20–25 A continuous, 40 A fuse at 18 V, peak up to 55 A < 10 s; sag down to 15 V.
 - [ ] Design DC-DC: 12 V / 5 A, 5 V / 5–6 A, 3.3 V / 1 A; efficiency ≥ 90%, soft-start, OVP, thermal shutdown.
 - [ ] Provide a bidirectional shunt and power monitor (INA226 class) at 100–500 Hz.
-- [ ] Design a two-channel hardware E-stop: disconnecting motor power circuits while retaining 5 V / 12 V for logging and proper RPi shutdown.
+- [ ] Design a two-channel hardware E-stop: disconnecting actuator power circuits while retaining 5 V / 12 V for logging and proper RPi shutdown.
 - [ ] Perform routing: star ground, separation of power and logic ground, CAN shielding, ferrites, input protection.
 - [ ] Prepare the schematic, BOM, wiring diagrams, and conduct a safety review.
 
 #### 2.2. Test bench and power electronics
 
-- [ ] Manufacture/purchase BLDC drivers with FOC (SimpleFOC, ODrive-compatible, or custom gate driver).
-- [ ] Assemble a test bench with one motor, an encoder (AS5047/MT6835 class), and a current sensor.
+- [ ] Procure 2 hip QDDs (RobStride RS06/RS03 class) and 2 wheel hub motors/drivers; add an external FOC stage only if the wheel driver is not integrated.
+- [ ] Assemble a test bench with one hip QDD and one wheel hub, using their native feedback plus a current sensor.
 - [ ] Organize test bench power via a laboratory PSU with current limiting; then switch to the battery through protection.
 - [ ] Provide an emergency button, fuse, and braking/bleeder element if needed.
 - [ ] Check driver and motor heating under load; determine thermal limits and derating.
@@ -213,9 +215,9 @@ Running in parallel with the critical path: procurement, power design, safety an
 - [ ] Create `firmware/` as a `no_std` crate; choose `embassy` (or `rtic`) and configure the build for ESP32-S3.
 - [ ] Implement clock, timer, PWM, ADC, SPI/I2C, and watchdog initialization.
 - [ ] Implement the ICM-42688-P IMU driver (SPI, DRDY, DMA) with timestamps at the sampling instant.
-- [ ] Implement encoder reading and speed/position calculation.
-- [ ] Implement FOC: electrical angle calibration, forward/inverse Park transform, current loop 20–40 kHz, velocity loop 1–2 kHz.
-- [ ] Implement current, torque, speed, and temperature limiting.
+- [ ] Implement QDD feedback and wheel encoder reading and speed/position calculation.
+- [ ] Configure the hip QDD integrated FOC and CAN protocol; implement FOC (electrical angle calibration, Park transforms, 20–40 kHz current loop) only for external wheel drivers.
+- [ ] Implement current, torque, speed, and temperature limiting across all four actuators, including per-actuator and total limits.
 - [ ] Implement the state machine `BOOT → SELF_TEST → IDLE → BALANCE → DAMPING → FAULT → E_STOP`.
 - [ ] Implement the watchdog: IWDG, 100 ms command timeout, loss of RPi heartbeat → `DAMPING`.
 - [ ] Implement a blackbox ring buffer of the last N seconds (P2).
@@ -227,16 +229,17 @@ Running in parallel with the critical path: procurement, power design, safety an
 - [ ] Implement an 8-byte header: version, type, flags, sequence, timestamp; payload up to 56 bytes; CRC-16.
 - [ ] Implement `postcard` serialization, little-endian, version and length validation.
 - [ ] Implement the UART transport: COBS, CRC-16, resynchronization on `0x00`, max 256 bytes.
-- [ ] Implement CAN: classic CAN 1 Mbit/s on ESP32 TWAI for the test bench; provide an SPI CAN FD option.
+- [ ] Implement the actuator bus: classic CAN 1 Mbit/s for the RobStride QDDs (ESP32 TWAI or STM32 bxCAN/FDCAN in classic mode); provide an SPI CAN FD option for the RPi–MCU backbone.
 - [ ] Implement messages: `ControlCommand`, `ModeCommand`, `EmergencyStop`, `Heartbeat`, `RobotState`, `ImuSample`, `JointFeedback`, `PowerFeedback`, `FaultReport`.
 - [ ] Cover the protocol with round-trip and property tests (truncation, corrupted CRC, sequence overflow, unknown version).
 
 #### 2.5. First balance tests
 
-- [ ] Verify rotation direction, phasing, encoder operation, and torque sign on a single motor.
-- [ ] Verify the current loop: step command, overshoot, settling time, heating.
+- [ ] Verify rotation direction, phasing, encoder operation, and torque sign on one hip QDD and one wheel hub.
+- [ ] Verify the actuator current/torque loop (inside the QDD or external wheel driver): step command, overshoot, settling time, heating.
 - [ ] Verify the velocity loop under inertial load.
-- [ ] Assemble the two-wheeled platform on the test bench; verify odometry and direction of motion.
+- [ ] Verify hip height/roll response and the four-bar coupler curve on the bench.
+- [ ] Assemble the four-actuator platform (2 hips + 2 wheels) on the test bench; verify odometry and direction of motion.
 - [ ] Run PD balancing on the safety frame at zero command.
 - [ ] Transfer the LQR parameters from Phase 1; compare behavior with simulation.
 - [ ] Conduct tests for holding, impulse, 10° deviation, 10° slope (within test bench limits).
@@ -253,16 +256,17 @@ Running in parallel with the critical path: procurement, power design, safety an
 ### 3.2. Phase artifacts
 
 - Schematics, BOM, wiring diagrams for the power section and test bench.
-- `firmware/`: ESP32-S3 firmware (FOC, IMU, protocol, safety).
+- `firmware/`: ESP32-S3 firmware (balance, CAN, IMU, protocol, safety; FOC only for external wheel drivers).
 - `jbot_protocol`: shared frame and message format.
-- Test bench with one and two actuators, safety frame.
-- Test protocol: FOC, communication, jitter, delay, thermal mode, E-stop.
+- Test bench with one and four actuators, safety frame.
+- Test protocol: actuator loops, communication, jitter, delay, thermal mode, E-stop.
 - ADR-001: MCU decision (ESP32-S3 prototype / STM32H7 production).
-- ADR on drivers: integrated FOC or custom gate drivers.
+- ADR on actuators: hip QDD integration and wheel driver choice.
 
 ### 3.3. Gate G2 — pass criteria
 
-- [ ] FOC works stably on both wheel actuators; current loop 20–40 kHz.
+- [ ] Both wheel hubs and both hip QDDs run stably; the hip QDD internal loop is configured and the external wheel FOC (if used) runs at 20–40 kHz.
+- [ ] Four-bar hip motion covers the height range and the coupler curve matches the kinematic model.
 - [ ] Balance loop 1 kHz; measured jitter ≤ 50 µs or a decision to migrate to STM32H7 is recorded.
 - [ ] Communication between the RPi equivalent (PC) and MCU: command 100 Hz, telemetry 200–500 Hz, frame loss measured.
 - [ ] Loss of a valid command > 100 ms leads to `DAMPING`.
@@ -276,10 +280,10 @@ Running in parallel with the critical path: procurement, power design, safety an
 
 | Risk | Impact | Mitigation |
 |---|---|---|
-| ESP32-S3 cannot handle 1 kHz + FOC + jitter | Schedule slip | Early benchmark; migration to STM32H7; offload FOC to the driver |
+| ESP32-S3 cannot handle 1 kHz + CAN + jitter | Schedule slip | Early benchmark; migration to STM32H7; keep FOC inside the actuators |
 | Interference from motors on IMU/CAN | Unstable estimation, bus errors | Shielding, ferrites, spacing, twisted pair, oscilloscope verification |
 | Battery BMS shuts down under peak | Sudden power loss | Derating, precharge, current monitoring, tests with a real battery |
-| FOC phasing/calibration error | Jerk, overheating | Step-by-step calibration, current limiting, safety frame |
+| Actuator phasing/calibration error | Jerk, overheating | Step-by-step QDD commissioning, current limiting, safety frame |
 | Driver overheating | Shutdown, failure | Thermal calculation, heatsinks, derating, temperature monitoring |
 
 ---
@@ -662,8 +666,8 @@ Running in parallel with the critical path: procurement, power design, safety an
 ## 11. Open questions affecting the plan
 
 1. Final MCU: ESP32-S3 (prototype) → STM32H723/H743 (production)?
-2. Drivers: integrated FOC (ODrive/SimpleFOC) or custom gate drivers?
-3. Leg topology: number of joints and the need for 1 kHz for joints.
+2. Actuators: hip QDD integrated (RobStride); wheel hub integrated or external FOC?
+3. Leg topology: decided — 1-DOF four-bar. Remaining: link lengths, spring, height range, and E-position.
 4. Lidar and camera: specific models, mounting, power, thermal budget.
 5. SLAM: Rust-native stack or `slam_toolbox` via the ROS2 bridge?
 6. AI: Hailo-8L or CPU-only; runtime `ort` / `tract` / `candle`.
@@ -671,6 +675,7 @@ Running in parallel with the critical path: procurement, power design, safety an
 8. Docking station: contact standard and M18 charging protocol.
 9. Mass, payload, and height range after prototype manufacturing.
 10. Requirements for the enclosure, connectors, and maintainability.
+11. Power pack: M18 18 V baseline vs 24–36 V preferred.
 
 ---
 
