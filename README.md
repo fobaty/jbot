@@ -139,6 +139,8 @@ Full rationale, timing budgets, and the safety concept are in [`docs/architectur
 ```text
 jbot/
 ├── Cargo.toml                  # Workspace definition and release profile
+├── config/
+│   └── robot.toml              # Typed baseline model configuration
 ├── crates/
 │   ├── jbot_common/            # Shared messages, state types, kinematic models
 │   ├── jbot_hardware/          # HAL: CAN/serial transport, sensors, actuators
@@ -149,6 +151,7 @@ jbot/
 └── docs/
     ├── specification.md        # System Requirements Specification (SRS-001)
     ├── architecture.md         # System architecture and safety concept
+    ├── kinematics.md           # Four-bar and differential-drive model
     ├── roadmap.md              # Phased delivery plan and gate criteria
     ├── system_requirements.md  # High-level requirements
     ├── agent_workflow.md       # Engineering workflow
@@ -232,6 +235,7 @@ This robot stores enough energy to injure people and damage property. The safety
 |---|---|
 | [`docs/specification.md`](docs/specification.md) | Requirements, priorities (P1/P2/P3), traceability |
 | [`docs/architecture.md`](docs/architecture.md) | Compute tiers, interfaces, power, safety concept |
+| [`docs/kinematics.md`](docs/kinematics.md) | Four-bar leg, differential drive, parameter provenance |
 | [`docs/system_requirements.md`](docs/system_requirements.md) | Hardware and software requirements |
 | [`docs/roadmap.md`](docs/roadmap.md) | Phases, gates, schedule, critical path |
 | [`docs/tasks.md`](docs/tasks.md) | Granular task breakdown |
