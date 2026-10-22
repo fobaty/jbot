@@ -1,0 +1,14 @@
+[package]
+name = "jbot_node"
+version = "0.1.0"
+edition = "2021"
+authors = ["Chief Robotics Architect"]
+
+[dependencies]
+jbot_common = { path = "../jbot_common" }
+jbot_hardware = { path = "../jbot_hardware" }
+jbot_estimation = { path = "../jbot_estimation" }
+jbot_control = { path = "../jbot_control" }
+jbot_navigation = { path = "../jbot_navigation" }
+tokio = { version = "1.0", features = ["full"] }
+anyhow = "1.0"

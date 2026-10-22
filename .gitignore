@@ -1,0 +1,167 @@
+# ---------------------------------------------------------------------------
+# Rust / Cargo
+# ---------------------------------------------------------------------------
+# Build artifacts
+/target/
+**/target/
+**/*.rs.bk
+*.pdb
+
+# Coverage and profiling output
+*.profraw
+*.profdata
+*.gcda
+*.gcno
+/coverage/
+/lcov.info
+tarpaulin-report.html
+flamegraph.svg
+perf.data
+perf.data.old
+
+# Cargo local overrides (machine-specific, never commit)
+.cargo/config.toml
+.cargo/config
+**/.cargo/config.toml
+**/.cargo/config
+
+# Exported dependency / doc artifacts
+/doc/
+/deny.toml.bak
+
+# keep Cargo.lock tracked: this workspace builds binaries
+
+# ---------------------------------------------------------------------------
+# Firmware / embedded toolchains
+# ---------------------------------------------------------------------------
+# probe-rs / cargo-embed
+Embed.toml
+probe-rs.toml
+*.elf
+*.hex
+*.bin
+*.uf2
+*.map
+*.o
+*.d
+*.a
+*.axf
+*.srec
+.memory.x
+/defmt.log
+defmt-*.log
+
+# PlatformIO (if used for prototyping)
+.pio/
+.pioenvs/
+.piolibdeps/
+
+# ---------------------------------------------------------------------------
+# Operating system files
+# ---------------------------------------------------------------------------
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Icon?
+ehthumbs.db
+Thumbs.db
+desktop.ini
+*~
+*.swp
+*.swo
+*.tmp
+*.temp
+
+# ---------------------------------------------------------------------------
+# Editors and IDEs
+# ---------------------------------------------------------------------------
+# VS Code
+.vscode/
+*.code-workspace
+
+# JetBrains (CLion / RustRover / IntelliJ)
+.idea/
+*.iml
+*.iws
+*.ipr
+out/
+
+# Vim / Neovim
+.vim/
+*.vim
+*.nvim
+Session.vim
+.netrwhist
+
+# Emacs
+*~
+\#*\#
+.\#*
+
+# Zed / Sublime / Xcode
+.zed/
+*.sublime-project
+*.sublime-workspace
+*.xcuserstate
+xcuserdata/
+DerivedData/
+
+# ---------------------------------------------------------------------------
+# Environment, secrets, and local configuration
+# ---------------------------------------------------------------------------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+secrets/
+credentials/
+*.secret
+*_secret.*
+config.local.*
+*.local.toml
+*.local.yaml
+*.local.yml
+
+# ---------------------------------------------------------------------------
+# Logs, dumps, and runtime data
+# ---------------------------------------------------------------------------
+*.log
+logs/
+*.pid
+*.sock
+core
+core.*
+crash-*.dmp
+*.dmp
+recordings/
+bag/
+bags/
+*.bag
+*.mcap
+*.db3
+*.sqlite
+*.sqlite3
+
+# ---------------------------------------------------------------------------
+# Documentation and generated assets
+# ---------------------------------------------------------------------------
+/site/
+/book/
+*.pdf.tmp
+
+# ---------------------------------------------------------------------------
+# AI / agent tooling (kept out of the repository)
+# ---------------------------------------------------------------------------
+AGENTS.md
+.opencode/
+.claude/
+.cursor/
+.codex/
+.copilot/
+.aider*
+continue/

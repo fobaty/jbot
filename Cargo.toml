@@ -1,0 +1,16 @@
+[workspace]
+members = [
+    "crates/jbot_common",
+    "crates/jbot_hardware",
+    "crates/jbot_estimation",
+    "crates/jbot_control",
+    "crates/jbot_navigation",
+    "crates/jbot_node",
+]
+resolver = "2"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
