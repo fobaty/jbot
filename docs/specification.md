@@ -76,7 +76,7 @@ The Robot is intended for:
 
 **Included in the baseline version scope:**
 
-- two wheel drives and active leg joints for maintaining height and posture;
+- two wheel hub drives and two hip QDDs driving 1-DOF four-bar legs for maintaining height and posture;
 - balancing on a plane, forward/backward movement, and turning;
 - lidar SLAM, map building and loading, waypoint navigation;
 - monitoring of the battery, temperatures, communication, and faults;
@@ -97,12 +97,13 @@ The Robot is intended for:
 
 ### 3.1. Robot composition
 
-1. Mechanical platform: body, two legs with active joints, two wheel drives.
-2. Power subsystem: M18 battery, protection, contactor, DC-DC 12 V / 5 V / 3.3 V, E-stop.
+1. Mechanical platform: body/chassis (the base/ground link), two legs, each a planar 1-DOF four-bar with one wheel; four actuators total (2 hip QDD + 2 wheel hub).
+2. Power subsystem: M18 18 V baseline (24–36 V preferred), protection, contactor, DC-DC 12 V / 5 V / 3.3 V, E-stop.
 3. Computing subsystem:
    - real-time MCU of the STM32H723/H743 class (Teensy 4.1 / ESP32-S3 permitted on the prototype);
    - Raspberry Pi 5 16 GB;
-   - CAN FD bus, backup UART.
+   - hip QDD integrated FOC; wheel hub driver integrated or external FOC (open decision);
+   - CAN FD backbone, classic CAN 1 Mbit/s actuator bus, backup UART.
 4. Sensor subsystem:
    - IMU ICM-42688-P or BNO085;
    - 2D or 3D lidar;
@@ -162,11 +163,11 @@ The Robot is intended for:
 
 | ID | Requirement | Priority |
 |---|---|---|
-| AUT-08 | Typical consumption: not more than 140 W | P1 |
-| AUT-09 | Peak consumption: not more than 400 W for less than 10 s | P1 |
-| AUT-10 | Continuous input current: not less than 20 A; main branch fuse — 30 A; peak up to 40 A short-term | P1 |
+| AUT-08 | Typical consumption: not more than 200 W | P1 |
+| AUT-09 | Peak consumption: not more than 600 W for less than 10 s | P1 |
+| AUT-10 | Continuous input current: not less than 25 A; main branch fuse — 40 A at 18 V (30 A at 24–36 V); peak up to 55 A short-term | P1 |
 | AUT-11 | DC-DC 12 V / 5 A, 5 V / 5–6 A, 3.3 V / 1 A; efficiency not less than 90 % at rated load | P1 |
-| AUT-12 | The power circuit must remain operational during sags down to 15 V and motor transients | P1 |
+| AUT-12 | The power circuit must remain operational during sags down to 15 V and actuator transients | P1 |
 | AUT-13 | A power margin of not less than 20 % must be provided for the camera, AI accelerator, and manipulator | P2 |
 
 ### 4.3. Operating time
@@ -189,12 +190,12 @@ The Robot is intended for:
 | AUT-22 | SoH and accumulated energy estimation; logging of charge/discharge events | P2 |
 | AUT-23 | Warning threshold: 16.0 V — acceleration limiting and operator notification | P1 |
 | AUT-24 | Limiting threshold: 15.5 V — torque and speed limiting | P1 |
-| AUT-25 | Emergency stop threshold: 15.0 V confirmed for 500 ms — motor shutdown, transition to `FAULT`, controlled shutdown | P1 |
+| AUT-25 | Emergency stop threshold: 15.0 V confirmed for 500 ms — actuator shutdown, transition to `FAULT`, controlled shutdown | P1 |
 | AUT-26 | Threshold decisions must be made by the MCU independently of the RPi | P1 |
 | AUT-27 | The Robot must reduce load before the battery BMS protection trips; spontaneous BMS shutdown must not be a normal scenario | P1 |
 | AUT-28 | Power telemetry: voltage, current, SoC, SoH, temperature — over CAN at not less than 50 Hz | P1 |
 | AUT-29 | Threshold events must be logged with a timestamp, current, and voltage | P1 |
-| AUT-30 | During E-stop, the motor power circuits are disconnected, but 5 V / 12 V logic power is retained for logging and correct RPi shutdown | P1 |
+| AUT-30 | During E-stop, the actuator power circuits are disconnected, but 5 V / 12 V logic power is retained for logging and correct RPi shutdown | P1 |
 
 ### 4.5. Autonomy tests
 
@@ -212,9 +213,9 @@ The Robot is intended for:
 
 | ID | Requirement | Priority |
 |---|---|---|
-| MOB-01 | Wheeled-biped configuration: two independent wheel drives and active leg joints for changing height and posture | P1 |
-| MOB-02 | Actuators — QDD/BLDC with FOC; feedback on position, speed, and current | P1 |
-| MOB-03 | Balance control — PD / LQR / VMC; parameters must be configurable | P1 |
+| MOB-01 | Wheeled-biped configuration: two legs, one wheel per leg; each leg is a planar 1-DOF four-bar (base A–B, upper crank A–C driven by a hip QDD, lower rocker B–D passive, wheel fork C–D–E). Height and fore-aft offset are coupled along the coupler curve. | P1 |
+| MOB-02 | Actuators — four total: two hip QDDs with integrated FOC/encoder/driver and two wheel hub motors (integrated or external FOC); feedback on position, speed, current, and temperature | P1 |
+| MOB-03 | Balance control — PD / LQR / VMC, configurable; supports 3D balance: pitch via wheel torque, yaw via differential wheel torque, height via common hip angle, roll via differential hip height | P1 |
 | MOB-04 | Modes: `IDLE`, `BALANCE`, `DAMPING`, `FAULT`, `E_STOP`, `SHUTDOWN` | P1 |
 | MOB-05 | Transitions between modes — only via a validated command and precondition checks | P1 |
 
@@ -228,6 +229,8 @@ The Robot is intended for:
 | MOB-09 | Configurable tilt limit 25–35°; if exceeded — torque limiting and transition to `DAMPING` | P1 |
 | MOB-10 | Fall detection and transition to a safe state with actuator shutdown | P2 |
 | MOB-11 | Self-righting after a fall is not required | — |
+| MOB-31 | 3D balance allocation: pitch and yaw via wheel torque, height via common hip angle, roll via differential hip height | P1 |
+| MOB-32 | If a passive leg spring/damper is fitted, its stiffness and travel are identified and included in the balance model | P2 |
 
 ### 5.3. Speed, acceleration, and maneuverability
 
@@ -239,12 +242,14 @@ The Robot is intended for:
 | MOB-15 | Acceleration and jerk limiting must prevent slipping and tipping | P1 |
 | MOB-16 | Emergency braking from 1.0 m/s — while maintaining balance; braking distance not more than 0.5 m on a dry surface | P1 |
 
+**Voltage note.** MOB-12 is marginal on the 18 V M18 baseline: a 48 V-rated hub motor loses roughly 60% of its speed at 18 V, giving about 1.5 m/s at full charge and less under load. A 24–36 V pack is preferred; otherwise derate the maximum-speed requirement.
+
 ### 5.4. Obstacle and terrain negotiation
 
 | ID | Requirement | Priority |
 |---|---|---|
 | MOB-17 | Irregularities and thresholds up to 20 mm high — at a speed of up to 0.5 m/s | P1 |
-| MOB-18 | Step/threshold up to 50 mm — at a speed of not more than 0.2 m/s using leg lift | P1 |
+| MOB-18 | Step/threshold up to 50 mm — at a speed of not more than 0.2 m/s using the hip four-bar to lift the wheel; validate in simulation | P1 |
 | MOB-19 | Target capability to negotiate steps up to 100 mm in walking mode | P2 |
 | MOB-20 | Longitudinal slope up to 10° and lateral slope up to 5° on a dry hard surface while maintaining balance | P1 |
 | MOB-21 | Holding on a 10° slope for 10 min without slipping or overheating | P1 |
@@ -252,6 +257,8 @@ The Robot is intended for:
 | MOB-23 | Surface transitions (carpet–tile, elevator threshold) up to 15 mm high | P1 |
 | MOB-24 | Stair flights and steps above 100 mm are not required | — |
 | MOB-25 | Body height adjustment — not less than 100 mm; the range is refined during detailed design | P2 |
+
+**Design note (four-bar leg).** With one active hip DOF per leg, body height and wheel fore-aft offset are coupled along the coupler curve. Step negotiation (MOB-18/MOB-19) therefore requires a deliberate weight shift and roll; validate the 50 mm P1 target in simulation before committing the mechanical design. The first prototype uses one wheel per leg; dual wheels are deferred.
 
 ### 5.5. Load, mass, and thermal conditions
 
@@ -427,7 +434,9 @@ The Robot is intended for:
 | INT-07 | E-stop and heartbeat have the highest priority and are not displaced by telemetry | P1 |
 | INT-08 | Message schema — `postcard`/`serde`, little-endian, fixed header | P1 |
 | INT-09 | External operator CAN port — isolated | P2 |
-| INT-10 | Power: VBAT 15–21 V, 12 V / 5 A, 5 V / 5–6 A, 3.3 V / 1 A | P1 |
+| INT-10 | Power: VBAT 15–21 V (M18 baseline; 24–36 V preferred), 12 V / 5 A, 5 V / 5–6 A, 3.3 V / 1 A | P1 |
+
+> **Actuator bus note:** the RobStride-class hip QDDs use classic CAN 1 Mbit/s, not CAN FD. The MCU bridges the actuator bus to the CAN FD backbone; INT-01 applies to the RPi–MCU backbone.
 
 ### 8.2. Software requirements
 
@@ -454,10 +463,10 @@ The Robot is intended for:
 |---|---|---|
 | SAF-01 | Safety has the highest priority over functionality and performance | P1 |
 | SAF-02 | E-stop — a hardware function independent of Linux and the MCU: dual-channel NC loop | P1 |
-| SAF-03 | E-stop disconnects the motor power circuits but preserves logic power for logging and shutdown | P1 |
+| SAF-03 | E-stop disconnects the actuator power circuits but preserves logic power for logging and shutdown | P1 |
 | SAF-04 | Watchdog chain: hardware E-stop → MCU IWDG → 100 ms command watchdog → RPi heartbeat → systemd watchdog → supervisor | P1 |
 | SAF-05 | Upon loss of a valid command for more than 100 ms, the MCU transitions to `DAMPING` | P1 |
-| SAF-06 | On a critical fault, the motors are shut down and the fault is latched until a manual reset | P1 |
+| SAF-06 | On a critical fault, the actuators are shut down and the fault is latched until a manual reset | P1 |
 | SAF-07 | Reset of a critical fault is possible only when the Robot is stationary and the self-test passes | P1 |
 | SAF-08 | All faults are published over CAN and to Zenoh/ROS2 with a code, severity, and timestamp | P1 |
 | SAF-09 | Invalid, stale, and invalidated commands do not change the actuator setpoint | P1 |
@@ -490,7 +499,7 @@ The Robot is intended for:
 | Stage | Content | Result |
 |---|---|---|
 | 1 | Architecture, requirements, Cargo workspace structure | This SRS, `architecture.md`, crate skeletons |
-| 2 | MCU firmware, FOC, IMU, CAN, protocol | Test bench with actuators, protocol, communication and jitter report |
+| 2 | MCU firmware, actuator loops, IMU, CAN, protocol | Test bench with actuators, protocol, communication and jitter report |
 | 3 | State estimation and balancing | Balancing test bench, stability report |
 | 4 | SLAM, localization, navigation, ROS2 bridge | Autonomous runs, maps, navigation report |
 | 5 | Extensions: camera, manipulator, dock | Interfaces, extension tests, final report |
@@ -559,8 +568,8 @@ The Robot is intended for:
 ## 14. Open questions
 
 1. Final MCU selection: STM32H723 / H743 / Teensy 4.1 — based on bench test results for FOC and CAN FD.
-2. Driver type: integrated FOC (ODrive/SimpleFOC) or custom gate drivers.
-3. Leg topology: number of joints, gear ratios, whether 1 kHz is required for the joints.
+2. Actuator interface: hip QDD integrated (RobStride); wheel hub driver integrated or external FOC.
+3. Leg topology: decided — 1-DOF four-bar (base A–B, upper crank A–C, lower rocker B–D, wheel fork C–D–E, optional spring). Remaining: link lengths, spring rate/travel, height range, and E-position.
 4. Selection of lidar and camera, their mounting, and impact on the mass/power budget.
 5. Nav2 as is via the bridge or a fully Rust `jbot_navigation` stack.
 6. AI accelerator: Hailo-8L or CPU-only; runtime `ort` / `tract` / `candle`.
@@ -568,6 +577,7 @@ The Robot is intended for:
 8. Requirements for the enclosure, connectors, and maintainability.
 9. Refinement of mass, payload, and height adjustment range after prototype manufacturing.
 10. Dock standard and M18 charging protocol parameters.
+11. Power pack: M18 18 V baseline vs 24–36 V preferred; 18 V limits top speed and fuse margin.
 
 ---
 

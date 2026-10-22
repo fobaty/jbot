@@ -52,8 +52,8 @@ Format: `M<module>-<number>`.
 
 ```text
 M1 WIP model and LQR
-  → M3 single motor and FOC
-  → M3 two motors and balance on the safety frame
+  → M3 single hip QDD + wheel
+  → M3 four actuators and balance on the safety frame
   → M4 RPi–MCU transport and lidar
   → M5 EKF and supervisor
   → M6 SLAM and localization
@@ -97,7 +97,7 @@ In parallel: `M2` (power), `M7` (safety), `M10` (CI, documentation, procurement)
 |---|---|---|---|---|
 | [ ] M1-01 | Fix the mass-inertial parameters: mass of the body, wheels and legs, CoM height, moments of inertia, wheel radius, track width | P1 | — | Parameters are consolidated into a table, with the source and uncertainty of each value indicated |
 | [ ] M1-02 | Determine actuator limits: maximum torque, speed, current, acceleration; verify sufficiency for a 10 N·s impulse | P1 | M1-01 | The calculation confirms recovery after 10 N·s with margin; limits are entered into the configuration |
-| [ ] M1-03 | Describe the leg design: number of joints, gear ratios, height range of at least 100 mm, static load | P1 | M1-01 | Design and parameters are described; whether a 1 kHz loop is needed for the joints is determined |
+| [ ] M1-03 | Describe the 1-DOF four-bar leg: base A–B, upper crank A–C, lower rocker B–D, wheel fork C–D–E, hip gear ratio, height range of at least 100 mm, optional spring rate/travel, static load | P1 | M1-01 | Design and parameters are described; the coupler curve and height/fore-aft coupling are documented; whether the hip needs a 1 kHz loop is determined |
 | [ ] M1-04 | Fix the model assumptions: rigid dry surface, no slip during synthesis, small linearization angles | P1 | M1-01 | Assumptions and validity limits are recorded in the report |
 | [ ] M1-05 | Implement `config/robot.toml`: typed schema, range validation, versioning, hash logging | P1 | M1-01…M1-04 | Invalid config is rejected with a clear error; hash is written to the log at startup |
 
@@ -106,7 +106,7 @@ In parallel: `M2` (power), `M7` (safety), `M10` (CI, documentation, procurement)
 | ID | Task | Priority | Depends on | Acceptance criterion |
 |---|---|---|---|---|
 | [ ] M1-06 | Implement forward and inverse kinematics of the differential drive: `v`, `ω`, `v_l`, `v_r`, track width | P1 | M1-01 | Unit tests for forward and inverse transforms, including zero speed and in-place rotation |
-| [ ] M1-07 | Implement two-link leg kinematics: FK, IK, Jacobian, relationship of body height and tilt to joint positions | P1 | M1-03 | Tests for boundary angles and degenerate configurations; IK returns an error outside the workspace |
+| [ ] M1-07 | Implement four-bar leg kinematics: FK, IK, Jacobian, coupler curve, relationship of body height and fore-aft offset to hip angle (2-link model only for comparison) | P1 | M1-03 | Tests for boundary angles and singular configurations; IK returns an error outside the workspace; computed height range is at least 100 mm |
 | [ ] M1-08 | Define coordinate frames `map`, `odom`, `base_link`, `imu_link`, `laser_link` per REP-105 | P1 | M1-06 | Axis diagram and transform rules are documented; directions follow ROS conventions |
 | [ ] M1-09 | Implement pose and velocity transforms between coordinate frames in `jbot_common` | P1 | M1-08 | Round-trip tests for poses and velocities; no error accumulation on a typical trajectory |
 | [ ] M1-10 | Cover kinematics with tests: boundary angles, degenerate configurations, saturation, velocity signs | P1 | M1-06, M1-07, M1-09 | `cargo test` is green; all public kinematics functions are covered |
@@ -115,11 +115,11 @@ In parallel: `M2` (power), `M7` (safety), `M10` (CI, documentation, procurement)
 
 | ID | Task | Priority | Depends on | Acceptance criterion |
 |---|---|---|---|---|
-| [ ] M1-11 | Derive the nonlinear equations of motion of the wheeled inverted pendulum using the Lagrangian method | P1 | M1-01, M1-06 | Equations and intermediate derivations are documented in the report; dimensions are consistent |
+| [ ] M1-11 | Derive the 2D WIP model as a reduced-order baseline using the Lagrangian method, then extend to 3D with roll, yaw, and four-bar height/offset coupling | P1 | M1-01, M1-06 | Equations and intermediate derivations are documented in the report; both models are compared; dimensions are consistent |
 | [ ] M1-12 | Linearize the model in the vicinity of the vertical and zero speed; obtain matrices `A`, `B` | P1 | M1-11 | Matrices are reproduced from configuration parameters; verified by numerical linearization |
 | [ ] M1-13 | Verify controllability and observability; determine the parameter range where the system is controllable | P1 | M1-12 | Report contains matrix ranks and parameter bounds; there is a test for loss of controllability |
 | [ ] M1-14 | Perform ZOH discretization with a 1 ms step for the 1 kHz loop | P1 | M1-12 | Discrete model is compared with the continuous one; stability preservation test |
-| [ ] M1-15 | Account for non-idealities: torque saturation, dead zone, friction, slip, 5–10 ms command delay | P1 | M1-12 | Non-ideality model is parameterized and verified in simulation |
+| [ ] M1-15 | Account for non-idealities: torque saturation, dead zone, friction, slip, optional spring compliance, 5–10 ms command delay | P1 | M1-12 | Non-ideality model is parameterized and verified in simulation |
 
 ### 1.4. Controller synthesis
 
@@ -131,6 +131,7 @@ In parallel: `M2` (power), `M7` (safety), `M10` (CI, documentation, procurement)
 | [ ] M1-19 | Implement a tilt limit of 25–35°, fall detection and transition to `DAMPING` | P1 | M1-16 | Threshold exceedance test; transition occurs before loss of stability |
 | [ ] M1-20 | Implement torque distribution between wheels taking into account saturation and balance priority over yaw | P1 | M1-16, M1-18 | When one wheel saturates, balance is preserved; yaw degrades predictably |
 | [ ] M1-21 | Compare PD, LQR and VMC; select the base algorithm and write an ADR | P1 | M1-17, M1-18 | ADR contains comparison metrics and justification of the choice |
+| [ ] M1-26 | Implement 3D allocation: height via common hip angle, roll via differential hip height; verify coupled four-bar limits | P1 | M1-07, M1-16 | Height and roll commands respect coupler-curve limits; balance is preserved in simulation |
 
 ### 1.5. State estimation for simulation and HIL
 
@@ -177,11 +178,11 @@ In parallel: `M2` (power), `M7` (safety), `M10` (CI, documentation, procurement)
 
 | ID | Task | Priority | Depends on | Acceptance criterion |
 |---|---|---|---|---|
-| [ ] M2-01 | Develop the M18 input circuit: adapter, reverse polarity protection, 30 A fuse, TVS, precharge, main contactor | P1 | M1-01 | Circuit has passed review; ratings are justified by calculation |
-| [ ] M2-02 | Calculate the power circuit: 20 A continuous, 40 A peak up to 10 s, sag down to 15 V; coordinate protections | P1 | M2-01 | Calculation and protection coordination are documented; margin of at least 20% |
+| [ ] M2-01 | Develop the M18 input circuit: adapter, reverse polarity protection, 40 A fuse (18 V baseline; 30 A at 24–36 V), TVS, precharge, main contactor | P1 | M1-01 | Circuit has passed review; ratings are justified by calculation |
+| [ ] M2-02 | Calculate the four-actuator power circuit: 20–25 A continuous, 40 A fuse at 18 V, peak up to 55 A < 10 s, sag down to 15 V; coordinate protections | P1 | M2-01 | Calculation and protection coordination are documented; margin of at least 20% |
 | [ ] M2-03 | Design DC-DC 12 V / 5 A, 5 V / 5–6 A, 3.3 V / 1 A with efficiency ≥ 90%, soft-start, OVP, thermal shutdown | P1 | M2-02 | Circuits and thermal calculation are ready; selected components are available |
 | [ ] M2-04 | Design a bidirectional shunt and an INA226-class power monitor at 100–500 Hz | P1 | M2-02 | Circuit includes Kelvin connection and filtering; range and accuracy correspond to AUT-19, AUT-20 |
-| [ ] M2-05 | Design a two-channel hardware E-stop: disconnecting motor power circuits while preserving 5 V and 12 V | P1 | M2-01 | Circuit complies with SAF-02, SAF-03, AUT-30; logic remains powered |
+| [ ] M2-05 | Design a two-channel hardware E-stop: disconnecting actuator power circuits while preserving 5 V and 12 V | P1 | M2-01 | Circuit complies with SAF-02, SAF-03, AUT-30; logic remains powered |
 | [ ] M2-06 | Produce the grounding, shielding and EMI plan: star point, separation of power and logic ground, shields, ferrites, TVS | P1 | M2-03, M2-05 | Plan has been verified on a prototype; critical loops and spacing are described |
 | [ ] M2-07 | Prepare the schematic, BOM, wiring diagrams and conduct a safety review | P1 | M2-01…M2-06 | Documentation set is ready; review comments are closed |
 
@@ -221,21 +222,21 @@ In parallel: `M2` (power), `M7` (safety), `M10` (CI, documentation, procurement)
 
 ## 3. M3. Low-level balance controller on Rust/ESP32
 
-**Goal:** implement deterministic MCU firmware: FOC, IMU and encoder acquisition, 1 kHz balance loop, communication protocol, watchdog and safe states.
+**Goal:** implement deterministic MCU firmware: hip QDD CAN control, wheel actuator loops (integrated or external), IMU and encoder acquisition, 1 kHz 3D balance loop, communication protocol, watchdog and safe states.
 
 **Platform:** ESP32-S3 as a prototype; STM32H723/H743 as a production candidate. Code and protocol must allow porting without changing control logic.
 
 **Inputs:** `docs/architecture.md` sections 3.2, 5, 7; `docs/specification.md` sections 3, 5, 8, 9.
-**Outputs:** `firmware/`, `jbot_protocol`, bench with one and two actuators, FOC/jitter/latency/E-stop protocols.
+**Outputs:** `firmware/`, `jbot_protocol`, bench with one and four actuators, actuator/jitter/latency/E-stop protocols.
 
 ### 3.1. Firmware architecture and HAL
 
 | ID | Task | Priority | Depends on | Acceptance criterion |
 |---|---|---|---|---|
-| [ ] M3-01 | Benchmark ESP32-S3 and STM32H7; select the MCU and write ADR-001 | P1 | M1-02 | FOC, 1 kHz, jitter, CAN measured; decision recorded |
+| [ ] M3-01 | Benchmark ESP32-S3 and STM32H7; select the MCU and write ADR-001 | P1 | M1-02 | Actuator/CAN, 1 kHz, jitter measured; decision recorded |
 | [ ] M3-02 | Create `firmware/` as a `no_std` crate; configure target, `embassy` or `rtic`, build and memory map | P1 | M3-01 | Firmware builds, flashes and starts on the selected board |
 | [ ] M3-03 | Implement initialization of clocks, timers, PWM, ADC, SPI, I2C, GPIO and watchdog | P1 | M3-02 | All peripherals pass self-test at startup |
-| [ ] M3-04 | Ensure safe default states: drivers disabled after reset, outputs in a known state | P1 | M3-03 | Verified with an oscilloscope and logic; complies with SAF-10 |
+| [ ] M3-04 | Ensure safe default states: actuators disabled after reset, outputs in a known state | P1 | M3-03 | Verified with an oscilloscope and logic; complies with SAF-10 |
 
 ### 3.2. Sensors and actuators
 
@@ -243,10 +244,12 @@ In parallel: `M2` (power), `M7` (safety), `M10` (CI, documentation, procurement)
 |---|---|---|---|---|
 | [ ] M3-05 | Implement the ICM-42688-P IMU driver: SPI, DRDY, DMA, timestamp at sample time | P1 | M3-03 | Data is read at 1–4 kHz; timestamp corresponds to the sample time |
 | [ ] M3-06 | Implement self-test, gyroscope and accelerometer bias calibration, calibration persistence | P1 | M3-05 | Calibration survives reboot; error within acceptable limits |
-| [ ] M3-07 | Implement encoder reading, position and speed calculation taking into account direction and resolution | P1 | M3-03 | Direction and sign of speed match physical rotation |
+| [ ] M3-07 | Implement QDD feedback and wheel encoder reading, position and speed calculation taking into account direction and resolution | P1 | M3-03 | Direction and sign of speed match physical rotation |
 | [ ] M3-08 | Implement acquisition of current, voltage, temperatures and bus current via ADC synchronized to PWM | P1 | M3-03, M2-12 | Measurements are synchronous; noise and offset within acceptable limits |
 
 ### 3.3. FOC and actuator loops
+
+> The hip QDDs integrate FOC and the current loop. M3-09…M3-16 apply fully to external wheel drivers; for the hip QDDs they reduce to configuring the vendor loop, verifying CAN scaling, and commissioning.
 
 | ID | Task | Priority | Depends on | Acceptance criterion |
 |---|---|---|---|---|
@@ -255,7 +258,7 @@ In parallel: `M2` (power), `M7` (safety), `M10` (CI, documentation, procurement)
 | [ ] M3-11 | Implement a 20–40 kHz current loop with current limiting and integrator saturation | P1 | M3-09, M3-10 | Step response without sustained oscillations; overshoot within tolerance |
 | [ ] M3-12 | Implement a 1–2 kHz speed loop with acceleration and speed limiting | P1 | M3-11 | Response under inertial load; stability under load changes |
 | [ ] M3-13 | Implement limits on current, torque, speed and temperature with derating | P1 | M3-11, M3-12 | Exceeding limits leads to limiting, then to a fault |
-| [ ] M3-14 | Perform single-motor bring-up: rotation direction, phase order, encoder, torque sign | P1 | M3-10…M3-13 | All signs and directions match; no jerks or overheating |
+| [ ] M3-14 | Perform single-actuator bring-up on one hip QDD and one wheel hub: rotation direction, phase order, encoder, torque sign | P1 | M3-10…M3-13 | All signs and directions match; no jerks or overheating |
 | [ ] M3-15 | Verify the current loop: step, overshoot, settling time, heating | P1 | M3-11 | Metrics attached; heating within limits |
 | [ ] M3-16 | Verify the speed loop under inertial load | P1 | M3-12 | Metrics attached; stability confirmed |
 
@@ -263,14 +266,14 @@ In parallel: `M2` (power), `M7` (safety), `M10` (CI, documentation, procurement)
 
 | ID | Task | Priority | Depends on | Acceptance criterion |
 |---|---|---|---|---|
-| [ ] M3-17 | Implement the 1 kHz balance task with a fixed period, without dynamic memory allocation | P1 | M3-05, M3-07, M3-12 | Period is stable; jitter measured; no heap or blocking in the loop |
+| [ ] M3-17 | Implement the 1 kHz 3D balance task with a fixed period, without dynamic memory allocation | P1 | M3-05, M3-07, M3-12 | Period is stable; jitter measured; no heap or blocking in the loop |
 | [ ] M3-18 | Port PD/LQR from `jbot_control`; take parameters from configuration | P1 | M1-16, M3-17 | Behavior on the bench matches simulation within acceptable limits |
 | [ ] M3-19 | Implement the state machine `BOOT → SELF_TEST → IDLE → BALANCE → DAMPING → FAULT → E_STOP → SHUTDOWN` | P1 | M3-03 | Transitions are validated; invalid commands do not change state |
-| [ ] M3-20 | Implement tilt limiting, fall detection and transition to `DAMPING` | P1 | M3-17, M3-19 | Configurable threshold 25–35°; transition before the dangerous angle |
-| [ ] M3-21 | Implement torque distribution between wheels with saturation and balance priority | P1 | M3-18 | When saturated, balance is preserved; yaw is limited |
+| [ ] M3-20 | Implement tilt/roll limiting, fall detection and transition to `DAMPING` | P1 | M3-17, M3-19 | Configurable tilt threshold 25–35° and roll limit; transition before the dangerous angle |
+| [ ] M3-21 | Implement torque distribution between wheels and hip height/roll allocation, with saturation and balance priority | P1 | M3-18 | When saturated, balance is preserved; yaw and roll degrade predictably |
 | [ ] M3-22 | Implement processing of speed and yaw commands: latest-value, validity check, acceleration limiting | P1 | M3-19 | Stale and invalid commands are ignored; acceleration is limited |
-| [ ] M3-23 | Implement height and leg pose control outside the 1 kHz balance loop (P2) | P2 | M3-07, M3-17 | Height is adjustable by at least 100 mm; balance loop does not degrade |
-| [ ] M3-24 | Implement two-wheel platform odometry on the MCU and publish it in telemetry | P1 | M3-07 | Odometry matches the reference on straights and turns |
+| [ ] M3-23 | Implement hip height and roll control outside the 1 kHz balance loop (four-bar, P2) | P2 | M3-07, M3-17 | Height is adjustable by at least 100 mm; roll is reachable within coupler-curve limits; balance loop does not degrade |
+| [ ] M3-24 | Implement four-actuator platform odometry on the MCU and publish it in telemetry | P1 | M3-07 | Odometry matches the reference on straights and turns |
 | [ ] M3-25 | Start PD balancing on the safety frame with a zero command | P1 | M3-18, M3-19 | Holding for at least 10 min without falling |
 | [ ] M3-26 | Move LQR to the bench and compare with simulation | P1 | M3-25 | Differences are explained; parameters refined |
 | [ ] M3-27 | Conduct bench tests: 10 N·s impulse, 10° deviation, 10° slope | P1 | M3-26 | All scenarios without falling; current and temperature within limits |
@@ -678,7 +681,7 @@ In parallel: `M2` (power), `M7` (safety), `M10` (CI, documentation, procurement)
 
 | Requirement group | Key tasks |
 |---|---|
-| SYS-01…SYS-04 (MCU, 1 kHz, FOC, IMU) | M3-01, M3-05, M3-11, M3-12, M3-17, M3-28, M8-07 |
+| SYS-01…SYS-04 (MCU, 1 kHz, actuators, IMU) | M3-01, M3-05, M3-11, M3-12, M3-17, M3-28, M8-07 |
 | SYS-05…SYS-08 (upper level, communication, latency, RPi failure) | M4-05…M4-12, M5-03, M5-12, M5-21, M8-07 |
 | AUT-01…AUT-07 (M18, connection, battery replacement) | M2-01, M2-05, M2-23, M7-04 |
 | AUT-08…AUT-13 (energy budget, DC-DC, margin) | M2-02, M2-03, M2-10, M2-11, M2-22 |
@@ -687,7 +690,7 @@ In parallel: `M2` (power), `M7` (safety), `M10` (CI, documentation, procurement)
 | MOB-01…MOB-05 (kinematics, actuators, modes) | M1-03, M1-06, M1-07, M3-13, M3-19 |
 | MOB-06…MOB-11 (balance, impulse, tilt, fall) | M1-19, M1-33, M3-20, M3-25…M3-27 |
 | MOB-12…MOB-16 (speed, reverse, braking) | M1-18, M1-20, M3-21, M3-22, M6-26 |
-| MOB-17…MOB-25 (terrain, height, steps) | M1-07, M3-23, M6-25, M8-11 |
+| MOB-17…MOB-25, MOB-31 (terrain, height, steps, 3D balance) | M1-07, M1-26, M3-21, M3-23, M6-25, M8-11 |
 | MOB-26…MOB-30 (load, mass, thermal conditions) | M2-21, M3-13, M3-29, M8-11, M9-29 |
 | NAV-01…NAV-05 (lidar, IMU, odometry, synchronization) | M4-12…M4-25, M5-12 |
 | NAV-06…NAV-13 (SLAM, maps, versioning) | M6-01…M6-12 |
@@ -712,7 +715,7 @@ In parallel: `M2` (power), `M7` (safety), `M10` (CI, documentation, procurement)
 |---|---|---|---|
 | M0 | Base documentation and workspace | M1-01…M1-05, M10-01, M10-07 | — |
 | M1 | WIP model + LQR + simulator | M1-06…M1-38 | G1 |
-| M2 | One motor + FOC + IMU on the bench | M3-01…M3-16, M2-01…M2-11 | — |
+| M2 | One hip QDD + one wheel + IMU on the bench | M3-01…M3-16, M2-01…M2-11 | — |
 | M3 | Two motors, balance on the safety frame | M3-17…M3-29, M2-12…M2-24 | G2 |
 | M4 | RPi–MCU communication, telemetry, lidar, EKF | M4-01…M4-27, M5-01…M5-23 | G3 |
 | M5 | Map + localization | M6-01…M6-17 | — |
@@ -730,7 +733,7 @@ In parallel: `M2` (power), `M7` (safety), `M10` (CI, documentation, procurement)
 |---|---|---|
 | M1-01…M1-05 | Model parameters and `config/robot.toml` | Approved parameters and validated config |
 | M1-06, M1-09, M1-10 | Differential drive kinematics and transforms | Kinematics tests in `jbot_common` |
-| M1-11…M1-16 | WIP linearization and LQR | Matrices `A`, `B`, `K` and unit tests |
+| M1-11…M1-16 | 2D/3D WIP linearization and LQR | Matrices `A`, `B`, `K` and unit tests |
 | M1-26…M1-30 | `jbot_sim` framework with RK4 and trace recording | First deterministic run |
 | M1-32…M1-35 | First verification scenarios | 10 min hold, 10 N·s impulse, 10° deviation |
 | M3-01 | ADR-001 on MCU | Decision ESP32-S3 prototype / STM32H7 production |
@@ -745,7 +748,7 @@ In parallel: `M2` (power), `M7` (safety), `M10` (CI, documentation, procurement)
 | Risk | Affected tasks | Planned response |
 |---|---|---|
 | Incorrect mass-inertial parameters | M1-01…M1-38 | Refinement after assembly, stability margin, re-identification |
-| ESP32-S3 does not provide 1 kHz and jitter ≤ 50 µs | M3-01, M3-17, M3-28 | Early benchmark, transition to STM32H7, moving FOC to the driver |
+| ESP32-S3 does not provide 1 kHz and jitter ≤ 50 µs | M3-01, M3-17, M3-28 | Early benchmark, transition to STM32H7, keeping FOC inside the actuators |
 | CAN FD on RPi is unstable | M4-06, M4-10 | Backup UART, oscilloscope verification, selection of a proven HAT |
 | Lidar produces noise or too little data | M4-13…M4-18, M6-04 | Proven model, calibration, filtering, backup driver |
 | Rust SLAM is not mature enough | M6-01…M6-12 | Backup `slam_toolbox` via the bridge, early ADR |
@@ -762,8 +765,9 @@ In parallel: `M2` (power), `M7` (safety), `M10` (CI, documentation, procurement)
 | Question | Decision task | Deadline |
 |---|---|---|
 | Final MCU: ESP32-S3, STM32H723/H743 or Teensy 4.1 | M3-01, ADR-001 | Before purchasing the control board |
-| Drivers: integrated FOC or custom gate drivers | M3-01, M2-07, ADR | Before manufacturing the power board |
-| Leg topology and need for 1 kHz for joints | M1-03, M3-23 | Before detailed mechanical design |
+| Actuators: hip QDD integrated (RobStride); wheel hub integrated or external FOC | M3-01, M2-07, ADR | Before manufacturing the power board |
+| Leg topology: 1-DOF four-bar decided; link lengths, spring, height range, E-position | M1-03, M3-23 | Before detailed mechanical design |
+| Power pack: M18 18 V baseline vs 24–36 V preferred | M2-01, M2-02 | Before manufacturing the power board |
 | Lidar and camera: models, mounting, power, heat | M4-13, M4-19, ADR | Before purchasing sensors |
 | SLAM: Rust-native or `slam_toolbox` via bridge | M6-01, ADR-008 | Before the start of phase 4 |
 | AI: Hailo-8L or CPU-only; runtime `ort`/`tract`/`candle` | M9-09, ADR | Before phase 5 |

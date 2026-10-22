@@ -26,7 +26,8 @@ The architecture is driven by five constraints, in priority order:
 | Requirement | Target | Owner |
 |---|---|---|
 | Balance control loop | 1 kHz, jitter < 50 us | MCU |
-| FOC current loop | 20-40 kHz | MCU |
+| Hip QDD current loop | Actuator-internal (vendor firmware) | Actuator |
+| Wheel FOC (if external driver) | 20-40 kHz | MCU / wheel driver |
 | IMU sampling | 1-4 kHz | MCU |
 | Command timeout / safe stop | 100 ms | MCU |
 | MCU-to-RPi control latency | < 10 ms end-to-end | CAN + RPi |
@@ -38,6 +39,61 @@ The architecture is driven by five constraints, in priority order:
 | Runtime | 20-45 min on M18 XC5.0 | Power subsystem |
 
 > Numbers are design budgets, not measured guarantees. They must be validated in Phase 2/3 bench tests.
+
+### 1.2. Mechanical concept: 1-DOF four-bar leg
+
+The baseline is a two-wheeled balancing robot with four actuators: two hip QDDs in the body and two wheel hub motors, one wheel per leg. Each leg is a planar **1-DOF four-bar linkage**. The base is the chassis link **A-B**; the wheel fork **C-D-E** is the moving coupler.
+
+```mermaid
+flowchart TB
+    subgraph BASE["BASE — chassis / ground link (fixed to the body)"]
+        A(("A<br/>hip QDD<br/>(driven)"))
+        B(("B<br/>rocker pivot<br/>(passive)"))
+        A ---|"ground link A–B"| B
+    end
+
+    subgraph FORK["WHEEL FORK — one rigid coupler"]
+        C(("C<br/>crank joint"))
+        D(("D<br/>rocker joint"))
+        E(("E<br/>wheel axle<br/>hub motor"))
+        C --- E
+        E --- D
+        D --- C
+    end
+
+    A ---|"upper crank A–C<br/>(driven)"| C
+    B ---|"lower rocker B–D<br/>(passive)"| D
+
+    S["spring / damper<br/>(optional, passive)"] -.-> A
+    S -.-> C
+
+    classDef motor fill:#ffe0b2,stroke:#e65100,stroke-width:3px
+    classDef base fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
+    classDef fork fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
+    classDef spring fill:#fff3e0,stroke:#ef6c00,stroke-dasharray:4 3
+    class A,E motor
+    class B base
+    class C,D fork
+    class S spring
+```
+
+| Element | Type | Motor / function |
+|---|---|---|
+| A-B | Ground link | **Base / chassis** — fixed to the body |
+| A | Revolute joint | **Hip QDD** — driven |
+| B | Revolute joint | Passive rocker pivot on the base |
+| A-C | Upper crank | Driven by the hip QDD |
+| B-D | Lower rocker | Passive |
+| C-D-E | Wheel fork | One rigid coupler; E is the wheel axle |
+| E | Wheel axle | **Hub motor** — driven |
+| Spring / damper | Optional passive element | Parallel compliance between the base and the upper crank |
+
+Consequences for the architecture:
+
+- The mechanism has **one active DOF**; body height and wheel fore-aft offset are coupled along the coupler curve.
+- The "knee" is a rigid bend of the wheel fork, not an articulated joint.
+- Balance is **3D**: pitch via wheel torque, yaw via differential wheel torque, height via the common hip angle, roll via differential hip height. The 2D WIP model is a reduced-order model for initial LQR synthesis.
+- Hip QDDs integrate FOC, encoder, and driver; the MCU commands them over CAN. Wheel hub drivers may be integrated or external.
 
 ---
 
@@ -58,13 +114,13 @@ The architecture is driven by five constraints, in priority order:
                 │ UART (fallback)               │
 ┌───────────────▼───────────────────┐   ┌───────▼───────────────────────────────┐
 │  Real-time MCU (STM32H7/Teensy)   │   │  LiDAR, RGB-D camera, AI HAT (opt.)  │
-│  Balance 1 kHz  │  FOC 20-40 kHz   │   └───────────────────────────────────────┘
+│  Balance 1 kHz  │  Actuator CAN    │   └───────────────────────────────────────┘
 │  IMU 1-4 kHz    │  Watchdog        │
 └───────┬───────────────────┬───────┘
         │ PWM / SPI / ADC   │ CAN / UART
 ┌───────▼──────────┐  ┌─────▼──────────────────┐
-│ Motor drivers    │  │ Joint encoders, IMU,   │
-│ (2x wheel, legs) │  │ temperature, current   │
+│ 2x hip QDD       │  │ QDD feedback, wheel    │
+│ 2x wheel hub     │  │ encoders, IMU, current │
 └───────┬──────────┘  └────────────────────────┘
         │ VMOT
 ┌───────▼──────────────────────────────────────────────────────────────────────┐
@@ -88,7 +144,7 @@ Always-on, mostly analog/electromechanical layer:
 - DC-DC converters for 12 V, 5 V, and 3.3 V rails.
 - Hardware E-stop with dual-channel redundancy.
 - Current and voltage sensing for the supervisor.
-- Motor driver gate-enable / sleep lines that default to "disabled" when unpowered.
+- Actuator enable / sleep lines (hip QDD enable, wheel driver enable) that default to "disabled" when unpowered.
 
 Tier 0 has no software in the safety path. Software can request a stop; hardware must be able to enforce one independently.
 
@@ -96,10 +152,11 @@ Tier 0 has no software in the safety path. Software can request a stop; hardware
 
 **Responsibilities**
 
-- Field-oriented control (FOC) commutation and current/torque loops for wheel and leg motors.
-- 1 kHz balance controller (PD / LQR / VMC), including tilt and velocity feedback.
+- Send torque, position, and velocity commands to the two hip QDDs over CAN; their FOC, encoder, and driver are integrated.
+- Run the wheel FOC loop only if the wheel hub drivers are external; otherwise command the integrated wheel drivers.
+- 1 kHz balance controller (PD / LQR / VMC), including tilt, roll, yaw, height, and velocity feedback.
 - Fast IMU acquisition, filtering, and attitude estimate used by the balance loop.
-- Encoder acquisition, joint position/velocity, temperature and bus-current monitoring.
+- QDD feedback, wheel encoder, temperature, and bus-current monitoring.
 - Command watchdog and fail-safe state machine.
 - E-stop assertion and fault latching.
 - Blackbox ring buffer for post-mortem diagnostics.
@@ -109,8 +166,9 @@ Tier 0 has no software in the safety path. Software can request a stop; hardware
 
 | Loop | Rate | Trigger | Notes |
 |---|---|---|---|
-| FOC current/torque | 20-40 kHz | Timer + injected ADC | Highest priority; hardware-timed |
-| Motor velocity | 1-2 kHz | Timer | Cascaded inside FOC |
+| Hip QDD current/torque | Actuator-internal | Vendor firmware | Not scheduled by the MCU |
+| Wheel FOC (if external) | 20-40 kHz | Timer + injected ADC | Only for external wheel drivers |
+| Wheel velocity (if external) | 1-2 kHz | Timer | Cascaded inside wheel FOC |
 | Balance / posture | 1 kHz | Timer, fixed period | Hard deadline; no dynamic allocation |
 | IMU sample + filter | 1-4 kHz | SPI DMA / DRDY | Timestamp at sample |
 | Telemetry aggregation | 200-500 Hz | Timer | Batched into CAN FD frames |
@@ -174,10 +232,10 @@ Sensors (LiDAR, camera, IMU, encoders)
                                         │ 100 Hz command (CAN FD)
                                         ▼
 ┌─────────────────────────────── MCU ──────────────────────────────────────────┐
-│ command validation ──► balance 1 kHz ──► velocity 1-2 kHz ──► FOC 20-40 kHz │
+│ command validation ──► balance 1 kHz ──► velocity 1-2 kHz ──► actuator CAN   │
 │        ▲                      │                                  │            │
 │        │                      ▼                                  ▼            │
-│   watchdog/faults ◄──── IMU, encoders, current, temperature ◄── motors       │
+│   watchdog/faults ◄──── IMU, encoders, current, temperature ◄── actuators    │
 └───────────────────────────────────────┬──────────────────────────────────────┘
                                         │ 200-500 Hz feedback
                                         ▼
@@ -203,7 +261,7 @@ Sensors (LiDAR, camera, IMU, encoders)
 
 - **Pack:** Milwaukee M18 XC5.0, 5S Li-ion, 5.0 Ah, ~90 Wh.
 - **Voltage range:** 15.0 V (empty, 3.0 V/cell) to 21.0 V (full, 4.2 V/cell); 18.0 V nominal.
-- **Design current:** 20 A continuous, 30 A fuse, 40 A short peak (< 10 s).
+- **Design current:** 20–25 A continuous, 40 A fuse at 18 V, 55 A short peak (< 10 s).
 - **Notes:** the pack contains its own BMS, but the robot must not rely on it as the only protection layer. Milwaukee packs may latch off under over-current or under-voltage; the robot should derate before that happens.
 
 ### 4.2. Protection and distribution chain
@@ -213,7 +271,7 @@ M18 pack
    │
    ▼
 ┌──────────────────┐
-│ F1: 30 A fuse    │  slow-blow, main branch
+│ F1: 40 A fuse    │  slow-blow, main branch (18 V baseline)
 └────────┬─────────┘
          ▼
 ┌──────────────────┐
@@ -235,8 +293,8 @@ M18 pack
 │ + current sense  │  INA226 / shunt, bidirectional
 └────────┬─────────┘
          ▼
-   VBAT bus (15-21 V)
-   ├── Motor drivers (wheel/leg)  ── branch fuse per driver
+   VBAT bus (15-21 V M18 baseline; 24-36 V preferred)
+   ├── 2x hip QDD + 2x wheel hub ── branch fuse per actuator
    ├── 12 V DC-DC (5 A)           ── branch fuse
    ├── 5 V DC-DC (5-6 A)          ── branch fuse
    └── 3.3 V rail (MCU/sensors)   ── LDO or buck from 5 V
@@ -246,7 +304,7 @@ M18 pack
 
 | Rail | Source | Load | Protection | Notes |
 |---|---|---|---|---|
-| VBAT 15-21 V | M18 pack | Motor drivers | 30 A main fuse, contactor, per-driver fuse | Raw motor bus; keep short and twisted |
+| VBAT 15-21 V (M18 baseline) / 24-36 V (preferred) | Pack | 4 actuators | 40 A main fuse at 18 V; 30 A at 24-36 V (validate), contactor, per-actuator fuse | Raw motor bus; keep short and twisted |
 | 12 V / 5 A | Synchronous buck, 60 V input rated | Fans, sensors, optional arm, peripherals | 5 A fuse, TVS, LC filter | 60 W continuous |
 | 5 V / 5-6 A | Synchronous buck, 60 V input rated | Raspberry Pi 5, LiDAR, camera, USB hub | 6 A fuse / eFuse, TVS | RPi 5 needs 5 V/5 A; use 5.1 V and short, thick wiring |
 | 3.3 V / 1 A | Buck or LDO from 5 V | MCU, IMU, encoders, CAN transceiver | Polyfuse, ferrite | Keep analog and digital 3.3 V filtered separately if possible |
@@ -254,7 +312,7 @@ M18 pack
 
 **DC-DC requirements**
 
-- Input range must cover 15-21 V with transients; use 60 V-rated parts for margin.
+- Input range must cover 15-21 V (M18) and, if the preferred pack is adopted, up to 42 V (10S); use 60 V-rated parts for margin.
 - Synchronous buck topology, > 90% efficiency at nominal load.
 - Soft-start, current limiting, thermal shutdown, and output OVP.
 - Switching frequency above the AM band where practical; avoid the IMU/LiDAR region; use shielded inductors.
@@ -269,10 +327,10 @@ M18 pack
 | RGB-D camera | 2-3 W | 4 W | 5 V / USB |
 | MCU + IMU + encoders | 1 W | 2 W | 3.3 V |
 | Fans / misc. | 3 W | 8 W | 12 V |
-| Motors (2x QDD) | 60-120 W | 250-360 W | VBAT |
-| **Total** | **~80-140 W** | **~300-400 W** | |
+| Hip QDD (2x) + wheel hub (2x) | 100-180 W | 360-550 W | VBAT |
+| **Total** | **~115-200 W** | **~400-590 W** | |
 
-At 18 V, 140 W is ~7.8 A; the 20 A continuous / 30 A fuse design leaves headroom for acceleration and leg actuation. Runtime on a 90 Wh pack is roughly 40-60 min at low load and 15-25 min under aggressive motion. Validate with a real load profile and battery sag test.
+At 18 V, 590 W is 33 A; a 30 A fuse is marginal for four actuators. At 24-36 V the same power is 16-25 A. Size the fuse, contactor, and harness for the measured peak; 40 A at 18 V is an initial estimate. Runtime on a 90 Wh pack is roughly 30-50 min at low load and 10-20 min under aggressive motion. Validate with a real load profile and battery sag test.
 
 ### 4.5. Sequencing, grounding, and EMI
 
@@ -288,7 +346,7 @@ At 18 V, 140 W is ~7.8 A; the 20 A continuous / 30 A fuse design leaves headroom
 **Power-down sequence**
 
 1. Command zero velocity and enter `DAMPING`.
-2. Disable motor drivers; open main contactor.
+2. Disable actuators; open main contactor.
 3. Flush logs and stop Zenoh/ROS2 processes.
 4. Issue Linux shutdown; wait for RPi to power off (supervisor-controlled load switch or operator action).
 5. Remove pack.
@@ -326,8 +384,8 @@ At 18 V, 140 W is ~7.8 A; the 20 A continuous / 30 A fuse design leaves headroom
 The E-stop is a **hardware** function, independent of Linux and MCU software:
 
 - Dual-channel normally-closed switch (or two redundant switches) feeds a safety relay / contactor coil.
-- One channel opens the main contactor (removes VBAT from motor drivers).
-- The second channel asserts driver `EN`/`nSLEEP` low and signals the MCU and RPi.
+- One channel opens the main contactor (removes VBAT from all actuators).
+- The second channel asserts actuator `EN`/`nSLEEP` low and signals the MCU and RPi.
 - MCU latches the fault and reports it over CAN; RPi logs it and enters safe shutdown.
 - Logic rails (5 V/12 V) remain powered so the event is logged and the RPi can shut down cleanly.
 - A second, software-commanded stop exists for normal operation, but it is not a substitute for the hardware E-stop.
@@ -354,8 +412,8 @@ The E-stop is a **hardware** function, independent of Linux and MCU software:
                  └───┬───────┬───┘
                      │       │
          ┌───────────▼─┐   ┌─▼─────────────┐
-         │ MCU         │   │ Motor drivers │
-         │ (control)   │   │ (FDCAN nodes) │
+         │ MCU         │   │ Actuators     │
+         │ (control)   │   │ (CAN nodes)   │
          └──────┬──────┘   └───────────────┘
                 │ UART fallback (COBS + CRC16)
                 └──────────────► Raspberry Pi 5
@@ -370,7 +428,8 @@ The E-stop is a **hardware** function, independent of Linux and MCU software:
 - **Termination:** 120 ohm at both physical ends; stub length < 0.3 m.
 - **Transceiver:** 3.3 V CAN FD transceiver (e.g., TCAN334/MCP2542FD class), common-mode choke, TVS, split termination (2x 60 ohm + 4.7 nF to ground).
 - **Isolation:** isolate the external/operator CAN port; internal motor bus may be non-isolated if it shares a clean ground.
-- **Topology:** linear bus, no star; keep the RPi and MCU on the same bus segment; motor drivers as additional nodes.
+- **Topology:** linear bus, no star; keep the RPi and MCU on the same bus segment; 2 hip QDD + 2 wheel drivers as additional nodes on the actuator bus; the MCU bridges the actuator bus to the CAN FD backbone.
+- **Actuator bus:** RobStride QDD uses classic CAN 1 Mbit/s, not CAN FD. The MCU owns the actuator bus and exposes a normalized joint interface; wheel drivers follow their vendor protocol.
 
 **CAN ID allocation (initial)**
 
@@ -392,7 +451,7 @@ Rules:
 
 - Lower IDs have higher priority; E-stop and heartbeat must never be delayed by telemetry.
 - Control commands are **latest-value** semantics. Telemetry is loss-tolerant and may be dropped under overload.
-- Motor drivers may use their own vendor ID range; the MCU owns the mapping and exposes a normalized joint interface.
+- Actuators may use their own vendor ID range; the MCU maps the 2 hip QDDs and 2 wheel drivers to four normalized joint IDs.
 - All multi-byte fields are little-endian.
 
 ### 5.3. Application protocol and framing
@@ -697,7 +756,7 @@ LiDAR ──► driver ──► point cloud ──► scan matching / SLAM ─�
 | Property | Framing round-trips, sequence wraparound, malformed frames | `proptest` |
 | Integration | CAN/UART loopback, transport failover, timeout behavior | `tokio::test`, virtual CAN (`vcan`) |
 | Simulation | Plant model, sensor noise, balance and navigation scenarios | `jbot_sim`, Gazebo/ROS2 |
-| HIL | Real MCU + motor drivers + RPi, fault injection | Bench rig, `defmt`, logic analyzer |
+| HIL | Real MCU + actuators + RPi, fault injection | Bench rig, `defmt`, logic analyzer |
 | System | E-stop, battery cutoff, thermal, communication loss, 24 h soak | Full robot |
 | Regression | Replay recorded logs and compare metrics | `rerun`, golden traces |
 
@@ -751,14 +810,14 @@ DAMPING ──► FAULT ──► SHUTDOWN
 
 | Quantity | Limit | Action |
 |---|---|---|
-| Motor current | Per-driver and total | Current limit, then fault |
-| Motor/driver temperature | Vendor limit minus margin | Derate, then disable |
+| Actuator current | Per-actuator and total (hip QDD + wheel) | Current limit, then fault |
+| Actuator temperature | Vendor limit minus margin | Derate, then disable |
 | Battery voltage | 16.0 / 15.5 / 15.0 V | Warn / derate / stop |
 | Body tilt | Configurable (e.g., 25-35 deg) | Reduce torque, then damping |
 | Command age | 100 ms | Damping |
 | CAN bus-off | Persistent | Damping + fault |
 | CPU/GPU temperature | RPi throttle point minus margin | Reduce perception/nav rate, notify |
-| Wheel/joint velocity | Configurable | Limit, then fault |
+| Wheel/hip velocity | Configurable | Limit, then fault |
 
 ### 7.4. Fault codes and reporting
 
@@ -827,21 +886,26 @@ DAMPING ──► FAULT ──► SHUTDOWN
 | ADR-003 | Two-tier compute: RPi 5 + MCU | Separates AI/nav from hard real-time control | Accepted |
 | ADR-004 | Zenoh-first middleware, ROS2 bridge | Rust-native, low overhead, keeps ROS2 ecosystem available | Proposed |
 | ADR-005 | E-stop removes motor power but keeps logic powered | Preserves logging and graceful shutdown | Accepted |
-| ADR-006 | M18 5S input with 12 V / 5 V / 3.3 V rails | Matches available battery and loads | Accepted |
+| ADR-006 | M18 5S input with 12 V / 5 V / 3.3 V rails | Matches available battery; 18 V limits top speed at 1.5 m/s; 24-36 V preferred for margin (open question 9) | Accepted (baseline) |
 | ADR-007 | Application CRC + sequence on all frames | Uniform error detection across CAN FD and UART | Proposed |
+| ADR-008 | SLAM: Rust-native stack vs `slam_toolbox`/Cartographer via the ROS2 bridge | Pending Phase 4 evaluation | Proposed |
+| ADR-009 | 1-DOF four-bar leg, one wheel per leg, 2 hip QDD + 2 wheel hub | Compact 4-actuator layout; motors in the body; known coupler curve; height and fore-aft are coupled | Accepted |
+| ADR-010 | RobStride-class QDD on hips with integrated FOC; MCU is the balance/CAN/safety controller | Removes the custom hip power stage; vendor current loop; classic CAN 1 Mbit/s | Proposed |
 
 ---
 
 ## 11. Open Questions
 
-1. Final MCU choice and board design: STM32H723 vs H743 vs Teensy 4.1. Decide after a FOC/CAN benchmark.
-2. Motor driver interface: integrated FOC (ODrive/SimpleFOC) vs custom gate drivers. Affects CAN traffic and safety signals.
-3. Leg actuation topology: number of joints, gear ratios, and whether leg motors need 1 kHz control or a slower posture loop.
+1. Final MCU choice and board design: STM32H723 vs H743 vs Teensy 4.1. Decide after an actuator/CAN benchmark.
+2. Actuator interface: hip QDD integrated (RobStride); wheel hub driver integrated vs external FOC. Affects CAN traffic and safety signals.
+3. Leg topology: **decided** — 1-DOF four-bar (base A-B, upper crank A-C, lower rocker B-D, wheel fork C-D-E, optional spring). Remaining: link lengths, spring rate/travel, height range, and the E-position.
 4. LiDAR/camera selection and mounting; impact on SLAM and AI compute budget.
 5. Whether Nav2 is used as-is (C++ via bridge) or replaced by a Rust planner. Affects `jbot_navigation`.
 6. AI accelerator choice (Hailo-8L vs CPU-only) and model runtime (`ort` vs `tract` vs `candle`).
 7. Production firmware update path: CAN bootloader vs USB DFU vs debug probe.
 8. Enclosure, connector, and serviceability requirements.
+9. Power pack voltage: M18 18 V baseline vs 24-36 V preferred. At 18 V the 1.5 m/s target is marginal and the fuse margin is tight.
+10. Wheel drive: one hub motor per wheel; validate traction and slip on the target surface. Dual wheels per leg are deferred.
 
 ---
 
