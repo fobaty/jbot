@@ -1,9 +1,9 @@
 # JBOT-WheeledBiped baseline model configuration.
 #
-# Status: Phase 1 preliminary values. Every number is a design estimate that
-# must be replaced by CAD or bench measurement before Gate G1. The uncertainty
-# is recorded next to each block; the validator rejects values that are
-# non-physical or that leave the four-bar leg with less than 100 mm of travel.
+# Status: preliminary hardware values. Every number is a design estimate that
+# must be replaced by CAD or bench measurement before the BOM interface freeze.
+# The uncertainty is recorded next to each block; the validator rejects values
+# that are non-physical or use an unsupported schema version.
 #
 # Provisional hardware: BNO055 IMU, ExpressLRS 2.4G receiver (LiteRadio 3 Pro),
 # TJA1051T/3 CAN transceiver, RobStride RS02 hips and RS05 wheels. Actuator
@@ -31,9 +31,8 @@ com_height_m = 0.25
 
 [leg]
 # Planar four-bar in the fore-aft/vertical leg plane.
-# Source: preliminary linkage synthesis; see docs/kinematics.md. These values
-# produce about 141 mm of wheel-axle vertical travel over the configured hip
-# window. Uncertainty: +/- 5 mm per link until CAD is frozen.
+# Source: preliminary linkage synthesis. Link lengths are still provisional and
+# must be confirmed against CAD and the bench. Uncertainty: +/- 5 mm per link.
 base_m = 0.14
 crank_m = 0.11
 rocker_m = 0.13

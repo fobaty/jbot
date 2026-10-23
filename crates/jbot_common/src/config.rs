@@ -1,22 +1,15 @@
 //! Typed robot configuration, validation, and provenance.
 //!
 //! The schema is deliberately strict: unknown fields, unsupported schema
-//! versions, and parameters that make the mechanism unassemblable are rejected
-//! before the configuration reaches a controller or a simulator.
+//! versions, and non-physical parameters are rejected before the configuration
+//! reaches firmware or supervisory software.
 
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use crate::kinematics::{
-    AssemblyBranch, DifferentialDrive, KinematicsError, LegGeometry, LegKinematics,
-};
-
 /// Version of the on-disk configuration schema.
 pub const CONFIG_SCHEMA_VERSION: u32 = 1;
-
-/// Minimum wheel-axle vertical travel required by the leg concept.
-pub const MIN_LEG_HEIGHT_RANGE_M: f64 = 0.1;
 
 /// Complete robot description loaded from `config/robot.toml`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -41,6 +34,16 @@ pub struct MechanicalConfig {
     pub wheel_inertia_kg_m2: f64,
     pub track_width_m: f64,
     pub com_height_m: f64,
+}
+
+/// Which of the two circle-circle intersection solutions forms the leg assembly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AssemblyBranch {
+    /// Intersection on the positive normal side of the centre line.
+    Positive,
+    /// Intersection on the negative normal side of the centre line.
+    Negative,
 }
 
 /// Geometry and travel of one planar four-bar leg.
@@ -96,7 +99,7 @@ impl RobotConfig {
         Ok(config)
     }
 
-    /// Validate every parameter and the geometry it implies.
+    /// Validate every configuration parameter.
     pub fn validate(&self) -> Result<(), ConfigError> {
         if self.schema_version != CONFIG_SCHEMA_VERSION {
             return Err(ConfigError::UnsupportedSchema {
@@ -110,25 +113,7 @@ impl RobotConfig {
         self.drive.validate()?;
         self.hip.validate()?;
         self.control.validate()?;
-
-        let leg = self.leg.to_kinematics()?;
-        let (minimum, maximum) = leg.vertical_range()?;
-        let range = maximum - minimum;
-        if range < MIN_LEG_HEIGHT_RANGE_M {
-            return Err(ConfigError::HeightRangeTooSmall { range_m: range });
-        }
-
         Ok(())
-    }
-
-    /// Build the differential-drive model from the mechanical section.
-    pub fn to_differential_drive(&self) -> Result<DifferentialDrive, ConfigError> {
-        Ok(DifferentialDrive::new(self.mechanical.track_width_m)?)
-    }
-
-    /// Build the four-bar leg model from the leg section.
-    pub fn to_leg_kinematics(&self) -> Result<LegKinematics, ConfigError> {
-        self.leg.to_kinematics()
     }
 }
 
@@ -148,25 +133,6 @@ impl MechanicalConfig {
 }
 
 impl LegConfig {
-    /// Build the leg model, including the assembly and travel checks.
-    pub fn to_kinematics(&self) -> Result<LegKinematics, ConfigError> {
-        let geometry = LegGeometry {
-            base_m: self.base_m,
-            crank_m: self.crank_m,
-            rocker_m: self.rocker_m,
-            coupler_m: self.coupler_m,
-            fork_de_m: self.fork_de_m,
-            fork_ce_m: self.fork_ce_m,
-            rocker_branch: self.rocker_branch,
-            fork_branch: self.fork_branch,
-        };
-        Ok(LegKinematics::new(
-            geometry,
-            self.hip_min_rad,
-            self.hip_max_rad,
-        )?)
-    }
-
     fn validate(&self) -> Result<(), ConfigError> {
         positive("leg.base_m", self.base_m)?;
         positive("leg.crank_m", self.crank_m)?;
@@ -250,8 +216,6 @@ pub enum ConfigError {
     UnsupportedSchema { found: u32, supported: u32 },
     InvalidValue { field: &'static str, value: f64 },
     InvalidField { field: &'static str, reason: String },
-    HeightRangeTooSmall { range_m: f64 },
-    Kinematics(KinematicsError),
 }
 
 impl fmt::Display for ConfigError {
@@ -268,11 +232,6 @@ impl fmt::Display for ConfigError {
             Self::InvalidField { field, reason } => {
                 write!(f, "invalid configuration field {field}: {reason}")
             }
-            Self::HeightRangeTooSmall { range_m } => write!(
-                f,
-                "four-bar leg height range {range_m} m is below the {MIN_LEG_HEIGHT_RANGE_M} m minimum"
-            ),
-            Self::Kinematics(error) => write!(f, "invalid leg geometry: {error}"),
         }
     }
 }
@@ -281,7 +240,6 @@ impl std::error::Error for ConfigError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Parse(error) => Some(error),
-            Self::Kinematics(error) => Some(error),
             _ => None,
         }
     }
@@ -290,12 +248,6 @@ impl std::error::Error for ConfigError {
 impl From<toml::de::Error> for ConfigError {
     fn from(error: toml::de::Error) -> Self {
         Self::Parse(error)
-    }
-}
-
-impl From<KinematicsError> for ConfigError {
-    fn from(error: KinematicsError) -> Self {
-        Self::Kinematics(error)
     }
 }
 
@@ -326,18 +278,9 @@ mod tests {
     }
 
     #[test]
-    fn baseline_config_parses_and_builds_models() {
+    fn baseline_config_parses() {
         let config = baseline();
         assert_eq!(config.schema_version, CONFIG_SCHEMA_VERSION);
-
-        let drive = config
-            .to_differential_drive()
-            .expect("track width is valid");
-        assert!((drive.track_width_m() - config.mechanical.track_width_m).abs() <= 1e-12);
-
-        let leg = config.to_leg_kinematics().expect("leg geometry is valid");
-        let (minimum, maximum) = leg.vertical_range().expect("leg assembles");
-        assert!(maximum - minimum >= MIN_LEG_HEIGHT_RANGE_M);
     }
 
     #[test]
@@ -386,24 +329,6 @@ mod tests {
                 field: "leg.spring_travel_rad",
                 ..
             })
-        ));
-    }
-
-    #[test]
-    fn unassemblable_leg_is_rejected() {
-        let mut config = baseline();
-        config.leg.coupler_m = 10.0;
-        assert!(matches!(config.validate(), Err(ConfigError::Kinematics(_))));
-    }
-
-    #[test]
-    fn height_range_is_enforced() {
-        let mut config = baseline();
-        config.leg.hip_min_rad = -0.95;
-        config.leg.hip_max_rad = -0.70;
-        assert!(matches!(
-            config.validate(),
-            Err(ConfigError::HeightRangeTooSmall { .. })
         ));
     }
 

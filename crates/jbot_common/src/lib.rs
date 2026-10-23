@@ -1,15 +1,10 @@
-//! Common data structures, kinematic models, and message types for JBOT.
+//! Common data structures, configuration, and message types for JBOT.
 
 pub mod config;
-pub mod kinematics;
 
 pub use config::{
     config_hash, ConfigError, ControlConfig, DriveConfig, HipConfig, LegConfig, MechanicalConfig,
-    RobotConfig, CONFIG_SCHEMA_VERSION, MIN_LEG_HEIGHT_RANGE_M,
-};
-pub use kinematics::{
-    AssemblyBranch, BodyTwist, DifferentialDrive, KinematicsError, LegGeometry, LegKinematics,
-    LegPose, WheelSpeeds,
+    RobotConfig, CONFIG_SCHEMA_VERSION,
 };
 
 pub struct RobotState {

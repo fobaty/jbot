@@ -17,8 +17,8 @@ Related documents: `docs/system_requirements.md`, `docs/architecture.md`,
    agreement with the orchestrator and architect.
 3. **Verification at every step.** A task is not considered complete until
    `cargo fmt`, `cargo check`, `cargo test`, and `cargo clippy` pass for the affected crates.
-4. **Isolation of computation and I/O.** `jbot_estimation` and `jbot_control` are pure
-   math without I/O; transport and drivers live only in `jbot_hardware`.
+4. **Isolation of computation and I/O.** Pure computation stays free of I/O; transport
+   and drivers live only in `jbot_hardware`.
 5. **Safety over speed.** Bypassing the watchdog, removing limits, `unsafe`,
    and changes to the control loop require a separate review.
 6. **The orchestrator is the single integration point.** Subagents work in their own
@@ -94,9 +94,9 @@ crates and risks, and acceptance criteria for subagents.
 
 ### 3.3. Rust-Host-Dev
 
-**Responsible for:** the host part on RPi 5 — `jbot_common`, `jbot_hardware`,
-`jbot_estimation`, `jbot_control`, and the composition in `jbot_node`; Tokio tasks,
-CAN/UART transport, EKF, the balance loop, configuration, and telemetry.
+**Responsible for:** the host part on RPi 5 — `jbot_common`, `jbot_hardware`, and the
+composition in `jbot_node`; Tokio tasks, CAN/UART transport, EKF, configuration, and
+telemetry.
 
 **Rights:** write to the listed crates and their tests; run cargo and
 log analysis tools.
@@ -204,7 +204,6 @@ otherwise this is recorded as a limitation in the handoff.
 
 | Tool | Purpose | Access |
 |---|---|---|
-| `jbot_sim` (future) | Plant model, sensor noise, balance and navigation scenarios | dev roles, QA |
 | Replay of recorded logs | Regression without hardware | QA, Navigation-Dev |
 | Gazebo/ROS2 + `zenoh-bridge-ros2dds` | External simulation and RViz | Navigation-Dev, QA |
 | `vcan` | Transport integration tests | Host-Dev, QA |
@@ -339,7 +338,7 @@ The QA-Tester runs the levels corresponding to the change:
 | Unit | Math, framing, CRC, limits, state machine | `cargo test` |
 | Property | Frame round-trip, counter overflow, garbage data | `proptest` |
 | Integration | CAN/UART loopback, failover, timeouts | `tokio::test`, `vcan` |
-| Simulation | Balance, navigation, sensor staleness | `jbot_sim`, Gazebo |
+| Simulation | Balance, navigation, sensor staleness | Gazebo |
 | HIL | Real MCU, drivers, communication loss, watchdog | test bench, `defmt` |
 | Regression | Replay of recorded logs, metric comparison | replay, `rerun` |
 

@@ -3,7 +3,7 @@
 
 | Field | Value |
 |---|---|
-| Status | Living document (Phase 1 baseline) |
+| Status | Living document (Phase 2 hardware baseline) |
 | Version | 0.2 |
 | Last updated | 2026-10-21 |
 | Related documents | `docs/system_requirements.md`, `docs/roadmap.md` |
@@ -92,7 +92,7 @@ Consequences for the architecture:
 
 - The mechanism has **one active DOF**; body height and wheel fore-aft offset are coupled along the coupler curve.
 - The "knee" is a rigid bend of the wheel fork, not an articulated joint.
-- Balance is **3D**: pitch via wheel torque, yaw via differential wheel torque, height via the common hip angle, roll via differential hip height. The 2D WIP model is a reduced-order model for initial LQR synthesis.
+- Balance is **3D**: pitch via wheel torque, yaw via differential wheel torque, height via the common hip angle, roll via differential hip height. The controller must handle all three axes within actuator limits.
 - Hip QDDs integrate FOC, encoder, and driver; the MCU commands them over CAN. Wheel hub drivers may be integrated or external.
 
 ---
@@ -155,7 +155,7 @@ Tier 0 has no software in the safety path. Software can request a stop; hardware
 
 - Send torque, position, and velocity commands to the two RobStride RS02 hips over CAN; their FOC, encoder, and driver are integrated.
 - Run the wheel FOC loop only if the RS05 wheel drivers are external; otherwise command the integrated wheel drivers.
-- 1 kHz balance controller (PD / LQR / VMC), including tilt, roll, yaw, height, and velocity feedback.
+- 1 kHz balance controller, including tilt, roll, yaw, height, and velocity feedback.
 - BNO055 attitude acquisition over I2C/UART, with gyro propagation between the 100 Hz fusion samples for the 1 kHz loop.
 - Optional high-rate IMU (ICM-42688-P fallback) if BNO055 latency or fusion rate is insufficient.
 - RS02/RS05 feedback, temperature, and bus-current monitoring.
@@ -187,7 +187,7 @@ Tier 0 has no software in the safety path. Software can request a stop; hardware
 | **ESP32-S3** | Low cost, Wi-Fi/BLE, dual core, good `esp-rs` support | Only classic CAN (TWAI); CAN FD needs external SPI controller; less deterministic timers/ADC | Acceptable for early prototype, not preferred for final control board |
 | **Pico 2 W (RP2350)** | Dual Cortex-M33, PIO, low cost, good `rp235x-hal`/`embassy-rp` support | No native CAN; only three ADC inputs on the W board; CYW43 RF/closed firmware; non-W Pico 2 preferred for production | Third candidate; requires external CAN controller and ADC |
 
-**Decision:** STM32H723/H743 remains the recommended production baseline, but ADR-001 must benchmark it against the Pico 2 W (RP2350) and ESP32-S3 before the control board is ordered. Keep the protocol and HAL abstract enough that all three candidates can run the same control code. Provisional actuator, CAN, RC, and IMU selections are recorded in [`docs/hardware.md`](hardware.md).
+**Decision:** STM32H723/H743 remains the recommended production baseline, but ADR-001 must benchmark it against the Pico 2 W (RP2350) and ESP32-S3 before the control board is ordered. Keep the protocol and HAL abstract enough that all three candidates can run the same control code. Provisional actuator, CAN, RC, and IMU selections are recorded in [`docs/hardware.md`](hardware.md); the orderable component list is in [`docs/bom.md`](bom.md).
 
 **Real-time rules**
 
@@ -555,19 +555,15 @@ At 1 Mbit/s arbitration, the bus is comfortably loaded. If telemetry is increase
 
 ```
 jbot_common  ◄── jbot_hardware
-     ▲        ◄── jbot_estimation
-     │        ◄── jbot_control
-     │        ◄── jbot_navigation
-     │                 ▲
-     └─────────────────┴── jbot_node ──► binaries / services
+     ▲        ◄── jbot_navigation
+     │
+     └────────────── jbot_node ──► binaries / services
 ```
 
 Rules:
 
-- `jbot_common` contains shared types, math, configuration, and message schemas. It must not depend on hardware or async runtimes.
+- `jbot_common` contains shared types, configuration, and message schemas. It must not depend on hardware or async runtimes.
 - `jbot_hardware` owns transport (CAN/UART/USB) and sensor drivers; it may depend on Tokio.
-- `jbot_estimation` owns filters and state estimation; pure computation, no I/O.
-- `jbot_control` owns balance/velocity/posture controllers; pure computation, no I/O.
 - `jbot_navigation` owns costmaps, planners, and path following; may depend on external map types.
 - `jbot_node` is the composition root: it wires tasks, transports, middleware, supervision, and configuration.
 - No dependency cycles. A crate that needs I/O receives it via a trait defined in `jbot_common` or a dedicated port module.
@@ -583,11 +579,8 @@ Rules:
 
 | Crate | Responsibility | Status |
 |---|---|---|
-| `jbot_common` | Shared types, math, config, message definitions | Kinematics and config baseline |
+| `jbot_common` | Shared types, config, message definitions | Configuration baseline |
 | `jbot_hardware` | CAN/UART/USB transports, sensor and actuator drivers | Skeleton; provisional BNO055, TJA1051T/3, ExpressLRS, RobStride RS02/RS05 |
-| `jbot_estimation` | EKF, attitude filters, odometry fusion | Complementary and Madgwick attitude filters; EKF pending |
-| `jbot_control` | Balance, velocity, posture, safety envelope | 2D WIP, LQR, and speed-loop baseline |
-| `jbot_sim` | Plant model, sensor simulation, replay harness | Fixed-step 2D WIP, sensor, delay, and replay baseline |
 | `jbot_navigation` | Costmaps, global/local planning, path tracking | Skeleton |
 | `jbot_node` | Runtime composition, middleware, supervision, CLI | Skeleton |
 
@@ -685,7 +678,7 @@ The robot uses a **Zenoh-first** data plane and bridges to ROS2 where the ecosys
 | Logging | `defmt`, `defmt-rtt` | Low-overhead binary logging |
 | Flashing/debug | `probe-rs`, `panic-probe` | Flashing, RTT, panic dumps |
 | Collections | `heapless` | Fixed-capacity buffers and queues |
-| Math | `micromath`, `nalgebra` (libm) | `no_std` filters and kinematics |
+| Math | `micromath` | `no_std` scalar math |
 | Watchdog | `embassy-stm32` IWDG | Independent hardware watchdog |
 
 > Firmware dependencies are not yet in the workspace; they will be introduced with the `firmware/` crate in Phase 2.
@@ -740,7 +733,7 @@ LiDAR ──► driver ──► point cloud ──► scan matching / SLAM ─�
 - **Logging:** `tracing` with JSON output; include node, task, robot ID, and correlation IDs. Avoid logging at high rates in the control path.
 - **Metrics:** counters for frame loss, CRC errors, bus-off events, command age, loop jitter, battery voltage, temperatures, and fault counts. Export via Zenoh or a Prometheus endpoint.
 - **Blackbox:** MCU ring buffer of the last N seconds of setpoints, states, faults, and raw sensor snapshots; dump over CAN/UART on request.
-- **Replay:** record synchronized sensor/command logs; replay through `jbot_sim` for regression tests.
+- **Replay:** record synchronized sensor/command logs; replay through the HIL bench for regression tests.
 
 ### 6.9. Build, deployment, and update
 
@@ -759,7 +752,7 @@ LiDAR ──► driver ──► point cloud ──► scan matching / SLAM ─�
 | Unit | Math, framing, CRC, state machine, limits | `cargo test` |
 | Property | Framing round-trips, sequence wraparound, malformed frames | `proptest` |
 | Integration | CAN/UART loopback, transport failover, timeout behavior | `tokio::test`, virtual CAN (`vcan`) |
-| Simulation | Plant model, sensor noise, balance and navigation scenarios | `jbot_sim`, Gazebo/ROS2 |
+| Simulation | Sensor noise and navigation scenarios | Gazebo/ROS2 |
 | HIL | Real MCU + actuators + RPi, fault injection | Bench rig, `defmt`, logic analyzer |
 | System | E-stop, battery cutoff, thermal, communication loss, 24 h soak | Full robot |
 | Regression | Replay recorded logs and compare metrics | `rerun`, golden traces |
