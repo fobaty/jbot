@@ -42,12 +42,12 @@ The architecture is driven by five constraints, in priority order:
 
 ### 1.2. Mechanical concept: 1-DOF four-bar leg
 
-The baseline is a two-wheeled balancing robot with four actuators: two hip QDDs in the body and two wheel hub motors, one wheel per leg. Each leg is a planar **1-DOF four-bar linkage**. The base is the chassis link **A-B**; the wheel fork **C-D-E** is the moving coupler.
+The baseline is a two-wheeled balancing robot with four actuators: two RobStride RS02 hips in the body and two RS05 wheel actuators, one wheel per leg. Each leg is a planar **1-DOF four-bar linkage**. The base is the chassis link **A-B**; the wheel fork **C-D-E** is the moving coupler.
 
 ```mermaid
 flowchart TB
     subgraph BASE["BASE — chassis / ground link (fixed to the body)"]
-        A(("A<br/>hip QDD<br/>(driven)"))
+        A(("A<br/>RS02 hip<br/>(driven)"))
         B(("B<br/>rocker pivot<br/>(passive)"))
         A ---|"ground link A–B"| B
     end
@@ -82,7 +82,7 @@ flowchart TB
 | A-B | Ground link | **Base / chassis** — fixed to the body |
 | A | Revolute joint | **Hip QDD** — driven |
 | B | Revolute joint | Passive rocker pivot on the base |
-| A-C | Upper crank | Driven by the hip QDD |
+| A-C | Upper crank | Driven by the RS02 hip |
 | B-D | Lower rocker | Passive |
 | C-D-E | Wheel fork | One rigid coupler; E is the wheel axle |
 | E | Wheel axle | **Hub motor** — driven |
@@ -110,17 +110,18 @@ Consequences for the architecture:
 │  Perception  │  Localization / SLAM  │  Nav2 / planner  │  Behavior / mission  │
 │  State estimation (EKF)  │  Supervisor  │  Zenoh router / ROS2 bridge  │  Logs  │
 └───────────────┬───────────────────────────────┬───────────────────────────────┘
-                │ CAN FD (primary)              │ USB3 / CSI-2 / PCIe
-                │ UART (fallback)               │
+                │ CAN / UART                    │ USB3 / CSI-2 / PCIe
+                │                               │
 ┌───────────────▼───────────────────┐   ┌───────▼───────────────────────────────┐
-│  Real-time MCU (STM32H7/Teensy)   │   │  LiDAR, RGB-D camera, AI HAT (opt.)  │
+│  Real-time MCU (RP2350/ESP32/H7)  │   │  LiDAR, RGB-D camera, AI HAT (opt.)  │
 │  Balance 1 kHz  │  Actuator CAN    │   └───────────────────────────────────────┘
-│  IMU 1-4 kHz    │  Watchdog        │
+│  BNO055 100 Hz  │  RC / CRSF       │
+│  Watchdog       │                  │
 └───────┬───────────────────┬───────┘
-        │ PWM / SPI / ADC   │ CAN / UART
+        │ CAN / ADC         │ CAN / UART
 ┌───────▼──────────┐  ┌─────▼──────────────────┐
-│ 2x hip QDD       │  │ QDD feedback, wheel    │
-│ 2x wheel hub     │  │ encoders, IMU, current │
+│ 2x RS02 hip      │  │ RS02/RS05 feedback,    │
+│ 2x RS05 wheel    │  │ encoders, IMU, current │
 └───────┬──────────┘  └────────────────────────┘
         │ VMOT
 ┌───────▼──────────────────────────────────────────────────────────────────────┐
@@ -144,23 +145,25 @@ Always-on, mostly analog/electromechanical layer:
 - DC-DC converters for 12 V, 5 V, and 3.3 V rails.
 - Hardware E-stop with dual-channel redundancy.
 - Current and voltage sensing for the supervisor.
-- Actuator enable / sleep lines (hip QDD enable, wheel driver enable) that default to "disabled" when unpowered.
+- Actuator enable / sleep lines exposed by the vendor driver (if any) that default to "disabled" when unpowered.
 
 Tier 0 has no software in the safety path. Software can request a stop; hardware must be able to enforce one independently.
 
-### 3.2. Tier 1: Real-Time MCU (ESP32-S3 / STM32 / Teensy 4.1)
+### 3.2. Tier 1: Real-Time MCU (ESP32-S3 / RP2350 Pico 2 W / STM32H7)
 
 **Responsibilities**
 
-- Send torque, position, and velocity commands to the two hip QDDs over CAN; their FOC, encoder, and driver are integrated.
-- Run the wheel FOC loop only if the wheel hub drivers are external; otherwise command the integrated wheel drivers.
+- Send torque, position, and velocity commands to the two RobStride RS02 hips over CAN; their FOC, encoder, and driver are integrated.
+- Run the wheel FOC loop only if the RS05 wheel drivers are external; otherwise command the integrated wheel drivers.
 - 1 kHz balance controller (PD / LQR / VMC), including tilt, roll, yaw, height, and velocity feedback.
-- Fast IMU acquisition, filtering, and attitude estimate used by the balance loop.
-- QDD feedback, wheel encoder, temperature, and bus-current monitoring.
+- BNO055 attitude acquisition over I2C/UART, with gyro propagation between the 100 Hz fusion samples for the 1 kHz loop.
+- Optional high-rate IMU (ICM-42688-P fallback) if BNO055 latency or fusion rate is insufficient.
+- RS02/RS05 feedback, temperature, and bus-current monitoring.
 - Command watchdog and fail-safe state machine.
 - E-stop assertion and fault latching.
 - Blackbox ring buffer for post-mortem diagnostics.
-- CAN FD / UART transport to the Raspberry Pi.
+- Classic CAN through a TJA1051T/3 transceiver, optional CAN FD path, and UART transport to the Raspberry Pi.
+- ExpressLRS 2.4G receiver over CRSF UART for teleoperation, with the hardware E-stop remaining independent.
 
 **Proposed loop schedule**
 
@@ -170,8 +173,9 @@ Tier 0 has no software in the safety path. Software can request a stop; hardware
 | Wheel FOC (if external) | 20-40 kHz | Timer + injected ADC | Only for external wheel drivers |
 | Wheel velocity (if external) | 1-2 kHz | Timer | Cascaded inside wheel FOC |
 | Balance / posture | 1 kHz | Timer, fixed period | Hard deadline; no dynamic allocation |
-| IMU sample + filter | 1-4 kHz | SPI DMA / DRDY | Timestamp at sample |
-| Telemetry aggregation | 200-500 Hz | Timer | Batched into CAN FD frames |
+| Attitude fusion | 100 Hz | I2C/UART | BNO055 output; timestamp at sample |
+| Gyro propagation | 1 kHz | Timer | Bridge between fused samples |
+| Telemetry aggregation | 200-500 Hz | Timer | Batched into transport frames |
 | Command ingest | Event-driven | CAN RX interrupt / UART DMA | Validated and sequence-checked |
 | Health / watchdog | 100 Hz | Timer | Feeds IWDG only when healthy |
 
@@ -180,10 +184,10 @@ Tier 0 has no software in the safety path. Software can request a stop; hardware
 | Candidate | Strengths | Weaknesses | Verdict |
 |---|---|---|---|
 | **STM32H723/H743** | Native FDCAN, advanced timers, high-speed ADC, FPU/DSP, CORDIC/FMAC, deterministic DMA, mature `embassy-stm32` support | More complex board design; 3.3 V only | **Recommended baseline** |
-| **Teensy 4.1 (i.MX RT1062)** | 600 MHz, easy development, FlexCAN FD, good Arduino/Teensy ecosystem | Less deterministic peripheral model; custom Rust support; 3.3 V | Strong prototype alternative |
 | **ESP32-S3** | Low cost, Wi-Fi/BLE, dual core, good `esp-rs` support | Only classic CAN (TWAI); CAN FD needs external SPI controller; less deterministic timers/ADC | Acceptable for early prototype, not preferred for final control board |
+| **Pico 2 W (RP2350)** | Dual Cortex-M33, PIO, low cost, good `rp235x-hal`/`embassy-rp` support | No native CAN; only three ADC inputs on the W board; CYW43 RF/closed firmware; non-W Pico 2 preferred for production | Third candidate; requires external CAN controller and ADC |
 
-**Decision:** use an STM32H723/H743-class MCU for the production control board. Keep the protocol and HAL abstract enough that a Teensy 4.1 or ESP32-S3 prototype can run the same control code. This is tracked as ADR-001 in Section 10.
+**Decision:** STM32H723/H743 remains the recommended production baseline, but ADR-001 must benchmark it against the Pico 2 W (RP2350) and ESP32-S3 before the control board is ordered. Keep the protocol and HAL abstract enough that all three candidates can run the same control code. Provisional actuator, CAN, RC, and IMU selections are recorded in [`docs/hardware.md`](hardware.md).
 
 **Real-time rules**
 
@@ -294,7 +298,7 @@ M18 pack
 └────────┬─────────┘
          ▼
    VBAT bus (15-21 V M18 baseline; 24-36 V preferred)
-   ├── 2x hip QDD + 2x wheel hub ── branch fuse per actuator
+   ├── 2x RS02 hip + 2x RS05 wheel ── branch fuse per actuator
    ├── 12 V DC-DC (5 A)           ── branch fuse
    ├── 5 V DC-DC (5-6 A)          ── branch fuse
    └── 3.3 V rail (MCU/sensors)   ── LDO or buck from 5 V
@@ -327,7 +331,7 @@ M18 pack
 | RGB-D camera | 2-3 W | 4 W | 5 V / USB |
 | MCU + IMU + encoders | 1 W | 2 W | 3.3 V |
 | Fans / misc. | 3 W | 8 W | 12 V |
-| Hip QDD (2x) + wheel hub (2x) | 100-180 W | 360-550 W | VBAT |
+| RS02 hip (2x) + RS05 wheel (2x) | 100-180 W | 360-550 W | VBAT |
 | **Total** | **~115-200 W** | **~400-590 W** | |
 
 At 18 V, 590 W is 33 A; a 30 A fuse is marginal for four actuators. At 24-36 V the same power is 16-25 A. Size the fuse, contactor, and harness for the measured peak; 40 A at 18 V is an initial estimate. Runtime on a 90 Wh pack is roughly 30-50 min at low load and 10-20 min under aggressive motion. Validate with a real load profile and battery sag test.
@@ -428,8 +432,8 @@ The E-stop is a **hardware** function, independent of Linux and MCU software:
 - **Termination:** 120 ohm at both physical ends; stub length < 0.3 m.
 - **Transceiver:** 3.3 V CAN FD transceiver (e.g., TCAN334/MCP2542FD class), common-mode choke, TVS, split termination (2x 60 ohm + 4.7 nF to ground).
 - **Isolation:** isolate the external/operator CAN port; internal motor bus may be non-isolated if it shares a clean ground.
-- **Topology:** linear bus, no star; keep the RPi and MCU on the same bus segment; 2 hip QDD + 2 wheel drivers as additional nodes on the actuator bus; the MCU bridges the actuator bus to the CAN FD backbone.
-- **Actuator bus:** RobStride QDD uses classic CAN 1 Mbit/s, not CAN FD. The MCU owns the actuator bus and exposes a normalized joint interface; wheel drivers follow their vendor protocol.
+- **Topology:** linear bus, no star; keep the RPi and MCU on the same bus segment; 2 RS02 hips + 2 RS05 wheels as additional nodes on the actuator bus; the MCU bridges the classic CAN actuator bus to the CAN FD backbone where used.
+- **Actuator bus:** RobStride RS02/RS05 use classic CAN 1 Mbit/s through a TJA1051T/3 transceiver, not CAN FD. The MCU owns the actuator bus and exposes a normalized joint interface; wheel drivers follow their vendor protocol.
 
 **CAN ID allocation (initial)**
 
@@ -451,7 +455,7 @@ Rules:
 
 - Lower IDs have higher priority; E-stop and heartbeat must never be delayed by telemetry.
 - Control commands are **latest-value** semantics. Telemetry is loss-tolerant and may be dropped under overload.
-- Actuators may use their own vendor ID range; the MCU maps the 2 hip QDDs and 2 wheel drivers to four normalized joint IDs.
+- Actuators may use their own vendor ID range; the MCU maps the 2 RS02 hips and 2 RS05 wheels to four normalized joint IDs.
 - All multi-byte fields are little-endian.
 
 ### 5.3. Application protocol and framing
@@ -507,9 +511,9 @@ struct Frame {
 
 | Bus | Devices | Rate | Notes |
 |---|---|---|---|
-| SPI | IMU (ICM-42688-P), optional flash | 10-24 MHz | DMA, DRDY interrupt, timestamp at sample |
-| I2C | Temperature, power monitor, EEPROM | 400 kHz-1 MHz | Keep away from noisy motor lines; use pull-ups |
-| ADC | Current sense, voltage, temperature | 10-100 kHz | Injected/regular conversions synchronized to PWM |
+| SPI | Optional high-rate IMU (ICM-42688-P), CAN controller (Pico 2 W), flash | 10-24 MHz | DMA, interrupt, timestamp at sample |
+| I2C | BNO055, temperature, power monitor, EEPROM | 400 kHz-1 MHz | Keep away from noisy motor lines; use pull-ups |
+| ADC | Current sense, voltage, temperature | 10-100 kHz | Synchronized to PWM; Pico 2 W needs an external ADC for the full set |
 | Timers | Encoders, PWM, FOC | hardware | Use hardware quadrature where available |
 | GPIO | E-stop feedback, driver enable, fan | event | Default safe state on reset |
 
@@ -572,7 +576,6 @@ Rules:
 
 - `jbot_protocol`: `no_std`-compatible message definitions, `postcard` schema, COBS/CRC framing, shared with firmware.
 - `jbot_safety`: state machine, fault codes, watchdog policy, limit checks.
-- `jbot_sim`: plant model, sensor simulation, replay harness.
 - `jbot_teleop`: joystick/gamepad and web teleoperation.
 - `firmware/`: MCU binary using the same `jbot_protocol` crate.
 
@@ -581,9 +584,10 @@ Rules:
 | Crate | Responsibility | Status |
 |---|---|---|
 | `jbot_common` | Shared types, math, config, message definitions | Kinematics and config baseline |
-| `jbot_hardware` | CAN/UART/USB transports, sensor and actuator drivers | Skeleton |
-| `jbot_estimation` | EKF, attitude filters, odometry fusion | Skeleton |
-| `jbot_control` | Balance, velocity, posture, safety envelope | 2D WIP and LQR baseline |
+| `jbot_hardware` | CAN/UART/USB transports, sensor and actuator drivers | Skeleton; provisional BNO055, TJA1051T/3, ExpressLRS, RobStride RS02/RS05 |
+| `jbot_estimation` | EKF, attitude filters, odometry fusion | Complementary and Madgwick attitude filters; EKF pending |
+| `jbot_control` | Balance, velocity, posture, safety envelope | 2D WIP, LQR, and speed-loop baseline |
+| `jbot_sim` | Plant model, sensor simulation, replay harness | Fixed-step 2D WIP, sensor, delay, and replay baseline |
 | `jbot_navigation` | Costmaps, global/local planning, path tracking | Skeleton |
 | `jbot_node` | Runtime composition, middleware, supervision, CLI | Skeleton |
 
@@ -810,7 +814,7 @@ DAMPING ──► FAULT ──► SHUTDOWN
 
 | Quantity | Limit | Action |
 |---|---|---|
-| Actuator current | Per-actuator and total (hip QDD + wheel) | Current limit, then fault |
+| Actuator current | Per-actuator and total (RS02 hip + RS05 wheel) | Current limit, then fault |
 | Actuator temperature | Vendor limit minus margin | Derate, then disable |
 | Battery voltage | 16.0 / 15.5 / 15.0 V | Warn / derate / stop |
 | Body tilt | Configurable (e.g., 25-35 deg) | Reduce torque, then damping |
@@ -867,7 +871,7 @@ DAMPING ──► FAULT ──► SHUTDOWN
 |---|---|---|
 | Linux scheduling jitter | Poor high-level loop timing | Keep 1 kHz loop on MCU; use `PREEMPT_RT`, CPU isolation, RT priorities |
 | CAN FD signal integrity | Bus errors, dropped frames | Proper termination, short stubs, common-mode choke, scope validation |
-| ESP32-S3 lacks native CAN FD | Extra latency/complexity | Use STM32H7/Teensy for production; external CAN FD controller only for prototypes |
+| Selected MCU lacks native CAN FD | Extra latency/complexity | Benchmark STM32H7, Pico 2 W, and ESP32-S3; use an external CAN FD controller only for prototypes |
 | Milwaukee pack BMS latch-off | Unexpected power loss | Derate before cutoff; monitor voltage/current; test pack behavior under load |
 | EMI from motors | IMU/CAN/USB corruption | Shielding, twisted pairs, ferrites, grounding, physical separation |
 | Thermal throttling on RPi | Perception/nav slowdown | Heatsink/fan, thermal monitoring, graceful degradation |
@@ -889,15 +893,15 @@ DAMPING ──► FAULT ──► SHUTDOWN
 | ADR-006 | M18 5S input with 12 V / 5 V / 3.3 V rails | Matches available battery; 18 V limits top speed at 1.5 m/s; 24-36 V preferred for margin (open question 9) | Accepted (baseline) |
 | ADR-007 | Application CRC + sequence on all frames | Uniform error detection across CAN FD and UART | Proposed |
 | ADR-008 | SLAM: Rust-native stack vs `slam_toolbox`/Cartographer via the ROS2 bridge | Pending Phase 4 evaluation | Proposed |
-| ADR-009 | 1-DOF four-bar leg, one wheel per leg, 2 hip QDD + 2 wheel hub | Compact 4-actuator layout; motors in the body; known coupler curve; height and fore-aft are coupled | Accepted |
+| ADR-009 | 1-DOF four-bar leg, one wheel per leg, 2 RS02 hips + 2 RS05 wheels (provisional) | Compact 4-actuator layout; motors in the body; known coupler curve; height and fore-aft are coupled | Accepted |
 | ADR-010 | RobStride-class QDD on hips with integrated FOC; MCU is the balance/CAN/safety controller | Removes the custom hip power stage; vendor current loop; classic CAN 1 Mbit/s | Proposed |
 
 ---
 
 ## 11. Open Questions
 
-1. Final MCU choice and board design: STM32H723 vs H743 vs Teensy 4.1. Decide after an actuator/CAN benchmark.
-2. Actuator interface: hip QDD integrated (RobStride); wheel hub driver integrated vs external FOC. Affects CAN traffic and safety signals.
+1. Final MCU choice and board design: STM32H723/H743 vs Pico 2 W (RP2350) vs ESP32-S3. Decide after an actuator/CAN/ADC/jitter benchmark.
+2. Actuator interface: provisional RobStride RS02 hips and RS05 wheels with integrated FOC; substitute only with an equivalent CAN/torque/thermal envelope. Affects CAN traffic and safety signals.
 3. Leg topology: **decided** — 1-DOF four-bar (base A-B, upper crank A-C, lower rocker B-D, wheel fork C-D-E, optional spring). Remaining: link lengths, spring rate/travel, height range, and the E-position.
 4. LiDAR/camera selection and mounting; impact on SLAM and AI compute budget.
 5. Whether Nav2 is used as-is (C++ via bridge) or replaced by a Rust planner. Affects `jbot_navigation`.

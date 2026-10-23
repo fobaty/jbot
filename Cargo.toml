@@ -4,6 +4,7 @@ members = [
     "crates/jbot_hardware",
     "crates/jbot_estimation",
     "crates/jbot_control",
+    "crates/jbot_sim",
     "crates/jbot_navigation",
     "crates/jbot_node",
 ]

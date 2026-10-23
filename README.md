@@ -7,7 +7,7 @@
 Dynamically stable locomotion, real-time motor control, LiDAR SLAM, and autonomous navigation — from the first simulation model to a field-ready platform.
 
 [![Rust](https://img.shields.io/badge/Rust-2021-000000?logo=rust&logoColor=white)](https://www.rust-lang.org/)
-[![Platform](https://img.shields.io/badge/Platform-Raspberry%20Pi%205%20%2B%20STM32H7-c51a4a)](docs/architecture.md)
+[![Platform](https://img.shields.io/badge/Platform-Raspberry%20Pi%205%20%2B%20RT%20MCU-c51a4a)](docs/architecture.md)
 [![Status](https://img.shields.io/badge/Status-Phase%201%20%C2%B7%20Design-blue)](docs/roadmap.md)
 [![Docs](https://img.shields.io/badge/Docs-SRS%20%C2%B7%20Architecture%20%C2%B7%20Roadmap-informational)](docs/)
 [![Unsafe](https://img.shields.io/badge/unsafe-forbidden-success)](docs/skills/rust_robotics_guidelines.md)
@@ -26,8 +26,12 @@ The design follows a strict split between a **hard real-time MCU** and a **Linux
 |---|---|
 | **Balance loop** | 1 kHz on MCU, jitter < 50 µs |
 | **Leg mechanism** | 1-DOF four-bar per leg, one wheel per leg |
-| **Actuators** | 2× hip QDD + 2× wheel hub = 4 motors |
-| **Hip actuator loop** | Integrated QDD FOC (vendor firmware) |
+| **Actuators** | 2× RobStride RS02 hips + 2× RS05 wheels = 4 motors (provisional) |
+| **Hip actuator loop** | Integrated RobStride FOC (vendor firmware) |
+| **MCU candidates** | Pico 2 W (RP2350), ESP32-S3, STM32H7 |
+| **IMU** | BNO055, 100 Hz fusion with gyro propagation at 1 kHz |
+| **RC link** | ExpressLRS 2.4G receiver / LiteRadio 3 Pro |
+| **Actuator bus** | Classic CAN 1 Mbit/s via TJA1051T/3 |
 | **Command timeout → safe stop** | 100 ms |
 | **State estimation** | 100–200 Hz EKF |
 | **Autonomy** | LiDAR SLAM, costmaps, global/local planning |
@@ -41,9 +45,13 @@ The baseline is a two-wheeled balancing robot with **four motors**:
 
 | Actuator | Qty | Location | Role |
 |---|---:|---|---|
-| Hip QDD | 2 | Body / chassis | Drives the upper crank of each four-bar leg |
-| Wheel hub motor | 2 | Wheel axle | Drives one wheel per leg |
+| Hip actuator (provisional) | 2 | Body / chassis | RobStride RS02 drives the upper crank of each four-bar leg |
+| Wheel actuator (provisional) | 2 | Wheel axle | RobStride RS05 drives one wheel per leg |
 | **Total** | **4** | | |
+
+The actuator models are provisional and may be replaced by cheaper equivalents
+with the same CAN, torque/speed, thermal, and mounting envelope. See
+[`docs/hardware.md`](docs/hardware.md) for the full selection and caveats.
 
 Each leg is a planar **1-DOF four-bar linkage** — not a 2-DOF five-bar and not a serial two-link leg. The "knee" is a rigid bend of the wheel fork, not an articulated joint. The **base is the chassis link A–B**; the wheel is a single ground contact at **E**.
 
@@ -58,9 +66,9 @@ Each leg is a planar **1-DOF four-bar linkage** — not a 2-DOF five-bar and not
 | Element | Type | Motor / function |
 |---|---|---|
 | A–B | Ground link | **Base / chassis** — fixed to the body |
-| A | Revolute joint | **Hip QDD** — driven |
+| A | Revolute joint | **RobStride RS02 hip** — driven |
 | B | Revolute joint | Passive rocker pivot on the base |
-| A–C | Upper crank | Driven by the hip QDD |
+| A–C | Upper crank | Driven by the RobStride RS02 |
 | B–D | Lower rocker | Passive |
 | C–D–E | Wheel fork | One rigid coupler; E is the wheel axle |
 | E | Wheel axle | **Hub motor** — driven |
@@ -70,18 +78,18 @@ Each leg is a planar **1-DOF four-bar linkage** — not a 2-DOF five-bar and not
 
 ### Why this layout
 
-- **Both hip motors sit in the body.** The leg carries no hip actuator; unsprung mass is limited to the wheel, fork, and links.
+- **Both hip motors sit in the body.** The leg carries no hip actuator; unsprung mass is limited to the wheel, fork, and links. The provisional hip actuator is the RobStride RS02.
 - **One wheel per leg.** Two ground contacts total, no dual-wheel scrub, and the 4-motor count stays fixed.
 - **1 active leg DOF.** Height and fore-aft offset follow one coupler curve; the mechanism is stiff and simple, but those two quantities cannot be commanded independently.
 - **3D balance allocation.** Pitch via wheel torque, yaw via differential wheel torque, height via the common hip angle, and roll via differential hip height.
-- **Passive spring is optional.** It absorbs impacts and protects the QDD output bearing; the balance controller must include its compliance when fitted.
+- **Passive spring is optional.** It absorbs impacts and protects the hip actuator output bearing; the balance controller must include its compliance when fitted.
 
 ---
 
 ## Key Features
 
-- **Deterministic real-time core** — 1 kHz balancing, integrated QDD actuator loops, hardware watchdog, and a fail-safe stop path enforced below the OS.
-- **Four-bar legs with four motors** — two hip QDDs in the body and two wheel hub motors, one wheel per leg; a passive lower rocker and an optional spring keep the leg rigid and impact-tolerant.
+- **Deterministic real-time core** — 1 kHz balancing, integrated RobStride actuator loops, hardware watchdog, and a fail-safe stop path enforced below the OS.
+- **Four-bar legs with four motors** — two RobStride RS02 hips in the body and two RS05 wheel actuators, one wheel per leg; a passive lower rocker and an optional spring keep the leg rigid and impact-tolerant.
 - **Safety-first architecture** — dual-channel hardware E-stop, battery protection, precharge, and actuator-power contactor independent of software.
 - **Rust workspace with one-way dependencies** — perception and control crates are pure computation with no I/O and are fully unit-testable.
 - **Onboard autonomy** — LiDAR SLAM without external positioning infrastructure, waypoint missions, patrolling, and teleoperation.
@@ -107,30 +115,32 @@ flowchart TB
         SUP["Supervisor"]
     end
 
-    subgraph MCU["Real-time MCU — STM32H7 / Teensy 4.1"]
+    subgraph MCU["Real-time MCU — Pico 2 W / ESP32-S3 / STM32H7"]
         BAL["Balance control 1 kHz"]
         ACT["Actuator commands over CAN"]
-        IMU["IMU sampling 1–4 kHz"]
+        IMU["BNO055 100 Hz fusion + gyro propagation"]
+        RC["ExpressLRS 2.4G / CRSF"]
         WD["Watchdog"]
     end
 
     subgraph HW["Power & actuation"]
-        MOT["2× hip QDD (integrated FOC)<br/>2× wheel hub"]
-        SEN["QDD feedback · wheel encoders · IMU"]
+        MOT["2× RobStride RS02 hips<br/>2× RS05 wheel actuators"]
+        SEN["RS02/RS05 feedback · IMU"]
         PWR["M18 18 V baseline · protection · DC-DC · E-stop"]
     end
 
     SSH <-->|"Ethernet / Wi-Fi"| RPi
     PER --> EST --> NAV
     SLAM --> NAV --> BEH
-    BEH -->|"CAN FD (primary)\nUART (fallback)"| MCU
+    BEH -->|"CAN FD / classic CAN\nUART (fallback)"| MCU
     SUP -.-> BEH
     IMU --> BAL --> ACT
+    RC --> BAL
     ACT --> MOT --> SEN --> MCU
     PWR --> MOT
 ```
 
-Full rationale, timing budgets, and the safety concept are in [`docs/architecture.md`](docs/architecture.md).
+Full rationale, timing budgets, and the safety concept are in [`docs/architecture.md`](docs/architecture.md). Provisional hardware selections and constraints are in [`docs/hardware.md`](docs/hardware.md).
 
 ---
 
@@ -146,6 +156,7 @@ jbot/
 │   ├── jbot_hardware/          # HAL: CAN/serial transport, sensors, actuators
 │   ├── jbot_estimation/        # EKF / attitude estimation (no I/O)
 │   ├── jbot_control/           # Balance control and trajectory generation (no I/O)
+│   ├── jbot_sim/               # Fixed-step WIP simulation and verification
 │   ├── jbot_navigation/        # Costmaps, planners, navigation stack
 │   └── jbot_node/              # High-level executable for the Raspberry Pi 5
 └── docs/
@@ -153,6 +164,7 @@ jbot/
     ├── architecture.md         # System architecture and safety concept
     ├── kinematics.md           # Four-bar and differential-drive model
     ├── control_model.md        # 2D WIP, ZOH discretization, LQR baseline
+    ├── simulation.md           # Fixed-step RK4, records, replay, recovery tests
     ├── roadmap.md              # Phased delivery plan and gate criteria
     ├── system_requirements.md  # High-level requirements
     ├── agent_workflow.md       # Engineering workflow
@@ -238,6 +250,7 @@ This robot stores enough energy to injure people and damage property. The safety
 | [`docs/architecture.md`](docs/architecture.md) | Compute tiers, interfaces, power, safety concept |
 | [`docs/kinematics.md`](docs/kinematics.md) | Four-bar leg, differential drive, parameter provenance |
 | [`docs/control_model.md`](docs/control_model.md) | 2D WIP model, linearization, ZOH, LQR baseline |
+| [`docs/simulation.md`](docs/simulation.md) | Fixed-step RK4, versioned records, replay, recovery tests |
 | [`docs/system_requirements.md`](docs/system_requirements.md) | Hardware and software requirements |
 | [`docs/roadmap.md`](docs/roadmap.md) | Phases, gates, schedule, critical path |
 | [`docs/tasks.md`](docs/tasks.md) | Granular task breakdown |

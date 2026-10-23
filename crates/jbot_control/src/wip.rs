@@ -199,6 +199,20 @@ impl WheeledInvertedPendulum {
         state: StateVector,
         total_wheel_torque_nm: f64,
     ) -> Result<StateVector, WipError> {
+        self.derivative_with_slope(state, total_wheel_torque_nm, 0.0)
+    }
+
+    /// Nonlinear derivative on a slope.
+    ///
+    /// `slope_rad` is positive uphill, and `theta` remains the body pitch from
+    /// world vertical. The slope adds a constant gravity force along `x` and
+    /// shifts the inertial coupling angle.
+    pub fn derivative_with_slope(
+        &self,
+        state: StateVector,
+        total_wheel_torque_nm: f64,
+        slope_rad: f64,
+    ) -> Result<StateVector, WipError> {
         for (index, value) in state.iter().enumerate() {
             if !value.is_finite() {
                 return Err(WipError::NonFiniteInput {
@@ -213,6 +227,12 @@ impl WheeledInvertedPendulum {
                 value: total_wheel_torque_nm,
             });
         }
+        if !slope_rad.is_finite() || slope_rad.abs() >= std::f64::consts::FRAC_PI_2 {
+            return Err(WipError::InvalidParameter {
+                name: "slope_rad",
+                value: slope_rad,
+            });
+        }
 
         let x_dot = state[1];
         let theta = state[2];
@@ -222,9 +242,14 @@ impl WheeledInvertedPendulum {
         let gravity = self.parameters.body_mass_kg
             * self.parameters.gravity_mps2
             * self.parameters.com_height_m;
-        let cos_theta = theta.cos();
+        let slope_force = (self.parameters.body_mass_kg + self.parameters.wheel_mass_kg)
+            * self.parameters.gravity_mps2
+            * slope_rad.sin();
+        let coupling_angle = theta + slope_rad;
+        let cos_coupling = coupling_angle.cos();
+        let sin_coupling = coupling_angle.sin();
         let sin_theta = theta.sin();
-        let determinant = a11 * c22 - coupling * coupling * cos_theta * cos_theta;
+        let determinant = a11 * c22 - coupling * coupling * cos_coupling * cos_coupling;
 
         if !determinant.is_finite() || determinant <= 1e-9 {
             return Err(WipError::DegenerateConfiguration {
@@ -233,12 +258,12 @@ impl WheeledInvertedPendulum {
             });
         }
 
-        let rhs_x = total_wheel_torque_nm / self.parameters.wheel_radius_m
-            + coupling * sin_theta * theta_dot * theta_dot;
+        let rhs_x = total_wheel_torque_nm / self.parameters.wheel_radius_m - slope_force
+            + coupling * sin_coupling * theta_dot * theta_dot;
         let rhs_theta = -total_wheel_torque_nm + gravity * sin_theta;
 
-        let x_ddot = (rhs_x * c22 - coupling * cos_theta * rhs_theta) / determinant;
-        let theta_ddot = (a11 * rhs_theta - coupling * cos_theta * rhs_x) / determinant;
+        let x_ddot = (rhs_x * c22 - coupling * cos_coupling * rhs_theta) / determinant;
+        let theta_ddot = (a11 * rhs_theta - coupling * cos_coupling * rhs_x) / determinant;
 
         Ok(StateVector::new(x_dot, x_ddot, theta_dot, theta_ddot))
     }
@@ -531,6 +556,45 @@ mod tests {
         assert!(matches!(
             plant.discrete(0.0),
             Err(WipError::InvalidParameter { name: "dt_s", .. })
+        ));
+    }
+
+    #[test]
+    fn zero_slope_matches_the_horizontal_model() {
+        let plant = baseline();
+        let state = StateVector::new(0.1, -0.2, 0.03, 0.04);
+
+        let horizontal = plant.derivative(state, 1.5).expect("valid state");
+        let zero_slope = plant
+            .derivative_with_slope(state, 1.5, 0.0)
+            .expect("valid state");
+
+        assert_eq!(horizontal, zero_slope);
+    }
+
+    #[test]
+    fn slope_accelerates_downhill_and_pitches_the_body() {
+        let plant = baseline();
+        let slope = 10.0_f64.to_radians();
+        let derivative = plant
+            .derivative_with_slope(StateVector::zeros(), 0.0, slope)
+            .expect("valid slope");
+
+        assert!(derivative[1] < 0.0);
+        assert!(derivative[3] > 0.0);
+    }
+
+    #[test]
+    fn rejects_invalid_slope() {
+        let plant = baseline();
+        let result =
+            plant.derivative_with_slope(StateVector::zeros(), 0.0, std::f64::consts::FRAC_PI_2);
+        assert!(matches!(
+            result,
+            Err(WipError::InvalidParameter {
+                name: "slope_rad",
+                ..
+            })
         ));
     }
 }

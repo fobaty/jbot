@@ -8,7 +8,7 @@
 | Date | 2026-10-22 |
 | Status | Draft, Phase 1 baseline |
 | Scope | 2D wheeled inverted pendulum, linearization, ZOH discretization, LQR |
-| Code map | `crates/jbot_control/src/wip.rs`, `crates/jbot_control/src/lqr.rs` |
+| Code map | `crates/jbot_control/src/wip.rs`, `crates/jbot_control/src/lqr.rs`, `crates/jbot_control/src/velocity.rs` |
 
 ## 1. Purpose and scope
 
@@ -229,6 +229,37 @@ All are inside the unit circle. The closed-loop poles are close to the unit
 circle because the position loop is intentionally slow; this is expected for
 the chosen `Q` and `R`.
 
+
+### 8.1 Outer velocity loop
+
+`VelocityController` wraps the balancing LQR with a speed loop. It tracks a
+commanded forward velocity `v_cmd` and leaves position free:
+
+```text
+e_v      = v_cmd - x_dot
+z        = clamp(z + e_v * dt, -z_max, z_max)
+theta_ref = clamp(kp * e_v + ki * z, -theta_ref_max, theta_ref_max)
+x_ref    = [x, v_cmd, theta_ref, 0]
+u        = -K (x - x_ref)
+```
+
+Position feedback is disabled deliberately (`x_ref[0] = x`): a velocity command
+has no position setpoint, and using `x_ref[0] = v_cmd * t` would create a
+conflicting position target and large transient overshoot. Position drift is
+therefore expected for a pure velocity command.
+
+Anti-windup freezes `z` when the torque or pitch reference saturates while the
+velocity error still pushes in the same direction as the pitch reference. The
+output is clamped to `max_torque_nm`. Default gains are `kp = 0.15 rad/(m/s)`,
+`ki = 0.03 rad/m`, `theta_ref_max = 10 deg`, `z_max = 1 m`.
+
+The 0.5 m/s step test on the flat 2D plant uses a 1 ms step, a 10 N*m torque
+limit, and a 100 A current limit. It settles within 5 percent in 1.0 s, reaches
+a 0.588 m/s peak, and finishes at 0.507 m/s with no fall over 10 s. Peak torque
+is 4.19 N*m, well inside both limits
+(`velocity_step_tracks_without_sustained_overshoot`). Yaw tracking is not part of
+the 2D model.
+
 ## 9. Numerical notes
 
 - The ZOH uses `nalgebra`'s matrix exponential on a 6x6 augmented matrix.
@@ -243,21 +274,27 @@ the chosen `Q` and `R`.
 ## 10. Current limitations
 
 - No 3D roll/yaw dynamics or four-bar height/offset coupling (`M1-11` extension).
-- No leg inertia, spring, friction, slip, dead zone, or command delay (`M1-15`).
-- No torque saturation or per-wheel allocation (`M1-20`).
-- No outer velocity or yaw loop (`M1-18`).
+- No leg inertia, spring, or slip (`M1-15`); friction, dead zone, and command
+  delay exist only in the simulator's actuator path, not in the control model.
+- No per-wheel torque allocation (`M1-20`); the model uses total wheel torque.
+- The outer velocity loop covers forward speed only; yaw tracking is absent
+  (`M1-18` partial).
 - The `Q`/`R` selection is a starting point, not a tuned trade-off study
   (`M1-17`).
-- The gain has not yet been validated on the nonlinear plant in a simulator.
+- The gain is validated on the nonlinear 2D plant in `jbot_sim` for a 10 degree
+  tilt, a 10 N*s impulse, a 10 degree slope, a 20 percent mass/CoM change, and a
+  0.5 m/s velocity step.
+- The nonlinear derivative supports a constant slope, but the LQR gain and ZOH
+  model are still synthesized for horizontal ground. 3D and hardware validation
+  remain open.
 - Parameter uncertainty is not propagated; the stability margins under parameter
   spread remain to be measured (`M1-36`).
 
 ## 11. Next increments
 
-1. Validate the LQR gain on the nonlinear 2D plant with RK4 and disturbance
-   injection.
-2. Add torque saturation and the per-wheel torque split.
+1. Validate the velocity loop under inertial load and add yaw tracking.
+2. Add the per-wheel torque split and current limits (`M1-20`).
 3. Extend the model to 3D with roll, yaw, and four-bar height/offset coupling.
 4. Map controllability and stability margins over the parameter uncertainty.
-5. Tune `Q` and `R` against the "recovery time / current / oscillation"
-   trade-off and record the selected weights.
+5. Tune `Q`, `R`, and the velocity gains against the "recovery time / current /
+   oscillation" trade-off and record the selected values.

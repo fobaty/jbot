@@ -1,0 +1,8 @@
+[package]
+name = "jbot_sim"
+version = "0.1.0"
+edition = "2021"
+authors = ["Chief Robotics Architect"]
+
+[dependencies]
+jbot_control = { path = "../jbot_control" }

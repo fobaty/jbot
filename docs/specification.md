@@ -76,7 +76,7 @@ The Robot is intended for:
 
 **Included in the baseline version scope:**
 
-- two wheel hub drives and two hip QDDs driving 1-DOF four-bar legs for maintaining height and posture;
+- two RobStride RS05 wheel drives and two RS02 hips driving 1-DOF four-bar legs for maintaining height and posture;
 - balancing on a plane, forward/backward movement, and turning;
 - lidar SLAM, map building and loading, waypoint navigation;
 - monitoring of the battery, temperatures, communication, and faults;
@@ -97,15 +97,15 @@ The Robot is intended for:
 
 ### 3.1. Robot composition
 
-1. Mechanical platform: body/chassis (the base/ground link), two legs, each a planar 1-DOF four-bar with one wheel; four actuators total (2 hip QDD + 2 wheel hub).
+1. Mechanical platform: body/chassis (the base/ground link), two legs, each a planar 1-DOF four-bar with one wheel; four actuators total (2 RobStride RS02 hips + 2 RS05 wheels).
 2. Power subsystem: M18 18 V baseline (24–36 V preferred), protection, contactor, DC-DC 12 V / 5 V / 3.3 V, E-stop.
 3. Computing subsystem:
-   - real-time MCU of the STM32H723/H743 class (Teensy 4.1 / ESP32-S3 permitted on the prototype);
+   - real-time MCU candidates: Pico 2 W (RP2350), ESP32-S3, STM32H723/H743; ADR-001 selects after benchmark;
    - Raspberry Pi 5 16 GB;
-   - hip QDD integrated FOC; wheel hub driver integrated or external FOC (open decision);
-   - CAN FD backbone, classic CAN 1 Mbit/s actuator bus, backup UART.
+   - provisional RobStride RS02 hips and RS05 wheels with integrated FOC; substitution allowed only with an equivalent CAN/torque/thermal envelope;
+   - CAN FD backbone where required, classic CAN 1 Mbit/s actuator bus via TJA1051T/3, backup UART; Pico 2 W needs an external CAN controller.
 4. Sensor subsystem:
-   - IMU ICM-42688-P or BNO085;
+   - IMU BNO055 (100 Hz fusion); ICM-42688-P retained as a high-rate fallback;
    - 2D or 3D lidar;
    - optional RGB-D camera.
 5. Software:
@@ -213,8 +213,8 @@ The Robot is intended for:
 
 | ID | Requirement | Priority |
 |---|---|---|
-| MOB-01 | Wheeled-biped configuration: two legs, one wheel per leg; each leg is a planar 1-DOF four-bar (base A–B, upper crank A–C driven by a hip QDD, lower rocker B–D passive, wheel fork C–D–E). Height and fore-aft offset are coupled along the coupler curve. | P1 |
-| MOB-02 | Actuators — four total: two hip QDDs with integrated FOC/encoder/driver and two wheel hub motors (integrated or external FOC); feedback on position, speed, current, and temperature | P1 |
+| MOB-01 | Wheeled-biped configuration: two legs, one wheel per leg; each leg is a planar 1-DOF four-bar (base A–B, upper crank A–C driven by a RobStride RS02 hip, lower rocker B–D passive, wheel fork C–D–E). Height and fore-aft offset are coupled along the coupler curve. | P1 |
+| MOB-02 | Actuators — four total: two provisional RobStride RS02 hips with integrated FOC/encoder/driver and two RS05 wheels (integrated or external FOC); feedback on position, speed, current, and temperature | P1 |
 | MOB-03 | Balance control — PD / LQR / VMC, configurable; supports 3D balance: pitch via wheel torque, yaw via differential wheel torque, height via common hip angle, roll via differential hip height | P1 |
 | MOB-04 | Modes: `IDLE`, `BALANCE`, `DAMPING`, `FAULT`, `E_STOP`, `SHUTDOWN` | P1 |
 | MOB-05 | Transitions between modes — only via a validated command and precondition checks | P1 |
@@ -436,7 +436,7 @@ The Robot is intended for:
 | INT-09 | External operator CAN port — isolated | P2 |
 | INT-10 | Power: VBAT 15–21 V (M18 baseline; 24–36 V preferred), 12 V / 5 A, 5 V / 5–6 A, 3.3 V / 1 A | P1 |
 
-> **Actuator bus note:** the RobStride-class hip QDDs use classic CAN 1 Mbit/s, not CAN FD. The MCU bridges the actuator bus to the CAN FD backbone; INT-01 applies to the RPi–MCU backbone.
+> **Actuator bus note:** the RobStride RS02/RS05 actuators use classic CAN 1 Mbit/s through a TJA1051T/3 transceiver, not CAN FD. The MCU bridges the actuator bus to the CAN FD backbone; INT-01 applies to the RPi–MCU backbone.
 
 ### 8.2. Software requirements
 
@@ -567,8 +567,8 @@ The Robot is intended for:
 
 ## 14. Open questions
 
-1. Final MCU selection: STM32H723 / H743 / Teensy 4.1 — based on bench test results for FOC and CAN FD.
-2. Actuator interface: hip QDD integrated (RobStride); wheel hub driver integrated or external FOC.
+1. Final MCU selection: STM32H723/H743, Pico 2 W (RP2350), or ESP32-S3 — based on bench results for FOC, CAN, ADC, jitter, and latency.
+2. Actuator interface: provisional RobStride RS02 hips and RS05 wheels; substitution requires an equivalent CAN/torque/thermal envelope.
 3. Leg topology: decided — 1-DOF four-bar (base A–B, upper crank A–C, lower rocker B–D, wheel fork C–D–E, optional spring). Remaining: link lengths, spring rate/travel, height range, and E-position.
 4. Selection of lidar and camera, their mounting, and impact on the mass/power budget.
 5. Nav2 as is via the bridge or a fully Rust `jbot_navigation` stack.

@@ -23,25 +23,25 @@ The **JBOT-WheeledBiped** is an advanced autonomous robotic platform combining w
 
 ### 2.2. Compute Architecture
 - **High-Level Computer:** Raspberry Pi 5 (16GB RAM) running Linux (Ubuntu Server / Raspberry Pi OS 64-bit). Responsible for navigation, perception, high-level planning, and middleware bridging.
-- **Low-Level Microcontroller:** ESP32-S3 or Teensy 4.1. Responsible for the 1 kHz balance loop, IMU sampling, CAN coordination, safety watchdog, and supervisory control of the actuators. Hip QDD actuators integrate FOC, encoder, and driver; wheel hub motors may integrate their driver or use an external FOC stage (open decision).
-- **Interconnect:** CAN FD backbone between the MCU and Raspberry Pi 5, plus a classic CAN 1 Mbit/s actuator bus for the RobStride-class hip QDDs; UART as a deterministic fallback.
+- **Low-Level Microcontroller:** candidates are Pico 2 W (RP2350), ESP32-S3, and STM32H723/H743; ADR-001 selects one after benchmark. Responsible for the 1 kHz balance loop, attitude acquisition, CAN coordination, RC input, safety watchdog, and supervisory control of the actuators. The provisional RobStride RS02 hips and RS05 wheels integrate FOC, encoder, and driver. Pico 2 W needs an external CAN controller and external ADC.
+- **Interconnect:** CAN FD backbone between the MCU and Raspberry Pi 5 where required, plus a classic CAN 1 Mbit/s actuator bus through a TJA1051T/3 transceiver for the RobStride actuators; UART as a deterministic fallback. The RC receiver uses CRSF UART.
 
 ### 2.3. Actuation & Mechanics
-- **Actuator count:** four motors total — two hip QDDs in the body and two wheel hub motors, one wheel per leg.
-- **Hip actuators:** QDD class 36–60 N·m peak (for example RobStride RS06 or RS03) with integrated FOC, encoder, and driver. For a 15 kg platform, RS02 is a marginal choice and RS05 is insufficient.
-- **Wheel actuators:** 6.5–8 in hub motors with at least 5–8 N·m per wheel, or an equivalent QDD. Each wheel has its own motor; dual wheels per leg are not part of the baseline.
+- **Actuator count:** four motors total — two RobStride RS02 hips in the body and two RobStride RS05 wheels, one wheel per leg. Both selections are provisional.
+- **Hip actuators:** provisional RobStride RS02 with approximately 17 N·m peak, integrated FOC, encoder, and driver. Preliminary sizing flags the RS02 as marginal for a 15 kg platform; verify continuous torque and thermal margin before committing. RS05 is reserved for the wheels.
+- **Wheel actuators:** provisional RobStride RS05, one per wheel; verify at least 5–8 N·m per wheel and the thermal envelope. Each wheel has its own motor; dual wheels per leg are not part of the baseline.
 - **Wheels:** one smooth-tread wheel per leg for indoor use; off-road tires are an optional swap.
 - **Wheel drive:** one powered wheel per leg avoids the scrub of a locked dual-wheel axle. Traction and slip must be validated on the target surface.
 
 ### 2.4. Leg Mechanism (1-DOF Four-Bar)
-- **Topology:** each leg is a planar four-bar linkage with one active DOF. The links are the ground link **A–B** (the chassis/base), the upper crank **A–C** driven by the hip QDD, the lower rocker **B–D** (passive), and the wheel fork **C–D–E** (one rigid coupler) with the wheel axle at **E**.
+- **Topology:** each leg is a planar four-bar linkage with one active DOF. The links are the ground link **A–B** (the chassis/base), the upper crank **A–C** driven by the RobStride RS02 hip, the lower rocker **B–D** (passive), and the wheel fork **C–D–E** (one rigid coupler) with the wheel axle at **E**.
 - **Base:** the base is the chassis link **A–B**, which connects the hip motor axis A and the passive rocker pivot B. The moving wheel fork is not the base.
 - **Knee:** the bend of the wheel fork is rigid; there is no articulated knee joint and no independent shank control.
 - **Coupled motion:** the hip angle sets the wheel position along a fixed coupler curve. Body height and wheel fore-aft offset are coupled and cannot be commanded independently.
 - **Compliance:** an optional spring/damper between the base and the upper crank provides passive suspension and impact relief. It does not add a controllable DOF; its stiffness and travel must be included in the model if fitted.
 
 ### 2.5. Sensors
-- **IMU:** ICM-42688-P or BNO085 (6/9-DoF high-precision inertial measurement unit, mounted near base/body center).
+- **IMU:** BNO055 9-DoF IMU with 100 Hz fusion, mounted near the base/body center. The 1 kHz loop uses gyro propagation; ICM-42688-P is the high-rate fallback. Calibration must persist across reboots.
 - **LiDAR:** 2D LiDAR (e.g., RPLIDAR / LDROBOT) or 3D LiDAR (e.g., Livox / Ouster mini) for SLAM and obstacle detection.
 - **Vision (Optional/Upgrade):** RGB-D camera (e.g., Intel RealSense D435i / OAK-D) for visual SLAM and object detection.
 

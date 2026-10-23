@@ -1,9 +1,11 @@
 //! Balance control algorithms and trajectory generators.
 
 pub mod lqr;
+pub mod velocity;
 pub mod wip;
 
 pub use lqr::{solve_discrete_lqr, LqrController, LqrError, LqrGain, LqrWeights};
+pub use velocity::{VelocityController, VelocityError, VelocityGains};
 pub use wip::{
     ContinuousModel, DiscreteModel, StateMatrix, StateVector, WheeledInvertedPendulum, WipError,
     WipParameters,

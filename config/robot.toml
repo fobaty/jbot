@@ -4,6 +4,11 @@
 # must be replaced by CAD or bench measurement before Gate G1. The uncertainty
 # is recorded next to each block; the validator rejects values that are
 # non-physical or that leave the four-bar leg with less than 100 mm of travel.
+#
+# Provisional hardware: BNO055 IMU, ExpressLRS 2.4G receiver (LiteRadio 3 Pro),
+# TJA1051T/3 CAN transceiver, RobStride RS02 hips and RS05 wheels. Actuator
+# models are provisional and may be replaced by cheaper equivalents. See
+# docs/hardware.md.
 
 schema_version = 1
 
@@ -49,14 +54,16 @@ spring_stiffness_nm_per_rad = 0.0
 spring_travel_rad = 0.0
 
 [drive]
-# Source: hub-motor datasheet placeholder for the 18 V baseline. Uncertainty: +/- 20%.
+# Source: RobStride RS05 provisional selection; value is still a placeholder
+# until the vendor torque/speed/thermal datasheet is confirmed. Uncertainty: +/- 20%.
 max_wheel_torque_nm = 8.0
 max_wheel_speed_rad_s = 40.0
 max_wheel_accel_rad_s2 = 120.0
 
 [hip]
-# Source: QDD datasheet placeholder. Uncertainty: +/- 20%.
-max_torque_nm = 25.0
+# Source: RobStride RS02 provisional peak torque, approximately 17 N*m.
+# Continuous torque and thermal derating are pending vendor data.
+max_torque_nm = 17.0
 max_speed_rad_s = 8.0
 
 [control]
