@@ -70,6 +70,11 @@ impl LqrGain {
     pub fn control(&self, state: StateVector) -> f64 {
         -(self.gain * state)[0]
     }
+
+    /// Compute the torque for `u = -K (x - reference)`.
+    pub fn control_with_reference(&self, state: StateVector, reference: StateVector) -> f64 {
+        -(self.gain * (state - reference))[0]
+    }
 }
 
 /// Solve the discrete algebraic Riccati equation and return the LQR gain.
@@ -172,6 +177,11 @@ impl LqrController {
     /// Total wheel torque for `u = -K x`.
     pub fn control(&self, state: StateVector) -> f64 {
         self.gain.control(state)
+    }
+
+    /// Total wheel torque for `u = -K (x - reference)`.
+    pub fn control_with_reference(&self, state: StateVector, reference: StateVector) -> f64 {
+        self.gain.control_with_reference(state, reference)
     }
 }
 

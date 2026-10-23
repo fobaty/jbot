@@ -52,7 +52,7 @@ Format: `M<module>-<number>`.
 
 ```text
 M1 WIP model and LQR
-  → M3 single hip QDD + wheel
+  → M3 single RS02 hip + RS05 wheel
   → M3 four actuators and balance on the safety frame
   → M4 RPi–MCU transport and lidar
   → M5 EKF and supervisor
@@ -119,7 +119,7 @@ In parallel: `M2` (power), `M7` (safety), `M10` (CI, documentation, procurement)
 | [x] M1-12 | Linearize the model in the vicinity of the vertical and zero speed; obtain matrices `A`, `B` | P1 | M1-11 | Matrices are reproduced from configuration parameters; verified by numerical linearization |
 | [~] M1-13 | Verify controllability and observability; determine the parameter range where the system is controllable | P1 | M1-12 | Report contains matrix ranks and parameter bounds; there is a test for loss of controllability |
 | [x] M1-14 | Perform ZOH discretization with a 1 ms step for the 1 kHz loop | P1 | M1-12 | Discrete model is compared with the continuous one; stability preservation test |
-| [ ] M1-15 | Account for non-idealities: torque saturation, dead zone, friction, slip, optional spring compliance, 5–10 ms command delay | P1 | M1-12 | Non-ideality model is parameterized and verified in simulation |
+| [~] M1-15 | Account for non-idealities: torque saturation, dead zone, friction, slip, optional spring compliance, 5–10 ms command delay | P1 | M1-12 | Non-ideality model is parameterized and verified in simulation; slip and spring compliance remain |
 
 ### 1.4. Controller synthesis
 
@@ -127,7 +127,7 @@ In parallel: `M2` (power), `M7` (safety), `M10` (CI, documentation, procurement)
 |---|---|---|---|---|
 | [x] M1-16 | Implement the Riccati equation solution and LQR matrix `K` calculation in `jbot_control` on `nalgebra` | P1 | M1-14 | Test on a known system; `K` is stable, closed-loop eigenvalues inside the unit circle |
 | [~] M1-17 | Set weights `Q` and `R`; document the tuning procedure and the "recovery time / current / oscillation" trade-off | P1 | M1-16 | Table of runs and selected weights; justification in the report |
-| [ ] M1-18 | Implement outer speed and yaw loops with anti-windup and output limiting | P1 | M1-16 | Step response without sustained overshoot; limits are respected |
+| [~] M1-18 | Implement outer speed and yaw loops with anti-windup and output limiting | P1 | M1-16 | Step response without sustained overshoot; limits are respected; speed loop done, yaw loop deferred to 3D |
 | [ ] M1-19 | Implement a tilt limit of 25–35°, fall detection and transition to `DAMPING` | P1 | M1-16 | Threshold exceedance test; transition occurs before loss of stability |
 | [ ] M1-20 | Implement torque distribution between wheels taking into account saturation and balance priority over yaw | P1 | M1-16, M1-18 | When one wheel saturates, balance is preserved; yaw degrades predictably |
 | [ ] M1-21 | Compare PD, LQR and VMC; select the base algorithm and write an ADR | P1 | M1-17, M1-18 | ADR contains comparison metrics and justification of the choice |
@@ -137,30 +137,30 @@ In parallel: `M2` (power), `M7` (safety), `M10` (CI, documentation, procurement)
 
 | ID | Task | Priority | Depends on | Acceptance criterion |
 |---|---|---|---|---|
-| [ ] M1-22 | Implement a complementary filter and Madgwick for pitch and roll | P1 | M1-01 | Tests on synthetic signals; pitch error within the specified value |
+| [x] M1-22 | Implement a complementary filter and Madgwick for pitch and roll | P1 | M1-01 | Synthetic static-tilt tests converge; pitch error below 0.3 degrees; invalid samples and steps are rejected |
 | [ ] M1-23 | Implement the EKF framework for estimating velocity and displacement by fusing IMU and wheel odometry | P1 | M1-06, M1-22 | EKF converges on a synthetic trajectory; covariances retain positive definiteness |
-| [ ] M1-24 | Simulate IMU noise, zero bias, encoder quantization and measurement delay | P1 | M1-22 | Models are parameterized; tests of robustness to noise and bias |
+| [x] M1-24 | Simulate IMU noise, zero bias, encoder quantization and measurement delay | P1 | M1-22 | Models are parameterized; tests of robustness to noise and bias |
 | [ ] M1-25 | Implement command delay estimation and compensation | P2 | M1-15, M1-23 | 10 ms delay is compensated; degradation under incorrect estimation is limited |
 
 ### 1.6. `jbot_sim` simulator
 
 | ID | Task | Priority | Depends on | Acceptance criterion |
 |---|---|---|---|---|
-| [ ] M1-26 | Create the `jbot_sim` crate with a fixed step and deterministic PRNG | P1 | M1-12 | The same seed and configuration produce a bit-identical trace |
-| [ ] M1-27 | Implement an RK4 integrator with a 0.1–1 ms step and time scaling for debugging | P1 | M1-26 | Test on an analytical solution; energy does not grow on a passive system |
-| [ ] M1-28 | Implement sensor models: IMU, encoders, current, battery voltage, simplified lidar | P1 | M1-24, M1-26 | Models produce data with timestamps and configurable noise |
-| [ ] M1-29 | Implement disturbance injection: 10 N·s impulse, 10° tilt, 10° slope, change in mass and CoM height | P1 | M1-26 | Disturbances are reproducible and parameterized |
-| [ ] M1-30 | Implement trace recording and replay for regression tests | P1 | M1-26 | Replay produces an identical result; format is versioned |
-| [ ] M1-31 | Prepare `rerun` visualization or equivalent: current, tilt, speed, trajectory | P2 | M1-30 | Plots are generated from the recorded trace without manual processing |
+| [x] M1-26 | Create the `jbot_sim` crate with a fixed step and deterministic PRNG | P1 | M1-12 | The same seed and configuration produce a bit-identical trace |
+| [~] M1-27 | Implement an RK4 integrator with a 0.1–1 ms step and time scaling for debugging | P1 | M1-26 | Test on an analytical solution; energy does not grow on a passive system |
+| [x] M1-28 | Implement sensor models: IMU, encoders, current, battery voltage, simplified lidar | P1 | M1-24, M1-26 | Models produce data with timestamps and configurable noise |
+| [x] M1-29 | Implement disturbance injection: 10 N·s impulse, 10° tilt, 10° slope, change in mass and CoM height | P1 | M1-26 | Disturbances are reproducible and parameterized |
+| [x] M1-30 | Implement trace recording and replay for regression tests | P1 | M1-26 | Replay produces an identical result; format is versioned |
+| [x] M1-31 | Prepare `rerun` visualization or equivalent: current, tilt, speed, trajectory | P2 | M1-30 | Plots are generated from the recorded trace without manual processing |
 
 ### 1.7. Model verification and Gate G1
 
 | ID | Task | Priority | Depends on | Acceptance criterion |
 |---|---|---|---|---|
-| [ ] M1-32 | Verify the response to a step speed command: overshoot, settling time, current | P1 | M1-18, M1-26 | Metrics within acceptable limits; plots attached |
-| [ ] M1-33 | Verify recovery after a 10 N·s impulse and a 10° deviation | P1 | M1-29 | Both scenarios complete without falling; current within limits |
-| [ ] M1-34 | Verify holding on a 10° slope in simulation | P1 | M1-29 | Holding for at least 10 min without slipping and model overheating |
-| [ ] M1-35 | Verify stability with 10 ms delay, sensor noise and torque saturation | P1 | M1-24, M1-25 | The system is stable in all combinations; bounds are documented |
+| [x] M1-32 | Verify the response to a step speed command: overshoot, settling time, current | P1 | M1-18, M1-26 | 0.5 m/s step settles within 5 percent in 1.0 s, peaks at 0.588 m/s, and draws 41.9 A peak; CSV/SVG export available |
+| [~] M1-33 | Verify recovery after a 10 N·s impulse and a 10° deviation | P1 | M1-29 | Both scenarios complete without falling; current within limits |
+| [~] M1-34 | Verify holding on a 10° slope in simulation | P1 | M1-29 | 10-minute simulation passes with sensors, friction, and delay; slip and thermal models remain |
+| [x] M1-35 | Verify stability with 10 ms delay, sensor noise and torque saturation | P1 | M1-24, M1-25 | The system is stable in all combinations; bounds are documented |
 | [ ] M1-36 | Run Monte Carlo over the spread of mass, friction and CoM position | P1 | M1-35 | The probability of falling and acceptable parameter ranges are determined |
 | [ ] M1-37 | Record stability margins and acceptable ranges; prepare the report "Model, linearization and balance controller synthesis" | P1 | M1-32…M1-36 | Report contains plots, tables and conclusions; suitable for comparison with the real system |
 | [ ] M1-38 | Conduct Gate G1 review and update the traceability matrix | P1 | M1-32…M1-37 | All G1 criteria are confirmed; open P1 requirements are not silently deferred |
@@ -220,20 +220,20 @@ In parallel: `M2` (power), `M7` (safety), `M10` (CI, documentation, procurement)
 
 ---
 
-## 3. M3. Low-level balance controller on Rust/ESP32
+## 3. M3. Low-level balance controller on Rust/MCU
 
-**Goal:** implement deterministic MCU firmware: hip QDD CAN control, wheel actuator loops (integrated or external), IMU and encoder acquisition, 1 kHz 3D balance loop, communication protocol, watchdog and safe states.
+**Goal:** implement deterministic MCU firmware: RobStride RS02/RS05 CAN control, wheel actuator loops (integrated or external), BNO055 and encoder acquisition, 1 kHz 3D balance loop, communication protocol, watchdog and safe states.
 
-**Platform:** ESP32-S3 as a prototype; STM32H723/H743 as a production candidate. Code and protocol must allow porting without changing control logic.
+**Platform:** ESP32-S3, Raspberry Pi Pico 2 W (RP2350), and STM32H723/H743 as candidates; STM32H7 remains the production candidate pending ADR-001. Code and protocol must allow porting without changing control logic.
 
-**Inputs:** `docs/architecture.md` sections 3.2, 5, 7; `docs/specification.md` sections 3, 5, 8, 9.
+**Inputs:** `docs/architecture.md` sections 3.2, 5, 7; `docs/specification.md` sections 3, 5, 8, 9; `docs/hardware.md`.
 **Outputs:** `firmware/`, `jbot_protocol`, bench with one and four actuators, actuator/jitter/latency/E-stop protocols.
 
 ### 3.1. Firmware architecture and HAL
 
 | ID | Task | Priority | Depends on | Acceptance criterion |
 |---|---|---|---|---|
-| [ ] M3-01 | Benchmark ESP32-S3 and STM32H7; select the MCU and write ADR-001 | P1 | M1-02 | Actuator/CAN, 1 kHz, jitter measured; decision recorded |
+| [ ] M3-01 | Benchmark ESP32-S3, Pico 2 W (RP2350), and STM32H7; select the MCU and write ADR-001 | P1 | M1-02 | Actuator/CAN, ADC, 1 kHz, jitter and latency measured; decision recorded |
 | [ ] M3-02 | Create `firmware/` as a `no_std` crate; configure target, `embassy` or `rtic`, build and memory map | P1 | M3-01 | Firmware builds, flashes and starts on the selected board |
 | [ ] M3-03 | Implement initialization of clocks, timers, PWM, ADC, SPI, I2C, GPIO and watchdog | P1 | M3-02 | All peripherals pass self-test at startup |
 | [ ] M3-04 | Ensure safe default states: actuators disabled after reset, outputs in a known state | P1 | M3-03 | Verified with an oscilloscope and logic; complies with SAF-10 |
@@ -242,14 +242,14 @@ In parallel: `M2` (power), `M7` (safety), `M10` (CI, documentation, procurement)
 
 | ID | Task | Priority | Depends on | Acceptance criterion |
 |---|---|---|---|---|
-| [ ] M3-05 | Implement the ICM-42688-P IMU driver: SPI, DRDY, DMA, timestamp at sample time | P1 | M3-03 | Data is read at 1–4 kHz; timestamp corresponds to the sample time |
+| [ ] M3-05 | Implement the BNO055 IMU driver over I2C/UART: fusion configuration, calibration persistence, timestamping | P1 | M3-03 | Fusion data at 100 Hz is valid and timestamped; 1 kHz loop uses gyro propagation or a high-rate IMU |
 | [ ] M3-06 | Implement self-test, gyroscope and accelerometer bias calibration, calibration persistence | P1 | M3-05 | Calibration survives reboot; error within acceptable limits |
-| [ ] M3-07 | Implement QDD feedback and wheel encoder reading, position and speed calculation taking into account direction and resolution | P1 | M3-03 | Direction and sign of speed match physical rotation |
+| [ ] M3-07 | Implement RobStride RS02/RS05 feedback and wheel/hip position and speed calculation, including direction, resolution and CAN scaling | P1 | M3-03 | Direction and sign match physical rotation; vendor CAN scaling is verified |
 | [ ] M3-08 | Implement acquisition of current, voltage, temperatures and bus current via ADC synchronized to PWM | P1 | M3-03, M2-12 | Measurements are synchronous; noise and offset within acceptable limits |
 
 ### 3.3. FOC and actuator loops
 
-> The hip QDDs integrate FOC and the current loop. M3-09…M3-16 apply fully to external wheel drivers; for the hip QDDs they reduce to configuring the vendor loop, verifying CAN scaling, and commissioning.
+> The RobStride actuators integrate FOC and the current loop. M3-09…M3-16 apply fully to external wheel drivers; for the RS02/RS05 they reduce to configuring the vendor loop, verifying CAN scaling, and commissioning.
 
 | ID | Task | Priority | Depends on | Acceptance criterion |
 |---|---|---|---|---|
@@ -258,7 +258,7 @@ In parallel: `M2` (power), `M7` (safety), `M10` (CI, documentation, procurement)
 | [ ] M3-11 | Implement a 20–40 kHz current loop with current limiting and integrator saturation | P1 | M3-09, M3-10 | Step response without sustained oscillations; overshoot within tolerance |
 | [ ] M3-12 | Implement a 1–2 kHz speed loop with acceleration and speed limiting | P1 | M3-11 | Response under inertial load; stability under load changes |
 | [ ] M3-13 | Implement limits on current, torque, speed and temperature with derating | P1 | M3-11, M3-12 | Exceeding limits leads to limiting, then to a fault |
-| [ ] M3-14 | Perform single-actuator bring-up on one hip QDD and one wheel hub: rotation direction, phase order, encoder, torque sign | P1 | M3-10…M3-13 | All signs and directions match; no jerks or overheating |
+| [ ] M3-14 | Perform single-actuator bring-up on one RobStride RS02 hip and one RS05 wheel: rotation direction, CAN IDs, encoder, torque sign | P1 | M3-10…M3-13 | All signs and directions match; no jerks or overheating |
 | [ ] M3-15 | Verify the current loop: step, overshoot, settling time, heating | P1 | M3-11 | Metrics attached; heating within limits |
 | [ ] M3-16 | Verify the speed loop under inertial load | P1 | M3-12 | Metrics attached; stability confirmed |
 
@@ -277,7 +277,7 @@ In parallel: `M2` (power), `M7` (safety), `M10` (CI, documentation, procurement)
 | [ ] M3-25 | Start PD balancing on the safety frame with a zero command | P1 | M3-18, M3-19 | Holding for at least 10 min without falling |
 | [ ] M3-26 | Move LQR to the bench and compare with simulation | P1 | M3-25 | Differences are explained; parameters refined |
 | [ ] M3-27 | Conduct bench tests: 10 N·s impulse, 10° deviation, 10° slope | P1 | M3-26 | All scenarios without falling; current and temperature within limits |
-| [ ] M3-28 | Measure 1 kHz jitter and end-to-end latency; if jitter > 50 µs, record the transition to STM32H7 | P1 | M3-25 | Measurement protocol with oscilloscope/GPIO; decision documented |
+| [ ] M3-28 | Measure 1 kHz jitter and end-to-end latency; if jitter > 50 µs, record the MCU decision (Pico 2 W / ESP32-S3 / STM32H7) | P1 | M3-25 | Measurement protocol with oscilloscope/GPIO; decision documented |
 | [ ] M3-29 | Conduct a 30 min thermal run on the bench | P1 | M3-27 | Actuators and drivers without overheating; derating does not trip falsely |
 
 ### 3.5. Communication protocol
@@ -287,7 +287,7 @@ In parallel: `M2` (power), `M7` (safety), `M10` (CI, documentation, procurement)
 | [ ] M3-30 | Implement `jbot_protocol` with a `no_std`-compatible 8-byte header, payload up to 56 bytes and CRC-16 | P1 | M3-02 | Header is fixed; version, type, flags, sequence and timestamp are validated |
 | [ ] M3-31 | Implement messages via `postcard` and `serde`: commands, state, IMU, joints, power, faults | P1 | M3-30 | Schema is versioned; incompatible major version is rejected |
 | [ ] M3-32 | Implement UART transport: COBS, CRC-16, resynchronization on `0x00`, maximum 256 bytes | P1 | M3-30 | Corrupted and truncated frames are recovered; error counters increase |
-| [ ] M3-33 | Implement CAN: classic 1 Mbit/s on ESP32 TWAI for the bench; provide for CAN FD via SPI or STM32 FDCAN | P1 | M3-30 | Exchange works on the bench; CAN FD path is verified or documented |
+| [ ] M3-33 | Implement CAN with TJA1051T/3: classic 1 Mbit/s for RobStride; provide a CAN FD path via an FD-capable controller/transceiver | P1 | M3-30 | Exchange works on the bench; CAN FD path is verified or documented |
 | [ ] M3-34 | Implement the full message set: `ControlCommand`, `ModeCommand`, `EmergencyStop`, `Heartbeat`, `RobotState`, `ImuSample`, `JointFeedback`, `PowerFeedback`, `FaultReport` | P1 | M3-31 | All messages pass round-trip; IDs and rates correspond to the architecture |
 | [ ] M3-35 | Cover the protocol with round-trip, property and fuzz tests: truncation, corrupted CRC, sequence overflow, unknown version | P1 | M3-31, M3-32 | `proptest` is green; invalid frames do not panic |
 | [ ] M3-36 | Implement processing of sequence, duplicates and stale commands | P1 | M3-34 | Duplicates are idempotent; old commands are not applied |
@@ -304,7 +304,8 @@ In parallel: `M2` (power), `M7` (safety), `M10` (CI, documentation, procurement)
 | [ ] M3-42 | Implement saving calibrations to non-volatile memory and restoration after reboot | P1 | M3-06, M3-10 | Calibrations are not lost; corrupted data is detected |
 | [ ] M3-43 | Conduct fault injection on the bench: CAN/UART disconnection, brownout, overheating, overload, E-stop | P1 | M3-38, M3-39 | All faults lead to a safe state; events are logged |
 | [ ] M3-44 | Implement the firmware update and rollback path: USB DFU or debug probe on the prototype, CAN bootloader in the future | P2 | M3-02 | Update without disassembly; failed update is rolled back |
-| [ ] M3-45 | Prepare firmware documentation: memory map, pinout, protocol, version, compatibility matrix | P1 | M3-34, M3-44 | The document allows building and flashing the board from scratch |
+| [ ] M3-45 | Prepare firmware documentation: memory map, pinout, protocol, version, compatibility matrix, selected MCU and transceiver | P1 | M3-34, M3-44 | The document allows building and flashing the board from scratch |
+| [ ] M3-46 | Integrate the ExpressLRS 2.4G receiver over CRSF UART and bind it to the LiteRadio 3 Pro transmitter; define channel mapping and failsafe | P1 | M3-19, M3-22 | Channels and arming are validated; link loss and invalid frames are handled without bypassing the hardware E-stop |
 
 ---
 
@@ -659,7 +660,7 @@ In parallel: `M2` (power), `M7` (safety), `M10` (CI, documentation, procurement)
 
 | ID | Task | Priority | Depends on | Acceptance criterion |
 |---|---|---|---|---|
-| [ ] M10-13 | Form the BOM and order long-lead items: actuators, drivers, RPi 5, lidar, battery adapter, CAN FD HAT | P1 | M1-02, M2-07 | Orders placed; lead times tracked |
+| [ ] M10-13 | Form the BOM and order long-lead items: RobStride RS02/RS05, BNO055, TJA1051T/3, ExpressLRS receiver, Pico 2 W/STM32H7, RPi 5, lidar, battery adapter, CAN hardware | P1 | M1-02, M2-07, M3-29 | RS02 continuous torque/thermal margin is verified before ordering; orders placed; lead times and substitution options tracked |
 | [ ] M10-14 | Provide a spare kit of fuses, connectors and consumables | P1 | M10-13 | Kit is included in the delivery and stored in inventory |
 | [ ] M10-15 | Verify component availability and alternatives (second source) | P1 | M10-13 | Critical items have a replacement or justification |
 | [ ] M10-16 | Manufacture/order PCBs and cable assemblies with margin | P1 | M2-07 | Spare units available for bench and robot |
@@ -715,7 +716,7 @@ In parallel: `M2` (power), `M7` (safety), `M10` (CI, documentation, procurement)
 |---|---|---|---|
 | M0 | Base documentation and workspace | M1-01…M1-05, M10-01, M10-07 | — |
 | M1 | WIP model + LQR + simulator | M1-06…M1-38 | G1 |
-| M2 | One hip QDD + one wheel + IMU on the bench | M3-01…M3-16, M2-01…M2-11 | — |
+| M2 | One RS02 hip + one RS05 wheel + BNO055 on the bench | M3-01…M3-16, M2-01…M2-11 | — |
 | M3 | Two motors, balance on the safety frame | M3-17…M3-29, M2-12…M2-24 | G2 |
 | M4 | RPi–MCU communication, telemetry, lidar, EKF | M4-01…M4-27, M5-01…M5-23 | G3 |
 | M5 | Map + localization | M6-01…M6-17 | — |
@@ -736,7 +737,7 @@ In parallel: `M2` (power), `M7` (safety), `M10` (CI, documentation, procurement)
 | M1-11…M1-16 | 2D/3D WIP linearization and LQR | Matrices `A`, `B`, `K` and unit tests |
 | M1-26…M1-30 | `jbot_sim` framework with RK4 and trace recording | First deterministic run |
 | M1-32…M1-35 | First verification scenarios | 10 min hold, 10 N·s impulse, 10° deviation |
-| M3-01 | ADR-001 on MCU | Decision ESP32-S3 prototype / STM32H7 production |
+| M3-01 | ADR-001 on MCU | Decision Pico 2 W / ESP32-S3 / STM32H7 after benchmark |
 | M2-01…M2-07 | Power architecture and E-stop | Schematic, BOM, safety review |
 | M7-01, M7-02 | Hazard analysis and E-stop specification | Draft safety document |
 | M10-13 | Order long-lead components | Placed orders |
@@ -748,7 +749,7 @@ In parallel: `M2` (power), `M7` (safety), `M10` (CI, documentation, procurement)
 | Risk | Affected tasks | Planned response |
 |---|---|---|
 | Incorrect mass-inertial parameters | M1-01…M1-38 | Refinement after assembly, stability margin, re-identification |
-| ESP32-S3 does not provide 1 kHz and jitter ≤ 50 µs | M3-01, M3-17, M3-28 | Early benchmark, transition to STM32H7, keeping FOC inside the actuators |
+| Selected MCU does not provide 1 kHz, jitter ≤ 50 µs, CAN or ADC capacity | M3-01, M3-17, M3-28 | Three-way benchmark; transition to STM32H7, keeping FOC inside the actuators |
 | CAN FD on RPi is unstable | M4-06, M4-10 | Backup UART, oscilloscope verification, selection of a proven HAT |
 | Lidar produces noise or too little data | M4-13…M4-18, M6-04 | Proven model, calibration, filtering, backup driver |
 | Rust SLAM is not mature enough | M6-01…M6-12 | Backup `slam_toolbox` via the bridge, early ADR |
@@ -757,6 +758,7 @@ In parallel: `M2` (power), `M7` (safety), `M10` (CI, documentation, procurement)
 | AI accelerator power and heat | M9-03, M9-13 | Separate protection, power budget, tests under load |
 | Manipulator disrupts balance | M9-15…M9-18 | Supervisor, constraints, moving out of the 1 kHz loop |
 | Firmware and host version drift | M10-08, M5-10 | Compatibility matrix, CI check, version in every frame |
+| RS02 hip torque/thermal margin is insufficient for 15 kg | M3-29, M10-13 | Bench thermal test before ordering; substitute a larger hip or reduce platform mass |
 
 ---
 
@@ -764,8 +766,8 @@ In parallel: `M2` (power), `M7` (safety), `M10` (CI, documentation, procurement)
 
 | Question | Decision task | Deadline |
 |---|---|---|
-| Final MCU: ESP32-S3, STM32H723/H743 or Teensy 4.1 | M3-01, ADR-001 | Before purchasing the control board |
-| Actuators: hip QDD integrated (RobStride); wheel hub integrated or external FOC | M3-01, M2-07, ADR | Before manufacturing the power board |
+| Final MCU: Pico 2 W (RP2350), ESP32-S3, or STM32H723/H743 | M3-01, ADR-001 | Before purchasing the control board |
+| Actuators: provisional RobStride RS02 hips and RS05 wheels; replace only with an equivalent CAN/torque/thermal envelope | M3-01, M2-07, ADR | Before manufacturing the power board |
 | Leg topology: 1-DOF four-bar decided; link lengths, spring, height range, E-position | M1-03, M3-23 | Before detailed mechanical design |
 | Power pack: M18 18 V baseline vs 24–36 V preferred | M2-01, M2-02 | Before manufacturing the power board |
 | Lidar and camera: models, mounting, power, heat | M4-13, M4-19, ADR | Before purchasing sensors |

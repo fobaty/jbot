@@ -66,7 +66,7 @@ Estimates are given for a team of 2–3 engineers (mechanics/electronics, embedd
 ### 1.3. Critical path
 
 ```
-WIP model → LQR in simulation → one hip QDD + one wheel on the test bench → all four actuators on the test bench
+WIP model → LQR in simulation → one RS02 hip + one RS05 wheel on the test bench → all four actuators on the test bench
 → balancing on the safety frame → RPi–MCU link → EKF/odometry
 → SLAM and localization → planners → autonomous runs → extensions → acceptance
 ```
@@ -113,40 +113,40 @@ Running in parallel with the critical path: procurement, power design, safety an
 
 - [~] Verify controllability and observability; record the parameter range in which the system remains controllable.
 - [x] Perform discretization with a 1 ms step (ZOH) for the 1 kHz loop.
-- [ ] Account for limits: torque saturation, dead zone, friction, slip, 5–10 ms command delay.
+- [~] Account for limits: torque saturation, dead zone, friction, slip, 5–10 ms command delay.
 
 #### 1.4. LQR synthesis and auxiliary loops
 
 - [x] Implement the Riccati equation solution and `K` matrix (LQR) computation in `jbot_control` using `nalgebra`.
 - [~] Set weights `Q` and `R`; formalize the tuning procedure and document the trade-off "recovery time / current / oscillation".
-- [ ] Implement the velocity loop and yaw loop as outer loops relative to balancing.
+- [~] Implement the velocity loop and yaw loop as outer loops relative to balancing. Speed loop is done; yaw requires 3D dynamics.
 - [ ] Implement a 25–35° tilt limit with transition to `DAMPING` and fall detection.
 - [ ] Implement torque distribution between wheels accounting for saturation and balancing priority over yaw.
 - [ ] Compare PD, LQR, and VMC; select the baseline algorithm and record an ADR.
 
 #### 1.5. State estimation for simulation
 
-- [ ] Implement a complementary filter and Madgwick for pitch/roll.
+- [x] Implement a complementary filter and Madgwick for pitch/roll.
 - [ ] Implement an EKF for velocity and bias estimation by fusing IMU and wheel odometry.
-- [ ] Simulate IMU noise, zero bias, encoder quantization, and measurement delay.
+- [x] Simulate IMU noise, zero bias, encoder quantization, and measurement delay.
 - [ ] Provide for command delay estimation / compensation.
 
 #### 1.6. Simulator
 
-- [ ] Create the `jbot_sim` crate (or a `sim` module in the workspace) with a fixed step and deterministic PRNG.
-- [ ] Implement an integrator (RK4) with a 0.1–1 ms step and time scaling for debugging.
-- [ ] Implement a sensor model: IMU, encoders, current, battery voltage, lidar (simplified).
-- [ ] Implement disturbance injection: 10 N·s impulse, 10° tilt, 10° slope, change in mass/CoM height.
-- [ ] Implement recording and replay of traces for regression tests.
-- [ ] Prepare visualization: `rerun` or equivalent; plots of current, tilt, velocity, trajectory.
+- [x] Create the `jbot_sim` crate (or a `sim` module in the workspace) with a fixed step and deterministic PRNG.
+- [~] Implement an integrator (RK4) with a 0.1–1 ms step and time scaling for debugging.
+- [x] Implement a sensor model: IMU, encoders, current, battery voltage, lidar (simplified).
+- [x] Implement disturbance injection: 10 N·s impulse, 10° tilt, 10° slope, change in mass/CoM height.
+- [x] Implement recording and replay of traces for regression tests.
+- [x] Prepare visualization: `rerun` or equivalent; plots of current, tilt, velocity, trajectory.
 
 #### 1.7. Model verification
 
-- [ ] Verify the response to a step velocity command: overshoot, settling time, current.
-- [ ] Verify recovery after a 10 N·s impulse (MOB-07) and a 10° deviation (MOB-08).
+- [x] Verify the response to a step velocity command: overshoot, settling time, current.
+- [~] Verify recovery after a 10 N·s impulse (MOB-07) and a 10° deviation (MOB-08).
 - [ ] Verify 3D recovery: roll deviation, yaw disturbance, and height step (MOB-31).
-- [ ] Verify holding on a 10° slope (MOB-20/MOB-21) in simulation.
-- [ ] Verify stability with a 10 ms delay, sensor noise, and torque saturation.
+- [~] Verify holding on a 10° slope (MOB-20/MOB-21) in simulation.
+- [x] Verify stability with a 10 ms delay, sensor noise, and torque saturation.
 - [ ] Run a Monte Carlo over mass, friction, and CoM position spread.
 - [ ] Record stability margins and admissible parameter ranges.
 
@@ -164,11 +164,11 @@ Running in parallel with the critical path: procurement, power design, safety an
 
 - [ ] The WIP model is reproducible; parameters are documented.
 - [ ] The four-bar coupler curve and height range are validated; the 2D model is shown to be a valid reduced-order approximation of the 3D model.
-- [ ] LQR stabilizes the model at zero command for at least 10 minutes of simulation without falling.
+- [x] LQR stabilizes the model at zero command for at least 10 minutes of simulation without falling.
 - [ ] Recovery after a 10 N·s impulse and a 10° deviation without falling.
-- [ ] Current and torque do not exceed specified limits during typical maneuvers.
-- [ ] The simulator is deterministic: the same seed and configuration produce the same trace.
-- [ ] Reproducible tests and plots suitable for comparison with the real system exist.
+- [~] Current and torque do not exceed specified limits during typical maneuvers.
+- [x] The simulator is deterministic: the same seed and configuration produce the same trace.
+- [x] Reproducible tests and plots suitable for comparison with the real system exist.
 
 ### 2.4. Phase risks
 
@@ -176,18 +176,19 @@ Running in parallel with the critical path: procurement, power design, safety an
 |---|---|---|
 | Incorrect mass-inertia parameters | Controller does not work on hardware | Refine parameters after assembly; stability margin reserve |
 | Model ignores backlash and friction | Fall on the test bench | Friction identification; robust/adaptive additions |
-| ESP32 does not provide 1 kHz with jitter < 50 µs | Phase 2 schedule slip | Early benchmark; fallback to STM32H7 |
+| Selected MCU does not provide 1 kHz with jitter < 50 µs, CAN, or ADC capacity | Phase 2 schedule slip | Three-way benchmark; fallback to STM32H7 |
+| RS02 hip torque/thermal margin is insufficient for 15 kg | M3-29, procurement | Bench thermal test; substitute a larger hip or reduce platform mass |
 | Too high CoM / small base | Physically uncontrollable | Iterate mechanics before purchasing final parts |
 
 ---
 
-## 3. Phase 2. Assembly of the power section, power supply, and low-level test bench (ESP32 + 4 actuators)
+## 3. Phase 2. Assembly of the power section, power supply, and low-level test bench (MCU + 4 actuators)
 
-**Goal:** assemble a safe power test bench with one hip QDD and one wheel hub, then all four actuators; configure the integrated QDD loops, start the IMU and communication protocol; obtain the first balancing platform on the safety frame.
+**Goal:** assemble a safe power test bench with one RS02 hip and one RS05 wheel, then all four actuators; configure the integrated RobStride loops, start the BNO055 and communication protocol; obtain the first balancing platform on the safety frame.
 
 **Indicative duration:** 6–10 weeks.
 
-> **Important:** ESP32-S3 is used as a prototype MCU. It does not have native CAN FD (only TWAI/classic CAN), so classic CAN 1 Mbit/s or UART with COBS+CRC is allowed on the test bench, and for CAN FD an external controller (MCP2518FD and similar) over SPI is used. The RobStride-class hip QDDs use classic CAN 1 Mbit/s, not CAN FD. The production candidate is STM32H723/H743 (ADR-001); firmware and protocol must allow porting.
+> **Important:** ESP32-S3, Raspberry Pi Pico 2 W (RP2350), and STM32H723/H743 are the MCU candidates for ADR-001. ESP32-S3 has only TWAI/classic CAN; RP2350 has no native CAN and needs an external MCP2515/MCP2518FD over SPI, plus an external ADC because Pico 2 W exposes only three ADC inputs. STM32H7 has native FDCAN. The actuator bus uses classic CAN 1 Mbit/s through a TJA1051T/3 transceiver; CAN FD requires an FD-capable controller and transceiver. The RobStride RS02/RS05 selection is provisional and may be replaced by a cheaper equivalent. Firmware and protocol must allow porting without changing control logic.
 
 ### 3.1. Tasks
 
@@ -203,8 +204,8 @@ Running in parallel with the critical path: procurement, power design, safety an
 
 #### 2.2. Test bench and power electronics
 
-- [ ] Procure 2 hip QDDs (RobStride RS06/RS03 class) and 2 wheel hub motors/drivers; add an external FOC stage only if the wheel driver is not integrated.
-- [ ] Assemble a test bench with one hip QDD and one wheel hub, using their native feedback plus a current sensor.
+- [ ] Procure 2 RobStride RS02 hip actuators (approximately 17 N*m peak) and 2 RS05 wheel actuators as the provisional baseline; verify continuous torque and thermal margin first, because preliminary sizing flags RS02 as marginal for 15 kg. Substitute cheaper units only with an equivalent CAN/torque/thermal envelope. Add an external FOC stage only if the wheel driver is not integrated.
+- [ ] Assemble a test bench with one RS02 hip and one RS05 wheel, using their native feedback plus a current sensor.
 - [ ] Organize test bench power via a laboratory PSU with current limiting; then switch to the battery through protection.
 - [ ] Provide an emergency button, fuse, and braking/bleeder element if needed.
 - [ ] Check driver and motor heating under load; determine thermal limits and derating.
@@ -212,11 +213,11 @@ Running in parallel with the critical path: procurement, power design, safety an
 
 #### 2.3. Low-level firmware
 
-- [ ] Create `firmware/` as a `no_std` crate; choose `embassy` (or `rtic`) and configure the build for ESP32-S3.
+- [ ] Create `firmware/` as a `no_std` crate; choose `embassy` (or `rtic`) and configure the build for the selected MCU (ESP32-S3, Pico 2 W/RP2350, or STM32H7 after ADR-001).
 - [ ] Implement clock, timer, PWM, ADC, SPI/I2C, and watchdog initialization.
-- [ ] Implement the ICM-42688-P IMU driver (SPI, DRDY, DMA) with timestamps at the sampling instant.
-- [ ] Implement QDD feedback and wheel encoder reading and speed/position calculation.
-- [ ] Configure the hip QDD integrated FOC and CAN protocol; implement FOC (electrical angle calibration, Park transforms, 20–40 kHz current loop) only for external wheel drivers.
+- [ ] Implement the BNO055 IMU driver over I2C/UART with calibration persistence and timestamps. Use gyro propagation or a high-rate IMU (ICM-42688-P fallback) for the 1 kHz loop because BNO055 fusion output is limited to 100 Hz.
+- [ ] Implement RS02/RS05 feedback and speed/position calculation.
+- [ ] Configure the RobStride RS02/RS05 integrated FOC and CAN protocol; implement FOC (electrical angle calibration, Park transforms, 20–40 kHz current loop) only for external wheel drivers.
 - [ ] Implement current, torque, speed, and temperature limiting across all four actuators, including per-actuator and total limits.
 - [ ] Implement the state machine `BOOT → SELF_TEST → IDLE → BALANCE → DAMPING → FAULT → E_STOP`.
 - [ ] Implement the watchdog: IWDG, 100 ms command timeout, loss of RPi heartbeat → `DAMPING`.
@@ -229,13 +230,14 @@ Running in parallel with the critical path: procurement, power design, safety an
 - [ ] Implement an 8-byte header: version, type, flags, sequence, timestamp; payload up to 56 bytes; CRC-16.
 - [ ] Implement `postcard` serialization, little-endian, version and length validation.
 - [ ] Implement the UART transport: COBS, CRC-16, resynchronization on `0x00`, max 256 bytes.
-- [ ] Implement the actuator bus: classic CAN 1 Mbit/s for the RobStride QDDs (ESP32 TWAI or STM32 bxCAN/FDCAN in classic mode); provide an SPI CAN FD option for the RPi–MCU backbone.
+- [ ] Implement the actuator bus: classic CAN 1 Mbit/s through a TJA1051T/3 transceiver for the RobStride actuators (ESP32 TWAI or STM32 FDCAN in classic mode); provide an SPI CAN FD path for the RPi–MCU backbone if required.
 - [ ] Implement messages: `ControlCommand`, `ModeCommand`, `EmergencyStop`, `Heartbeat`, `RobotState`, `ImuSample`, `JointFeedback`, `PowerFeedback`, `FaultReport`.
+- [ ] Integrate the ExpressLRS 2.4G receiver over CRSF UART, bind it to the LiteRadio 3 Pro, and validate channel mapping and failsafe without bypassing the hardware E-stop.
 - [ ] Cover the protocol with round-trip and property tests (truncation, corrupted CRC, sequence overflow, unknown version).
 
 #### 2.5. First balance tests
 
-- [ ] Verify rotation direction, phasing, encoder operation, and torque sign on one hip QDD and one wheel hub.
+- [ ] Verify rotation direction, phasing, encoder operation, and torque sign on one RS02 hip and one RS05 wheel.
 - [ ] Verify the actuator current/torque loop (inside the QDD or external wheel driver): step command, overshoot, settling time, heating.
 - [ ] Verify the velocity loop under inertial load.
 - [ ] Verify hip height/roll response and the four-bar coupler curve on the bench.
@@ -260,12 +262,12 @@ Running in parallel with the critical path: procurement, power design, safety an
 - `jbot_protocol`: shared frame and message format.
 - Test bench with one and four actuators, safety frame.
 - Test protocol: actuator loops, communication, jitter, delay, thermal mode, E-stop.
-- ADR-001: MCU decision (ESP32-S3 prototype / STM32H7 production).
-- ADR on actuators: hip QDD integration and wheel driver choice.
+- ADR-001: MCU decision (Pico 2 W / ESP32-S3 / STM32H7 after benchmark).
+- ADR on actuators: provisional RS02 hip and RS05 wheel selection, substitution criteria, and wheel driver choice.
 
 ### 3.3. Gate G2 — pass criteria
 
-- [ ] Both wheel hubs and both hip QDDs run stably; the hip QDD internal loop is configured and the external wheel FOC (if used) runs at 20–40 kHz.
+- [ ] Both RS05 wheels and both RS02 hips run stably; the RobStride internal loop is configured and the external wheel FOC (if used) runs at 20–40 kHz.
 - [ ] Four-bar hip motion covers the height range and the coupler curve matches the kinematic model.
 - [ ] Balance loop 1 kHz; measured jitter ≤ 50 µs or a decision to migrate to STM32H7 is recorded.
 - [ ] Communication between the RPi equivalent (PC) and MCU: command 100 Hz, telemetry 200–500 Hz, frame loss measured.
@@ -665,8 +667,8 @@ Running in parallel with the critical path: procurement, power design, safety an
 
 ## 11. Open questions affecting the plan
 
-1. Final MCU: ESP32-S3 (prototype) → STM32H723/H743 (production)?
-2. Actuators: hip QDD integrated (RobStride); wheel hub integrated or external FOC?
+1. Final MCU: Pico 2 W (RP2350), ESP32-S3, or STM32H723/H743?
+2. Actuators: provisional RobStride RS02/RS05 with integrated FOC; replace only with an equivalent CAN/torque/thermal envelope?
 3. Leg topology: decided — 1-DOF four-bar. Remaining: link lengths, spring, height range, and E-position.
 4. Lidar and camera: specific models, mounting, power, thermal budget.
 5. SLAM: Rust-native stack or `slam_toolbox` via the ROS2 bridge?
@@ -685,7 +687,7 @@ Running in parallel with the critical path: procurement, power design, safety an
 - [x] Create `config/robot.toml` with WIP parameters and validation.
 - [x] Implement differential drive kinematics and tests in `jbot_common`.
 - [x] Implement the linearized WIP model and LQR in `jbot_control`.
-- [ ] Create the `jbot_sim` skeleton with RK4 and trace recording.
+- [x] Create the `jbot_sim` skeleton with RK4 and trace recording.
 - [ ] Conduct the first run: 10 min holding, 10 N·s impulse, 10° deviation.
 - [ ] Prepare ADR-001 (MCU) and the ADR on drivers.
 - [ ] Start hazard analysis and the E-stop specification.
