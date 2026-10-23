@@ -56,7 +56,7 @@ with the same CAN, torque/speed, thermal, and mounting envelope. See
 Each leg is a planar **1-DOF four-bar linkage** — not a 2-DOF five-bar and not a serial two-link leg. The "knee" is a rigid bend of the wheel fork, not an articulated joint. The **base is the chassis link A–B**; the wheel is a single ground contact at **E**.
 
 <p align="center">
-  <img src="jbot.jpg" alt="JBOT-WheeledBiped — four-bar leg, wheel, and actuator layout" width="640">
+  <img src="jbot-v2.jpg" alt="JBOT-WheeledBiped — four-bar leg, wheel, and actuator layout" width="640">
 </p>
 
 *Mechanical concept: one 1-DOF four-bar leg and one hub-driven wheel per side.*
