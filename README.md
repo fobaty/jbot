@@ -4,11 +4,11 @@
 
 **An autonomous wheeled-biped balancing robot built in Rust.**
 
-Dynamically stable locomotion, real-time motor control, LiDAR SLAM, and autonomous navigation — from the first simulation model to a field-ready platform.
+Dynamically stable locomotion, real-time motor control, LiDAR SLAM, and autonomous navigation — from the component list to a field-ready platform.
 
 [![Rust](https://img.shields.io/badge/Rust-2021-000000?logo=rust&logoColor=white)](https://www.rust-lang.org/)
 [![Platform](https://img.shields.io/badge/Platform-Raspberry%20Pi%205%20%2B%20RT%20MCU-c51a4a)](docs/architecture.md)
-[![Status](https://img.shields.io/badge/Status-Phase%201%20%C2%B7%20Design-blue)](docs/roadmap.md)
+[![Status](https://img.shields.io/badge/Status-Phase%202%20%C2%B7%20Hardware-blue)](docs/roadmap.md)
 [![Docs](https://img.shields.io/badge/Docs-SRS%20%C2%B7%20Architecture%20%C2%B7%20Roadmap-informational)](docs/)
 [![Unsafe](https://img.shields.io/badge/unsafe-forbidden-success)](docs/skills/rust_robotics_guidelines.md)
 
@@ -18,7 +18,7 @@ Dynamically stable locomotion, real-time motor control, LiDAR SLAM, and autonomo
 
 ## Overview
 
-**JBOT-WheeledBiped** is a research-grade mobile robot that combines wheeled drive with two 1-DOF four-bar legs to balance dynamically on two wheels. The project covers the full engineering cycle: control theory and simulation, power electronics, embedded firmware, onboard autonomy, and system validation.
+**JBOT-WheeledBiped** is a research-grade mobile robot that combines wheeled drive with two 1-DOF four-bar legs to balance dynamically on two wheels. The project covers the full engineering cycle: component selection, power and actuation, embedded firmware, onboard autonomy, and system validation.
 
 The design follows a strict split between a **hard real-time MCU** and a **Linux-class companion computer**. Balance and motor loops never depend on Linux scheduling; perception, mapping, planning, and networking live on the Raspberry Pi 5.
 
@@ -91,10 +91,10 @@ Each leg is a planar **1-DOF four-bar linkage** — not a 2-DOF five-bar and not
 - **Deterministic real-time core** — 1 kHz balancing, integrated RobStride actuator loops, hardware watchdog, and a fail-safe stop path enforced below the OS.
 - **Four-bar legs with four motors** — two RobStride RS02 hips in the body and two RS05 wheel actuators, one wheel per leg; a passive lower rocker and an optional spring keep the leg rigid and impact-tolerant.
 - **Safety-first architecture** — dual-channel hardware E-stop, battery protection, precharge, and actuator-power contactor independent of software.
-- **Rust workspace with one-way dependencies** — perception and control crates are pure computation with no I/O and are fully unit-testable.
+- **Rust workspace with one-way dependencies** — shared types and configuration stay I/O-free; hardware, navigation, and the node compose them.
 - **Onboard autonomy** — LiDAR SLAM without external positioning infrastructure, waypoint missions, patrolling, and teleoperation.
 - **Modular by construction** — camera, manipulator, AI accelerator, and docking station extend the platform without redesigning the control path.
-- **Simulation before hardware** — every control loop is validated in a simulator before power reaches the motors.
+- **Interface freeze before procurement** — BOM, connectors, power, and CAN envelopes are fixed before long-lead parts are ordered.
 
 ---
 
@@ -150,21 +150,17 @@ Full rationale, timing budgets, and the safety concept are in [`docs/architectur
 jbot/
 ├── Cargo.toml                  # Workspace definition and release profile
 ├── config/
-│   └── robot.toml              # Typed baseline model configuration
+│   └── robot.toml              # Typed robot configuration
 ├── crates/
-│   ├── jbot_common/            # Shared messages, state types, kinematic models
+│   ├── jbot_common/            # Shared messages, state types, configuration
 │   ├── jbot_hardware/          # HAL: CAN/serial transport, sensors, actuators
-│   ├── jbot_estimation/        # EKF / attitude estimation (no I/O)
-│   ├── jbot_control/           # Balance control and trajectory generation (no I/O)
-│   ├── jbot_sim/               # Fixed-step WIP simulation and verification
 │   ├── jbot_navigation/        # Costmaps, planners, navigation stack
 │   └── jbot_node/              # High-level executable for the Raspberry Pi 5
 └── docs/
     ├── specification.md        # System Requirements Specification (SRS-001)
     ├── architecture.md         # System architecture and safety concept
-    ├── kinematics.md           # Four-bar and differential-drive model
-    ├── control_model.md        # 2D WIP, ZOH discretization, LQR baseline
-    ├── simulation.md           # Fixed-step RK4, records, replay, recovery tests
+    ├── hardware.md             # Provisional MCU, CAN, RC, IMU, actuator selection
+    ├── bom.md                  # Component and assembly list
     ├── roadmap.md              # Phased delivery plan and gate criteria
     ├── system_requirements.md  # High-level requirements
     ├── agent_workflow.md       # Engineering workflow
@@ -172,7 +168,7 @@ jbot/
     └── skills/                 # Rust robotics engineering guidelines
 ```
 
-> **Dependency rule:** `jbot_estimation` and `jbot_control` stay free of I/O. Everything flows inward toward `jbot_common`; the node wires the pieces together.
+> **Dependency rule:** `jbot_common` stays free of I/O. Hardware and navigation crates may depend on it; the node wires the pieces together.
 
 ---
 
@@ -220,8 +216,7 @@ The release profile enables LTO, single codegen unit, and `panic = "abort"` for 
 
 | Phase | Focus | Gate |
 |:-----:|-------|:----:|
-| **1** | Four-bar kinematics, 2D/3D WIP model, LQR | G1 |
-| **2** | Power subsystem, actuator test bench, MCU protocol | G2 |
+| **2** | BOM, hardware assembly, actuator test bench, MCU protocol | G2 |
 | **3** | Raspberry Pi 5, LiDAR, telemetry, EKF, HIL | G3 |
 | **4** | SLAM, localization, navigation, 100 autonomous runs | G4 |
 | **5** | Camera/AI, manipulator, autonomous docking | G5 |
@@ -248,9 +243,8 @@ This robot stores enough energy to injure people and damage property. The safety
 |---|---|
 | [`docs/specification.md`](docs/specification.md) | Requirements, priorities (P1/P2/P3), traceability |
 | [`docs/architecture.md`](docs/architecture.md) | Compute tiers, interfaces, power, safety concept |
-| [`docs/kinematics.md`](docs/kinematics.md) | Four-bar leg, differential drive, parameter provenance |
-| [`docs/control_model.md`](docs/control_model.md) | 2D WIP model, linearization, ZOH, LQR baseline |
-| [`docs/simulation.md`](docs/simulation.md) | Fixed-step RK4, versioned records, replay, recovery tests |
+| [`docs/hardware.md`](docs/hardware.md) | Provisional MCU, CAN, RC, IMU, and actuator selection |
+| [`docs/bom.md`](docs/bom.md) | Complete component and assembly list |
 | [`docs/system_requirements.md`](docs/system_requirements.md) | Hardware and software requirements |
 | [`docs/roadmap.md`](docs/roadmap.md) | Phases, gates, schedule, critical path |
 | [`docs/tasks.md`](docs/tasks.md) | Granular task breakdown |
@@ -276,7 +270,7 @@ Released under the [MIT License](LICENSE). © 2026 Oleksii Shataliuk.
 
 ## Status
 
-The workspace skeleton and engineering documentation are in place. The project is in **Phase 1**: mathematical modeling and balance-controller synthesis. Expect APIs to move until the G1 gate is passed.
+The workspace skeleton and engineering documentation are in place. The project is in **Phase 2**: BOM completion, hardware assembly, and low-level firmware. Expect APIs to move until the G2 gate is passed.
 
 ---
 

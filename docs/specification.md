@@ -111,7 +111,7 @@ The Robot is intended for:
 5. Software:
    - MCU firmware (`no_std`, Rust);
    - onboard `jbot-node` program in Rust;
-   - crates `jbot_common`, `jbot_hardware`, `jbot_estimation`, `jbot_control`, `jbot_navigation`;
+   - crates `jbot_common`, `jbot_hardware`, `jbot_navigation`, `jbot_node`;
    - Zenoh / ROS2 bridge.
 6. Set of operational documentation and test software.
 
@@ -215,7 +215,7 @@ The Robot is intended for:
 |---|---|---|
 | MOB-01 | Wheeled-biped configuration: two legs, one wheel per leg; each leg is a planar 1-DOF four-bar (base A–B, upper crank A–C driven by a RobStride RS02 hip, lower rocker B–D passive, wheel fork C–D–E). Height and fore-aft offset are coupled along the coupler curve. | P1 |
 | MOB-02 | Actuators — four total: two provisional RobStride RS02 hips with integrated FOC/encoder/driver and two RS05 wheels (integrated or external FOC); feedback on position, speed, current, and temperature | P1 |
-| MOB-03 | Balance control — PD / LQR / VMC, configurable; supports 3D balance: pitch via wheel torque, yaw via differential wheel torque, height via common hip angle, roll via differential hip height | P1 |
+| MOB-03 | Configurable balance control supporting 3D balance: pitch via wheel torque, yaw via differential wheel torque, height via common hip angle, roll via differential hip height | P1 |
 | MOB-04 | Modes: `IDLE`, `BALANCE`, `DAMPING`, `FAULT`, `E_STOP`, `SHUTDOWN` | P1 |
 | MOB-05 | Transitions between modes — only via a validated command and precondition checks | P1 |
 
@@ -249,7 +249,7 @@ The Robot is intended for:
 | ID | Requirement | Priority |
 |---|---|---|
 | MOB-17 | Irregularities and thresholds up to 20 mm high — at a speed of up to 0.5 m/s | P1 |
-| MOB-18 | Step/threshold up to 50 mm — at a speed of not more than 0.2 m/s using the hip four-bar to lift the wheel; validate in simulation | P1 |
+| MOB-18 | Step/threshold up to 50 mm — at a speed of not more than 0.2 m/s using the hip four-bar to lift the wheel; validate on the bench | P1 |
 | MOB-19 | Target capability to negotiate steps up to 100 mm in walking mode | P2 |
 | MOB-20 | Longitudinal slope up to 10° and lateral slope up to 5° on a dry hard surface while maintaining balance | P1 |
 | MOB-21 | Holding on a 10° slope for 10 min without slipping or overheating | P1 |
@@ -258,7 +258,7 @@ The Robot is intended for:
 | MOB-24 | Stair flights and steps above 100 mm are not required | — |
 | MOB-25 | Body height adjustment — not less than 100 mm; the range is refined during detailed design | P2 |
 
-**Design note (four-bar leg).** With one active hip DOF per leg, body height and wheel fore-aft offset are coupled along the coupler curve. Step negotiation (MOB-18/MOB-19) therefore requires a deliberate weight shift and roll; validate the 50 mm P1 target in simulation before committing the mechanical design. The first prototype uses one wheel per leg; dual wheels are deferred.
+**Design note (four-bar leg).** With one active hip DOF per leg, body height and wheel fore-aft offset are coupled along the coupler curve. Step negotiation (MOB-18/MOB-19) therefore requires a deliberate weight shift and roll; validate the 50 mm P1 target on the bench before committing the mechanical design. The first prototype uses one wheel per leg; dual wheels are deferred.
 
 ### 5.5. Load, mass, and thermal conditions
 
@@ -355,7 +355,7 @@ The Robot is intended for:
 
 | ID | Requirement | Priority |
 |---|---|---|
-| EXT-01 | Modular Cargo structure: `jbot_common`, `jbot_hardware`, `jbot_estimation`, `jbot_control`, `jbot_navigation`, `jbot_node` | P1 |
+| EXT-01 | Modular Cargo structure: `jbot_common`, `jbot_hardware`, `jbot_navigation`, `jbot_node` | P1 |
 | EXT-02 | Single dependency direction; cyclic dependencies are prohibited | P1 |
 | EXT-03 | New sensors and actuators are connected via `jbot_common` types/traits and ports, without modifying the balance loop | P1 |
 | EXT-04 | The communication protocol is versioned; incompatible major versions are rejected | P1 |
@@ -381,7 +381,7 @@ The Robot is intended for:
 | EXT-14 | Mechanical interface: mounting points, fasteners, and space for a manipulator with 4–6 degrees of freedom | P3 |
 | EXT-15 | Electrical interface: 12 V / 5 A (60 W), protection, separate branch if necessary | P3 |
 | EXT-16 | Communication: CAN FD, 29-bit identifiers, a separate ID range for manipulator nodes | P3 |
-| EXT-17 | Manipulator control is integrated into `jbot_control` / the behavioral layer, but not into the 1 kHz balance loop | P1 |
+| EXT-17 | Manipulator control is integrated into the behavioral layer, but not into the 1 kHz balance loop | P1 |
 | EXT-18 | The manipulator must not disturb balance; the supervisor limits speed/torque when the load is extended | P3 |
 | EXT-19 | Target manipulator payload — not less than 1 kg at the gripper | P3 |
 | EXT-20 | Manipulator emergency stop — via the common E-stop and a software command | P3 |

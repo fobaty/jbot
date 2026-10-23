@@ -6,5 +6,4 @@ authors = ["Chief Robotics Architect"]
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
-nalgebra = "0.33"
 toml = "0.8"

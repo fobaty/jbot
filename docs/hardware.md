@@ -6,12 +6,12 @@
 | Code | HW-001 |
 | Version | 0.1 |
 | Date | 2026-10-22 |
-| Status | Provisional, Phase 1/2 |
+| Status | Provisional, pre-bench |
 | Scope | MCU candidates, CAN, RC link, IMU, hip and wheel actuators |
 
 This document records the current hardware direction. Items marked **provisional**
 may be replaced when a cheaper or better-supported part meets the same electrical,
-mechanical, thermal, and protocol envelope. Changes must be reflected in the BOM,
+mechanical, thermal, and protocol envelope. Changes must be reflected in [`docs/bom.md`](bom.md),
 `config/robot.toml`, and the relevant ADR before they reach firmware.
 
 ## 1. Real-time controller candidates

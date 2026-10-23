@@ -7,8 +7,8 @@
 | Version | 1.0 |
 | Date | 2026-10-21 |
 | Status | Working document, synchronized with SRS-001 |
-| Related documents | `docs/specification.md`, `docs/architecture.md`, `docs/system_requirements.md` |
-| Scope | Full cycle: mathematics and simulation → test bench → onboard software → autonomous navigation → extensions |
+| Related documents | `docs/specification.md`, `docs/architecture.md`, `docs/system_requirements.md`, `docs/hardware.md`, `docs/bom.md` |
+| Scope | Full cycle: BOM → test bench → onboard software → autonomous navigation → extensions |
 
 ---
 
@@ -16,10 +16,10 @@
 
 ### 0.1. Planning principles
 
-1. **Model first, hardware second.** Each control loop is verified in simulation before power is applied to the motors.
-2. **Early risk, early.** Long-lead components (actuators, lidar, RPi 5, battery adapter) are ordered in Phases 1–2.
+1. **Hardware interfaces first.** Freeze the BOM interfaces and envelopes before firmware, procurement, and mechanical detail design.
+2. **Early risk, early.** Long-lead components (actuators, lidar, RPi 5, battery adapter) are ordered in Phase 2.
 3. **One critical path.** Balancing on the test bench is the main technical risk; everything else must not block it.
-4. **Safety is not a phase.** E-stop, watchdog, limits, and logging are designed from Phase 1 and verified at every stage.
+4. **Safety is not a phase.** E-stop, watchdog, limits, and logging are designed from the start and verified at every stage.
 5. **Each phase ends with a measurable gate criterion.** Open P1 requirements are not silently carried over to the next phase.
 
 ### 0.2. Notation
@@ -28,7 +28,7 @@
 - **Gate Gx** — phase acceptance gate; without passing it, the next phase is not considered started.
 - **DoD** — Definition of Done, task completion criteria.
 - **HIL** — Hardware-in-the-Loop, real MCU + real drivers + RPi.
-- **WIP** — Wheeled Inverted Pendulum.
+- Phase labels 2–5 are retained for continuity; the former Phase 1 simulation track is retired.
 
 ### 0.3. Indicative timeline
 
@@ -36,12 +36,11 @@ Estimates are given for a team of 2–3 engineers (mechanics/electronics, embedd
 
 | Phase | Duration | Key outcome | Gate |
 |---|---|---|---|
-| 1. Simulation, kinematics, balancing mathematics | 4–6 weeks | WIP model, LQR, simulator, stability report | G1 |
-| 2. Power section, power supply, low-level test bench | 6–10 weeks | ESP32 + FOC + IMU + protocol, rotating test bench | G2 |
+| 2. Hardware assembly and low-level test bench | 6–10 weeks | BOM, MCU + IMU + protocol, rotating test bench | G2 |
 | 3. RPi 5, lidar, basic Rust software | 4–6 weeks | RPi–MCU link, telemetry, lidar, EKF, HIL | G3 |
 | 4. SLAM, localization, navigation, autonomy | 6–10 weeks | Maps, costmap, planners, 100 autonomous runs | G4 |
 | 5. Attachments, docking station, AI | 6–10 weeks | Camera/AI, manipulator, auto-charging, system tests | G5 |
-| **Total** | **26–42 weeks** | Acceptance of the baseline version | — |
+| **Total** | **22–36 weeks** | Acceptance of the baseline version | — |
 
 ---
 
@@ -52,8 +51,9 @@ Estimates are given for a team of 2–3 engineers (mechanics/electronics, embedd
 - [x] System requirements have been formulated (`docs/system_requirements.md`).
 - [x] Architecture and safety concept have been designed (`docs/architecture.md`).
 - [x] An SRS with requirement traceability has been created (`docs/specification.md`).
-- [x] Cargo workspace initialized: `jbot_common`, `jbot_hardware`, `jbot_estimation`, `jbot_control`, `jbot_navigation`, `jbot_node`.
+- [x] Cargo workspace initialized: `jbot_common`, `jbot_hardware`, `jbot_navigation`, `jbot_node`.
 - [x] Type skeletons and test stubs added.
+- [x] Provisional hardware selection and BOM baseline recorded (`docs/hardware.md`, `docs/bom.md`).
 
 ### 1.2. What is NOT included in the baseline version
 
@@ -66,125 +66,52 @@ Estimates are given for a team of 2–3 engineers (mechanics/electronics, embedd
 ### 1.3. Critical path
 
 ```
-WIP model → LQR in simulation → one RS02 hip + one RS05 wheel on the test bench → all four actuators on the test bench
+BOM and interface freeze → one RS02 hip + one RS05 wheel on the test bench → all four actuators on the test bench
 → balancing on the safety frame → RPi–MCU link → EKF/odometry
 → SLAM and localization → planners → autonomous runs → extensions → acceptance
 ```
 
-Running in parallel with the critical path: procurement, power design, safety analysis, CI, and documentation.
+Running in parallel with the critical path: BOM completion, procurement, safety analysis, CI, and documentation.
 
 ---
 
-## 2. Phase 1. Simulation, four-bar kinematics, and balancing mathematics (LQR/WIP)
+## 2. Hardware bill of materials and interface freeze
 
-**Goal:** obtain a reproducible mathematical model of the robot and synthesize the balance controller before hardware assembly.
+**Goal:** turn the provisional hardware direction into a complete, orderable list of components and assemblies before detailed firmware and mechanical work.
 
-**Indicative duration:** 4–6 weeks.
+**Indicative duration:** 1–2 weeks.
 
 ### 2.1. Tasks
 
-#### 1.1. Model parameters and assumptions
+- [ ] Complete the compute, actuation, power, sensing, chassis, and bench sections of [`docs/bom.md`](bom.md).
+- [ ] Resolve every `TBD` that affects an interface, envelope, connector, or mounting point.
+- [ ] Verify RS02 continuous torque and thermal margin for the 15 kg platform before ordering hips.
+- [ ] Confirm the final MCU, CAN controller, and CAN transceiver after ADR-001.
+- [ ] Record the battery voltage decision (18 V baseline versus 24–36 V preferred).
+- [ ] Record substitutions with their ADR links and update `config/robot.toml` and `docs/hardware.md`.
+- [ ] Freeze the interfaces needed by firmware, harnesses, and the chassis.
 
-- [x] Fix mass-inertia parameters: body mass, wheels, legs, center-of-mass height, moments of inertia, wheel radius, track width.
-- [ ] Determine actuator limits: maximum torque, speed, current, acceleration; assess sufficiency for recovery after a 10 N·s impulse.
-- [ ] Describe the 1-DOF four-bar leg: link lengths A–B, A–C, B–D, C–D–E, hip gear ratio, height change range (target ≥ 100 mm), optional spring rate/travel, static load.
-- [x] Fix assumptions: solid dry surface, no slip during synthesis, small angles during linearization.
-- [x] Consolidate parameters in `config/robot.toml` with validation and versioning.
+### 2.2. Gate B1 — BOM baseline
 
-#### 1.2. Kinematics
+- [ ] Every robot and bench assembly has an owner, quantity, and provisional part.
+- [ ] Interface-critical `TBD` items are closed or explicitly deferred.
+- [ ] Long-lead items and second sources are identified.
+- [ ] The BOM is consistent with `config/robot.toml` and `docs/hardware.md`.
 
-- [x] Implement differential drive: `v = (v_l + v_r) / 2`, `ω = (v_r - v_l) / L`, and the inverse transform.
-- [x] Implement four-bar leg kinematics (closed loop): forward/inverse solution, Jacobian, coupler curve, relationship of body height and fore-aft offset to hip angle; keep the 2-link model only as a comparison.
-- [ ] Define coordinate frames `map`, `odom`, `base_link`, `imu_link`, `laser_link` in accordance with REP-105.
-- [ ] Implement pose and velocity transforms between coordinate frames in `jbot_common`.
-- [ ] Cover kinematics with unit tests: boundary angles, degenerate configurations, round-trip transforms.
-
-#### 1.3. WIP dynamics
-
-- [~] Derive the 2D WIP model as a reduced-order baseline using the Lagrangian method, then extend to 3D with roll, yaw, and the four-bar height/offset coupling.
-- [x] Perform linearization around the vertical position and zero velocity.
-- [x] Obtain state and control matrices:
-
-  ```
-  x = [x, ẋ, θ, θ̇]ᵀ
-  ẋ = A·x + B·u
-  u = [T_l, T_r]ᵀ  or  u = [F, τ_yaw]ᵀ
-  ```
-
-- [~] Verify controllability and observability; record the parameter range in which the system remains controllable.
-- [x] Perform discretization with a 1 ms step (ZOH) for the 1 kHz loop.
-- [~] Account for limits: torque saturation, dead zone, friction, slip, 5–10 ms command delay.
-
-#### 1.4. LQR synthesis and auxiliary loops
-
-- [x] Implement the Riccati equation solution and `K` matrix (LQR) computation in `jbot_control` using `nalgebra`.
-- [~] Set weights `Q` and `R`; formalize the tuning procedure and document the trade-off "recovery time / current / oscillation".
-- [~] Implement the velocity loop and yaw loop as outer loops relative to balancing. Speed loop is done; yaw requires 3D dynamics.
-- [ ] Implement a 25–35° tilt limit with transition to `DAMPING` and fall detection.
-- [ ] Implement torque distribution between wheels accounting for saturation and balancing priority over yaw.
-- [ ] Compare PD, LQR, and VMC; select the baseline algorithm and record an ADR.
-
-#### 1.5. State estimation for simulation
-
-- [x] Implement a complementary filter and Madgwick for pitch/roll.
-- [ ] Implement an EKF for velocity and bias estimation by fusing IMU and wheel odometry.
-- [x] Simulate IMU noise, zero bias, encoder quantization, and measurement delay.
-- [ ] Provide for command delay estimation / compensation.
-
-#### 1.6. Simulator
-
-- [x] Create the `jbot_sim` crate (or a `sim` module in the workspace) with a fixed step and deterministic PRNG.
-- [~] Implement an integrator (RK4) with a 0.1–1 ms step and time scaling for debugging.
-- [x] Implement a sensor model: IMU, encoders, current, battery voltage, lidar (simplified).
-- [x] Implement disturbance injection: 10 N·s impulse, 10° tilt, 10° slope, change in mass/CoM height.
-- [x] Implement recording and replay of traces for regression tests.
-- [x] Prepare visualization: `rerun` or equivalent; plots of current, tilt, velocity, trajectory.
-
-#### 1.7. Model verification
-
-- [x] Verify the response to a step velocity command: overshoot, settling time, current.
-- [~] Verify recovery after a 10 N·s impulse (MOB-07) and a 10° deviation (MOB-08).
-- [ ] Verify 3D recovery: roll deviation, yaw disturbance, and height step (MOB-31).
-- [~] Verify holding on a 10° slope (MOB-20/MOB-21) in simulation.
-- [x] Verify stability with a 10 ms delay, sensor noise, and torque saturation.
-- [ ] Run a Monte Carlo over mass, friction, and CoM position spread.
-- [ ] Record stability margins and admissible parameter ranges.
-
-### 2.2. Phase artifacts
-
-- `jbot_common`: state types, kinematics, coordinate frames, configuration.
-- `jbot_control`: PD, LQR, limits, torque distribution.
-- `jbot_estimation`: complementary filter, Madgwick, EKF skeleton.
-- `jbot_sim`: plant, sensor, and disturbance model.
-- `config/robot.toml` and simulation profiles.
-- Report: "Model, linearization, and balance controller synthesis".
-- ADR: choice of baseline algorithm (PD/LQR/VMC) and loop architecture.
-
-### 2.3. Gate G1 — pass criteria
-
-- [ ] The WIP model is reproducible; parameters are documented.
-- [ ] The four-bar coupler curve and height range are validated; the 2D model is shown to be a valid reduced-order approximation of the 3D model.
-- [x] LQR stabilizes the model at zero command for at least 10 minutes of simulation without falling.
-- [ ] Recovery after a 10 N·s impulse and a 10° deviation without falling.
-- [~] Current and torque do not exceed specified limits during typical maneuvers.
-- [x] The simulator is deterministic: the same seed and configuration produce the same trace.
-- [x] Reproducible tests and plots suitable for comparison with the real system exist.
-
-### 2.4. Phase risks
+### 2.3. Risks
 
 | Risk | Impact | Mitigation |
 |---|---|---|
-| Incorrect mass-inertia parameters | Controller does not work on hardware | Refine parameters after assembly; stability margin reserve |
-| Model ignores backlash and friction | Fall on the test bench | Friction identification; robust/adaptive additions |
-| Selected MCU does not provide 1 kHz with jitter < 50 µs, CAN, or ADC capacity | Phase 2 schedule slip | Three-way benchmark; fallback to STM32H7 |
-| RS02 hip torque/thermal margin is insufficient for 15 kg | M3-29, procurement | Bench thermal test; substitute a larger hip or reduce platform mass |
-| Too high CoM / small base | Physically uncontrollable | Iterate mechanics before purchasing final parts |
+| BOM is incomplete or an interface is wrong | Rework, schedule slip | Interface freeze, vendor datasheets, second sources |
+| RS02 hip torque/thermal margin is insufficient for 15 kg | Redesign | Bench thermal test before ordering; larger hip or lower mass |
+| Battery decision is delayed | Power and chassis rework | Decide voltage and connector early |
+| Part is unavailable | Procurement delay | Track lead times and alternatives |
 
 ---
 
-## 3. Phase 2. Assembly of the power section, power supply, and low-level test bench (MCU + 4 actuators)
+## 3. Phase 2. Hardware assembly and low-level test bench (MCU + 4 actuators)
 
-**Goal:** assemble a safe power test bench with one RS02 hip and one RS05 wheel, then all four actuators; configure the integrated RobStride loops, start the BNO055 and communication protocol; obtain the first balancing platform on the safety frame.
+**Goal:** assemble a safe test bench from the BOM with one RS02 hip and one RS05 wheel, then all four actuators; configure the integrated RobStride loops, start the BNO055 and communication protocol; obtain the first balancing platform on the safety frame.
 
 **Indicative duration:** 6–10 weeks.
 
@@ -192,26 +119,16 @@ Running in parallel with the critical path: procurement, power design, safety an
 
 ### 3.1. Tasks
 
-#### 2.1. Power and protection design
-
-- [ ] Develop the Milwaukee M18 connection scheme: adapter, reverse polarity protection, 40 A fuse (18 V baseline; 30 A at 24–36 V), TVS, precharge, main contactor.
-- [ ] Calculate the power circuit for four actuators: 20–25 A continuous, 40 A fuse at 18 V, peak up to 55 A < 10 s; sag down to 15 V.
-- [ ] Design DC-DC: 12 V / 5 A, 5 V / 5–6 A, 3.3 V / 1 A; efficiency ≥ 90%, soft-start, OVP, thermal shutdown.
-- [ ] Provide a bidirectional shunt and power monitor (INA226 class) at 100–500 Hz.
-- [ ] Design a two-channel hardware E-stop: disconnecting actuator power circuits while retaining 5 V / 12 V for logging and proper RPi shutdown.
-- [ ] Perform routing: star ground, separation of power and logic ground, CAN shielding, ferrites, input protection.
-- [ ] Prepare the schematic, BOM, wiring diagrams, and conduct a safety review.
-
-#### 2.2. Test bench and power electronics
+#### 2.1. Procurement and bench assembly
 
 - [ ] Procure 2 RobStride RS02 hip actuators (approximately 17 N*m peak) and 2 RS05 wheel actuators as the provisional baseline; verify continuous torque and thermal margin first, because preliminary sizing flags RS02 as marginal for 15 kg. Substitute cheaper units only with an equivalent CAN/torque/thermal envelope. Add an external FOC stage only if the wheel driver is not integrated.
 - [ ] Assemble a test bench with one RS02 hip and one RS05 wheel, using their native feedback plus a current sensor.
-- [ ] Organize test bench power via a laboratory PSU with current limiting; then switch to the battery through protection.
+- [ ] Organize test bench power via a laboratory PSU with current limiting; then switch to the battery through the BOM protection.
 - [ ] Provide an emergency button, fuse, and braking/bleeder element if needed.
 - [ ] Check driver and motor heating under load; determine thermal limits and derating.
 - [ ] Assemble the test bench frame with body fixation capability (safety stops/cable) for the first balance tests.
 
-#### 2.3. Low-level firmware
+#### 2.2. Low-level firmware
 
 - [ ] Create `firmware/` as a `no_std` crate; choose `embassy` (or `rtic`) and configure the build for the selected MCU (ESP32-S3, Pico 2 W/RP2350, or STM32H7 after ADR-001).
 - [ ] Implement clock, timer, PWM, ADC, SPI/I2C, and watchdog initialization.
@@ -224,7 +141,7 @@ Running in parallel with the critical path: procurement, power design, safety an
 - [ ] Implement a blackbox ring buffer of the last N seconds (P2).
 - [ ] Ensure no dynamic memory allocation, `panic!`, or `unwrap()` in the control loop.
 
-#### 2.4. Communication protocol
+#### 2.3. Communication protocol
 
 - [ ] Implement `jbot_protocol` (or a module in `jbot_common`) with a shared `no_std`-compatible frame format.
 - [ ] Implement an 8-byte header: version, type, flags, sequence, timestamp; payload up to 56 bytes; CRC-16.
@@ -235,7 +152,7 @@ Running in parallel with the critical path: procurement, power design, safety an
 - [ ] Integrate the ExpressLRS 2.4G receiver over CRSF UART, bind it to the LiteRadio 3 Pro, and validate channel mapping and failsafe without bypassing the hardware E-stop.
 - [ ] Cover the protocol with round-trip and property tests (truncation, corrupted CRC, sequence overflow, unknown version).
 
-#### 2.5. First balance tests
+#### 2.4. First balance tests
 
 - [ ] Verify rotation direction, phasing, encoder operation, and torque sign on one RS02 hip and one RS05 wheel.
 - [ ] Verify the actuator current/torque loop (inside the QDD or external wheel driver): step command, overshoot, settling time, heating.
@@ -243,12 +160,12 @@ Running in parallel with the critical path: procurement, power design, safety an
 - [ ] Verify hip height/roll response and the four-bar coupler curve on the bench.
 - [ ] Assemble the four-actuator platform (2 hips + 2 wheels) on the test bench; verify odometry and direction of motion.
 - [ ] Run PD balancing on the safety frame at zero command.
-- [ ] Transfer the LQR parameters from Phase 1; compare behavior with simulation.
+- [ ] Tune the selected balance controller on the bench and compare against the documented design targets.
 - [ ] Conduct tests for holding, impulse, 10° deviation, 10° slope (within test bench limits).
 - [ ] Measure 1 kHz loop jitter (GPIO/DWT/oscilloscope) and end-to-end command delay.
 - [ ] Conduct a 30-minute thermal run.
 
-#### 2.6. Test bench safety
+#### 2.5. Test bench safety
 
 - [ ] Verify E-stop actuation with motors running; ensure logic remains powered.
 - [ ] Verify behavior on loss of communication, power loss, brownout, overheating, overcurrent.
@@ -257,8 +174,8 @@ Running in parallel with the critical path: procurement, power design, safety an
 
 ### 3.2. Phase artifacts
 
-- Schematics, BOM, wiring diagrams for the power section and test bench.
-- `firmware/`: ESP32-S3 firmware (balance, CAN, IMU, protocol, safety; FOC only for external wheel drivers).
+- Completed BOM, wiring diagrams, and harness drawings for the test bench.
+- `firmware/`: MCU firmware (balance, CAN, IMU, protocol, safety; FOC only for external wheel drivers).
 - `jbot_protocol`: shared frame and message format.
 - Test bench with one and four actuators, safety frame.
 - Test protocol: actuator loops, communication, jitter, delay, thermal mode, E-stop.
@@ -268,11 +185,11 @@ Running in parallel with the critical path: procurement, power design, safety an
 ### 3.3. Gate G2 — pass criteria
 
 - [ ] Both RS05 wheels and both RS02 hips run stably; the RobStride internal loop is configured and the external wheel FOC (if used) runs at 20–40 kHz.
-- [ ] Four-bar hip motion covers the height range and the coupler curve matches the kinematic model.
+- [ ] Four-bar hip motion covers the required height range.
 - [ ] Balance loop 1 kHz; measured jitter ≤ 50 µs or a decision to migrate to STM32H7 is recorded.
 - [ ] Communication between the RPi equivalent (PC) and MCU: command 100 Hz, telemetry 200–500 Hz, frame loss measured.
 - [ ] Loss of a valid command > 100 ms leads to `DAMPING`.
-- [ ] E-stop disconnects the power section, logging is preserved.
+- [ ] E-stop disconnects actuator power, logging is preserved.
 - [ ] The robot maintains balance on the safety frame at zero command for at least 10 minutes.
 - [ ] Recovery after a 10 N·s impulse and 10° deviation is confirmed on the test bench.
 - [ ] 30-minute thermal run without overheating of actuators and drivers.
@@ -282,7 +199,7 @@ Running in parallel with the critical path: procurement, power design, safety an
 
 | Risk | Impact | Mitigation |
 |---|---|---|
-| ESP32-S3 cannot handle 1 kHz + CAN + jitter | Schedule slip | Early benchmark; migration to STM32H7; keep FOC inside the actuators |
+| Selected MCU cannot handle 1 kHz + CAN + jitter | Schedule slip | Early benchmark; migration to STM32H7; keep FOC inside the actuators |
 | Interference from motors on IMU/CAN | Unstable estimation, bus errors | Shielding, ferrites, spacing, twisted pair, oscilloscope verification |
 | Battery BMS shuts down under peak | Sudden power loss | Derating, precharge, current monitoring, tests with a real battery |
 | Actuator phasing/calibration error | Jerk, overheating | Step-by-step QDD commissioning, current limiting, safety frame |
@@ -346,7 +263,7 @@ Running in parallel with the critical path: procurement, power design, safety an
 
 #### 3.6. State estimation
 
-- [ ] Port/advance the EKF from Phase 1: IMU + wheel odometry, 100–200 Hz.
+- [ ] Implement the EKF from IMU and wheel odometry at 100–200 Hz.
 - [ ] Estimate pose, velocity, gyroscope zero bias; publish `odom → base_link`.
 - [ ] Implement delay and outlier compensation; validate on HIL.
 - [ ] Compare the estimate against a reference (test bench, external marker) and record errors.
@@ -363,7 +280,7 @@ Running in parallel with the critical path: procurement, power design, safety an
 
 - Configured RPi 5 image, systemd units, deployment instructions.
 - `jbot_hardware`: CAN FD, UART, lidar, mock transport.
-- `jbot_estimation`: EKF 100–200 Hz.
+- `jbot_node`: EKF at 100–200 Hz.
 - `jbot_node` v0.1: telemetry, supervisor, configuration, logging.
 - Lidar driver and scan recording pipeline.
 - HIL protocol: delays, jitter, faults, recovery.
@@ -429,7 +346,7 @@ Running in parallel with the critical path: procurement, power design, safety an
 #### 4.4. Planning and motion control
 
 - [ ] Implement a global planner A*/Dijkstra accounting for traversability and dimensions.
-- [ ] Implement a local planner/controller: DWA, MPC, or equivalent accounting for WIP dynamics.
+- [ ] Implement a local planner/controller: DWA, MPC, or equivalent accounting for balance constraints.
 - [ ] Account for limits: acceleration, jerk, tilt, torque, slip.
 - [ ] Implement path following with speed limiting and smooth braking.
 - [ ] Implement recovery behaviors: costmap clearing, replanning, turning, backing off.
@@ -439,7 +356,7 @@ Running in parallel with the critical path: procurement, power design, safety an
 
 #### 4.5. Autonomous tests
 
-- [ ] First run scenarios in simulation with the WIP model and sensor noise.
+- [ ] First run navigation scenarios on the HIL bench with sensor noise.
 - [ ] Build a room map ≥ 100 m² with loop closure; measure drift (≤ 1% of path).
 - [ ] Perform 100 autonomous runs to the goal in a static environment; success rate ≥ 95%, collisions — 0.
 - [ ] Verify dynamic obstacles: stop/replan ≤ 1 s.
@@ -472,7 +389,7 @@ Running in parallel with the critical path: procurement, power design, safety an
 | Risk | Impact | Mitigation |
 |---|---|---|
 | SLAM in Rust is not mature enough | Phase delay | Early ADR; fallback `slam_toolbox` via the bridge |
-| WIP dynamics complicates the local planner | Falls during maneuvers | Acceleration/tilt limits, model-based MPC, simulation |
+| Balance dynamics complicate the local planner | Falls during maneuvers | Acceleration/tilt limits, conservative speed, HIL validation |
 | Poor localization in long corridors | Mission failures | Loop closure, multiple sensors, landmarks |
 | Dynamic obstacles | Collisions | Costmap layers, safe distance, stop priority |
 | RPi resources under SLAM + navigation | Throttling, delays | Separate processes, limits, NVMe, cooling |
@@ -509,7 +426,7 @@ Running in parallel with the critical path: procurement, power design, safety an
 #### 5.3. Manipulator (P3)
 
 - [ ] Implement an emulator of the manipulator CAN node to verify IDs, power, and E-stop.
-- [ ] Implement the control interface in `jbot_control`/the behavior layer, outside the 1 kHz loop.
+- [ ] Implement the control interface in the behavior layer, outside the 1 kHz loop.
 - [ ] Implement supervisor limits when the load is extended (speed, torque, tilt).
 - [ ] Implement emergency stop of the manipulator via the common E-stop.
 - [ ] Verify that manipulator failure/disconnection does not compromise balancing and navigation.
@@ -616,17 +533,16 @@ Running in parallel with the critical path: procurement, power design, safety an
 
 ## 8. Milestones and dependencies
 
-| Milestone | Content | Depends on |
+| Stage | Content | Depends on |
 |---|---|---|
-| M0 | Baseline documentation and workspace | — |
-| M1 | WIP model + LQR + simulator | M0 |
-| M2 | One motor + FOC + IMU on the test bench | M1, actuator procurement |
-| M3 | Two motors, balancing on the safety frame | M2 |
-| M4 | RPi–MCU link, telemetry, lidar, EKF | M3, RPi/lidar |
-| M5 | Map + localization | M4 |
-| M6 | Autonomous runs ≥ 95/100 | M5 |
-| M7 | Camera/AI, manipulator, docking station | M6 |
-| M8 | Acceptance tests and delivery | M7 |
+| S0 | Documentation, workspace, and BOM baseline | — |
+| S1 | One motor + FOC + IMU on the test bench | S0, actuator procurement |
+| S2 | Two motors, balancing on the safety frame | S1 |
+| S3 | RPi–MCU link, telemetry, lidar, EKF | S2, RPi/lidar |
+| S4 | Map + localization | S3 |
+| S5 | Autonomous runs ≥ 95/100 | S4 |
+| S6 | Camera/AI, manipulator, docking station | S5 |
+| S7 | Acceptance tests and delivery | S6 |
 
 **Key dependencies:**
 
@@ -683,11 +599,7 @@ Running in parallel with the critical path: procurement, power design, safety an
 
 ## 12. Immediate actions (first 2 weeks)
 
-- [ ] Approve the model parameters and order long-lead components (actuators, RPi 5, lidar, CAN FD HAT).
-- [x] Create `config/robot.toml` with WIP parameters and validation.
-- [x] Implement differential drive kinematics and tests in `jbot_common`.
-- [x] Implement the linearized WIP model and LQR in `jbot_control`.
-- [x] Create the `jbot_sim` skeleton with RK4 and trace recording.
-- [ ] Conduct the first run: 10 min holding, 10 N·s impulse, 10° deviation.
-- [ ] Prepare ADR-001 (MCU) and the ADR on drivers.
+- [ ] Complete `docs/bom.md` and order long-lead components after the interface freeze (actuators, RPi 5, lidar, CAN hardware).
+- [ ] Prepare ADR-001 (MCU) and the ADR on actuators.
 - [ ] Start hazard analysis and the E-stop specification.
+- [ ] Set up the safety bench frame and a current-limited first-power-up procedure.

@@ -323,8 +323,8 @@ async fn control_task(
 
 ### 2.5. `unsafe` policy
 
-- Pure math crates (`jbot_estimation`, `jbot_control`) should use
-  `#![forbid(unsafe_code)]`.
+- Pure computation crates and modules, including `jbot_common` and any future
+  estimator crate, should use `#![forbid(unsafe_code)]`.
 - Crates with hardware access should use `#![deny(unsafe_code)]` and allow it only in a
   small, reviewed HAL module. Every block needs a `// SAFETY:` comment explaining the
   invariant, ownership, alignment, and lifetime.
