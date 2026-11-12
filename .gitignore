@@ -56,6 +56,9 @@ defmt-*.log
 .pioenvs/
 .piolibdeps/
 
+# Vendored third-party firmware, recreated from the pin in firmware/README.md
+/firmware/eferu/
+
 # ---------------------------------------------------------------------------
 # Operating system files
 # ---------------------------------------------------------------------------
