@@ -1,8 +1,8 @@
 <div align="center">
 
-# JBOT-WheeledBiped
+# JBOT-Wheeled Biped 
 
-**An autonomous wheeled-biped balancing robot built in Rust.**
+**An autonomous wheeled biped balancing robot built in Rust.**
 
 Dynamically stable locomotion, real-time motor control, LiDAR SLAM, and autonomous navigation — from the component list to a field-ready platform.
 
@@ -18,7 +18,7 @@ Dynamically stable locomotion, real-time motor control, LiDAR SLAM, and autonomo
 
 ## Overview
 
-**JBOT-WheeledBiped** is a research-grade mobile robot that combines wheeled drive with two 1-DOF four-bar legs to balance dynamically on two wheels. The project covers the full engineering cycle: component selection, power and actuation, embedded firmware, onboard autonomy, and system validation.
+**JBOT-Wheeled Biped** is a research-grade mobile robot that combines wheeled drive with two 1-DOF four-bar legs to balance dynamically on two wheels. The project covers the full engineering cycle: component selection, power and actuation, embedded firmware, onboard autonomy, and system validation.
 
 The design follows a strict split between a **hard real-time MCU** and a **Linux-class companion computer**. Balance and motor loops never depend on Linux scheduling; perception, mapping, planning, and networking live on the Raspberry Pi 5.
 
