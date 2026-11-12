@@ -1,0 +1,30 @@
+diff --git a/Inc/config.h b/Inc/config.h
+index 8f697f4..2fb27c3 100644
+--- a/Inc/config.h
++++ b/Inc/config.h
+@@ -159,9 +159,11 @@
+ #define DIAG_ENA        1               // [-] Motor Diagnostics enable flag: 0 = Disabled, 1 = Enabled (default)
+ 
+ // Limitation settings
+-#define I_MOT_MAX       15              // [A] Maximum single motor current limit
+-#define I_DC_MAX        17              // [A] Maximum stage2 DC Link current limit for Commutation and Sinusoidal types (This is the final current protection. Above this value, current chopping is applied. To avoid this make sure that I_DC_MAX = I_MOT_MAX + 2A)
+-#define N_MOT_MAX       1000            // [rpm] Maximum motor speed limit
++// JBOT bench profile: conservative limits for the original 10s2p 4.4 Ah pack.
++// Raise I_MOT_MAX towards 15 A only after measuring MOSFET and pack temperature.
++#define I_MOT_MAX       10              // [A] Maximum single motor current limit
++#define I_DC_MAX        12              // [A] Maximum stage2 DC Link current limit for Commutation and Sinusoidal types (This is the final current protection. Above this value, current chopping is applied. To avoid this make sure that I_DC_MAX = I_MOT_MAX + 2A)
++#define N_MOT_MAX       400             // [rpm] Maximum motor speed limit
+ 
+ // Field Weakening / Phase Advance
+ #define FIELD_WEAK_ENA  0               // [-] Field Weakening / Phase Advance enable flag: 0 = Disabled (default), 1 = Enabled
+@@ -448,6 +450,10 @@
+     #define PRI_INPUT2            3, -1000, 0, 1000, 100  // TYPE, MIN, MID, MAX, DEADBAND. See INPUT FORMAT section
+   #endif
+ 
++  // JBOT bench profile: debug output on the LEFT cable (USART2, PA2/PA3).
++  // The right cable is occupied by the PWM input, so USART3 debug is not available.
++  #define DEBUG_SERIAL_USART2
++
+   #define FILTER                  6553    // 0.1f [-] fixdt(0,16,16) lower value == softer filter [0, 65535] = [0.0 - 1.0].
+   #define SPEED_COEFFICIENT       16384   // 1.0f [-] fixdt(1,16,14) higher value == stronger. [0, 65535] = [-2.0 - 2.0]. In this case 16384 = 1.0 * 2^14
+   #define STEER_COEFFICIENT       16384   // 1.0f [-] fixdt(1,16,14) higher value == stronger. [0, 65535] = [-2.0 - 2.0]. In this case 16384 = 1.0 * 2^14. If you do not want any steering, set it to 0.
