@@ -4,121 +4,116 @@
 |---|---|
 | Document | Component and assembly list |
 | Code | BOM-001 |
-| Version | 0.1 |
-| Date | 2026-10-22 |
-| Status | Provisional |
-| Scope | Complete robot, bench, and integration hardware |
+| Version | 0.2 |
+| Date | 2026-11-12 |
+| Status | Stage 1 donor hardware fixed; stage 2 open |
+| Scope | Robot, donor reuse, bench, and integration hardware |
 
-This is the single place to track project hardware. The list starts from the
-current provisional architecture and must be completed before procurement.
-Quantities are per robot unless a line explicitly describes bench equipment.
-`TBD` means the exact part, rating, or connector is still open.
+This is the single place to track project hardware. Quantities are per robot
+unless a line describes bench equipment. `TBD` means the exact part, rating, or
+connector is still open. "Donor" means the part is reused from the hoverboard and
+must not be ordered.
 
-## 1. Compute and control
+## 1. Reused from the donor hoverboard
 
-| ID | Item | Qty | Provisional selection | Interface / notes | Status |
+| ID | Item | Qty | Specification | Interface / notes | Status |
 |---|---|---:|---|---|---|
-| C-01 | Companion computer | 1 | Raspberry Pi 5, 16 GB | Ethernet/Wi-Fi, USB, PCIe; cooling required | Selected |
-| C-02 | Companion storage | 1 | NVMe SSD via PCIe HAT, or high-endurance microSD | Boot and logs; NVMe preferred | TBD |
-| C-03 | Companion cooling | 1 | Active cooler | Sustained SLAM/AI load | TBD |
-| C-04 | Real-time MCU board | 1 | Pico 2 W (RP2350), ESP32-S3, or STM32H723/H743 | ADR-001 decides after benchmark | Candidate |
-| C-05 | MCU debug probe | 1 | CMSIS-DAP or vendor probe | Flashing, trace, recovery | TBD |
-| C-06 | CAN controller | 1 | Native FDCAN/TWAI, or MCP2518FD/MCP2515 over SPI | Required for Pico 2 W; classic CAN for actuators | TBD |
-| C-07 | CAN transceiver | 1+ | TJA1051T/3, 3.3 V classic CAN | 1 Mbit/s actuator bus; not CAN FD qualified | Selected |
-| C-08 | CAN termination and protection | 1 set | 2 x 60 ohm split termination, common-mode choke, TVS | Per bus segment | TBD |
-| C-09 | RPi-MCU link | 1 | CAN FD or UART | Final transport depends on ADR-002 | TBD |
-| C-10 | Connectors and harnesses | 1 set | Locking connectors, strain relief | CAN, UART, power, debug | TBD |
+| D-01 | Mainboard | 1 | STM32F103RCT6, 12 MOSFETs, 2 hall inputs ×3, current shunts, buzzer, LED | The only board that drives the motors; power latch on PA5 | In hand |
+| D-02 | Hub motor | 2 | Direct drive, about 350 W, 6.5 in wheel, 3 hall sensors | One per wheel; phases and halls wired to D-01 | In hand |
+| D-03 | Battery pack | 1 | 10s2p Li-ion, 36 V nominal, 42.0 V full, 4.4 A·h, ~158 W·h, integrated BMS | Original charge port and charger | In hand |
+| D-04 | Power button | 1 | Momentary, firmware-held latch | On the mainboard (PA5) | In hand |
+| D-05 | Charge port | 1 | BMS charge input, charge-detect line to PA12 | Also used as the charging interlock | In hand |
+| D-06 | Wheel and tyre | 2 | 6.5 in, solid or pneumatic as fitted | Tyre condition affects traction and rolling resistance | In hand |
+| D-07 | Motor cables and hall harness | 2 sets | Original 3-phase plus 5-wire hall | Inspect for chafing before reuse | In hand |
 
-## 2. Actuation
+Not reused and not ordered: both sideboards, deck, covers, and the original
+charger cable beyond the pack's own charger.
 
-| ID | Item | Qty | Provisional selection | Interface / notes | Status |
+## 2. Control and radio
+
+| ID | Item | Qty | Selection | Interface / notes | Status |
 |---|---|---:|---|---|---|
-| A-01 | Hip actuator | 2 | RobStride RS02 | Classic CAN; approximately 17 N*m peak; thermal margin must be verified | Provisional |
-| A-02 | Wheel actuator | 2 | RobStride RS05 | Classic CAN; torque, speed, thermal, and mounting data pending | Provisional |
-| A-03 | Actuator power harness | 4 | Vendor cable or equivalent | Current rating, connector keying, bend radius | TBD |
-| A-04 | Actuator CAN harness | 1 set | Twisted pair with shield | Linear bus, short stubs, shared termination plan | TBD |
-| A-05 | Actuator mounting hardware | 1 set | Vendor flanges or custom adapters | Backlash, stiffness, service access | TBD |
-| A-06 | Wheel hubs and wheels | 2 | TBD | Tire diameter, tread, hub interface, inertia | TBD |
+| C-01 | Radio transmitter | 1 | **BetaFPV LiteRadio 3 Pro, ExpressLRS 2.4 GHz**, 8 channels | Operator input only; not a safety path | In hand |
+| C-02 | Radio receiver | 1 | **RadioMaster XR1, ExpressLRS 2.4 GHz**, CRSF output | USART2, left cable, 420 kbaud, 3.3 V | In hand |
+| C-03 | Receiver antenna | 1 | Supplied with the XR1 | Keep clear of motor phases and the DC-DC | In hand |
+| C-04 | IMU | 1 | **Bosch BNO055**, 9-DOF fusion module | I2C2, right cable, 100 kHz, 100 Hz fusion | Selected |
+| C-05 | Mainboard debug probe | 1 | ST-Link V2 or V3 | SWD on PA13/PA14, 3.3 V | TBD |
+| C-06 | USB-UART adapter | 1 | 3.3 V logic, CP2102/FT232 class | Debug output and CRSF sniffing | TBD |
+| C-07 | DC-DC 5 V | 1 | 36–42 V in, 5 V / 1 A out, input rated ≥ 60 V | Receiver and IMU only; never feed from the 15 V rail directly | TBD |
+| C-08 | Mission computer | 1 | Raspberry Pi 5 class or equivalent | Stage 3; USART3 setpoints | Deferred |
 
 ## 3. Power and safety
 
-| ID | Item | Qty | Provisional selection | Interface / notes | Status |
+| ID | Item | Qty | Selection | Interface / notes | Status |
 |---|---|---:|---|---|---|
-| P-01 | Main battery | 1 | Milwaukee M18 XC5.0, 18 V nominal | Runtime target 30-50 min | Selected |
-| P-02 | Battery adapter | 1 | M18 adapter with fused leads | Reverse polarity protection, contact retention | TBD |
-| P-03 | Main fuse | 1 | 40 A at 18 V, 30 A at 24-36 V | Protect battery and harness | TBD |
-| P-04 | Main contactor or relay | 1 | TBD | Controlled by E-stop and supervisor | TBD |
-| P-05 | Precharge circuit | 1 | Resistor and bypass | Limit DC-link inrush | TBD |
-| P-06 | Reverse polarity protection | 1 | Ideal-diode MOSFET or equivalent | Low loss at full load | TBD |
-| P-07 | Input TVS and filtering | 1 set | Transient suppressor, bulk capacitance, ferrite | EMI and load-step margin | TBD |
-| P-08 | Hardware E-stop | 1 | Two-channel normally closed loop | Removes actuator power, keeps logic alive | TBD |
-| P-09 | DC-DC 12 V | 1 | 12 V / 5 A, efficiency >= 90% | RPi peripherals, fans, lidar | TBD |
-| P-10 | DC-DC 5 V | 1 | 5 V / 5-6 A, soft-start, OVP | RPi 5 and USB peripherals | TBD |
-| P-11 | DC-DC 3.3 V | 1 | 3.3 V / 1 A | MCU, IMU, RC receiver, logic | TBD |
-| P-12 | Power monitor | 1 | INA226-class shunt monitor | Bus voltage, current, SoC input | TBD |
-| P-13 | Power distribution board | 1 | Custom PCB or fused busbar | Branch fuses, connectors, test points | TBD |
-| P-14 | Branch fuses | 1 set | Per actuator and DC-DC | Coordinated with main fuse | TBD |
-| P-15 | Emergency stop button and cable | 1 | Latching, clearly marked | Reachable during bench and field tests | TBD |
-| P-16 | Braking or bleeder element | 1 | TBD | Only if regeneration or stored energy requires it | TBD |
+| P-01 | Main fuse | 1 | 30–40 A, voltage rated ≥ 60 V DC | In the battery positive line | TBD |
+| P-02 | Kill switch | 1 | Latching, ≥ 40 A, reachable in a fall | Battery line; the only stop that works with a hung firmware | TBD |
+| P-03 | Battery connector | 1 set | Keyed, ≥ 40 A, reverse-polarity safe | Between the pack and the fuse | TBD |
+| P-04 | Precharge | 1 | Resistor and bypass, if inrush is a problem | Protects the mainboard capacitors | Optional |
+| P-05 | Branch fuse, logic | 1 | 2 A | DC-DC input | TBD |
+| P-06 | Wiring and insulation | 1 set | 14–12 AWG power, 26–30 AWG signal | The 15 V cable pins must be insulated when unused | TBD |
+| P-07 | Capacitor bleeder | 1 | 1 kΩ / 2 W across the DC link | Stored-energy safety during service | TBD |
 
-## 4. Sensing and teleoperation
+## 4. Sensing and telemetry
 
-| ID | Item | Qty | Provisional selection | Interface / notes | Status |
+| ID | Item | Qty | Selection | Interface / notes | Status |
 |---|---|---:|---|---|---|
-| S-01 | IMU | 1 | Bosch BNO055 | I2C or UART; 100 Hz fusion plus gyro propagation | Selected |
-| S-02 | High-rate IMU fallback | 1 | ICM-42688-P or equivalent | SPI; only if BNO055 latency is insufficient | Fallback |
-| S-03 | Lidar | 1 | 2D or 3D lidar, model TBD | Mounting height, field of view, power, interface | TBD |
-| S-04 | Camera | 1 | RGB-D or USB camera, optional | USB 3.0/CSI-2; power and heat budget | Optional |
-| S-05 | RC transmitter | 1 | LiteRadio 3 Pro, ExpressLRS 2.4 GHz | Operator input only, not a safety path | Selected |
-| S-06 | RC receiver | 1 | ExpressLRS 2.4 GHz receiver with CRSF output | UART to MCU; binding and failsafe validation required | Selected |
-| S-07 | RC antennas | 2 | Matched 2.4 GHz antennas | Diversity and mounting orientation | TBD |
-| S-08 | Wheel position feedback | 2 | Integrated in RS05 | Resolution and sign convention to be verified | Provisional |
-| S-09 | Hip position feedback | 2 | Integrated in RS02 | Resolution and sign convention to be verified | Provisional |
+| S-01 | IMU | 1 | Bosch BNO055 | Same as C-04 | Selected |
+| S-02 | High-rate IMU fallback | 1 | ICM-42688-P class | Only if gyro propagation from BNO055 proves insufficient | Fallback |
+| S-03 | Pack voltage sense | 1 | Existing mainboard divider | Calibrate `BAT_CALIB_ADC` against a multimeter | In hand |
+| S-04 | Pack current sense | 1 | Existing DC-link shunt | Limited accuracy; sufficient for derating | In hand |
+| S-05 | Temperature sense | 1 | Existing NTC on the mainboard | Board temperature, not cell temperature | In hand |
+| S-06 | Telemetry to handset | 1 | CRSF link quality and pack voltage | Replaces the sideboard battery LEDs | With C-02 |
 
-## 5. Chassis and mechanism
+## 5. Stage 2: hip actuation and mechanism
 
-| ID | Item | Qty | Provisional selection | Interface / notes | Status |
+| ID | Item | Qty | Selection | Interface / notes | Status |
 |---|---|---:|---|---|---|
-| M-01 | Main chassis | 1 | TBD | Carries battery, electronics, hips, and legs | TBD |
-| M-02 | Four-bar leg links | 4 sets | TBD | One 1-DOF four-bar per side; link lengths pending | TBD |
-| M-03 | Bearings and bushings | 1 set | TBD | Hip, rocker, and wheel-fork joints | TBD |
-| M-04 | Pivot shafts and fasteners | 1 set | TBD | Stiffness, preload, retaining method | TBD |
-| M-05 | Leg springs | 2 | Optional | Rate and travel only if the spring option is kept | Optional |
-| M-06 | Wheel forks | 2 | TBD | Rigid C-D-E coupler | TBD |
-| M-07 | Electronics enclosure | 1 | TBD | IP rating, cooling, service access | TBD |
-| M-08 | Cable management | 1 set | Sleeves, clips, strain relief | Protect CAN and power runs | TBD |
-| M-09 | Labels and safety markings | 1 set | TBD | E-stop, battery, pinch points | TBD |
+| A-01 | Hip actuator | 2 | TBD; integrated driver with UART or CAN preferred | One per leg at joint A, in the body | Open |
+| A-02 | Hip driver, if not integrated | 2 | TBD | Needs its own current loop, thermal design, and position feedback | Open |
+| A-03 | Hip power harness | 2 | TBD | Sized to the actuator stall current | Open |
+| A-04 | Hip feedback | 2 | Integrated encoder or absolute sensor | Position, speed, current, temperature | Open |
+| M-01 | Main chassis | 1 | Custom plate or tube frame carrying the donor mainboard, pack, and hips | Battery and electronics low and centred | TBD |
+| M-02 | Four-bar leg links | 2 sets | 1-DOF planar four-bar per side | Link lengths after CAD synthesis | TBD |
+| M-03 | Bearings and bushings | 1 set | Hip, rocker, and wheel-fork joints | Backlash and stiffness | TBD |
+| M-04 | Pivot shafts and fasteners | 1 set | TBD | Preload and retention | TBD |
+| M-05 | Leg springs | 2 | Optional | Only if the passive compliance option is kept | Optional |
+| M-06 | Wheel forks | 2 | Rigid C–D–E coupler | Carries the hub motor axle | TBD |
+| M-07 | Electronics enclosure | 1 | TBD | Keeps the BNO055 rigid and the radio antenna clear | TBD |
+| M-08 | Cable management | 1 set | Sleeves, clips, strain relief | Protect signal wires from motor phases | TBD |
+| M-09 | Labels and safety markings | 1 set | TBD | Kill switch, battery, pinch points | TBD |
 
 ## 6. Bench and test equipment
 
-| ID | Item | Qty | Provisional selection | Interface / notes | Status |
+| ID | Item | Qty | Selection | Interface / notes | Status |
 |---|---|---:|---|---|---|
-| T-01 | Current-limited lab PSU | 1 | 24 V / 20 A class | First power-up without battery | TBD |
-| T-02 | Safety test frame | 1 | Welded or extruded frame with body fixation | Stops and tether for first balance tests | TBD |
-| T-03 | CAN analyzer | 1 | USB-CAN or vendor tool | Bus capture, injection, timing checks | TBD |
-| T-04 | Oscilloscope | 1 | 2-4 channel, >= 100 MHz | Ripple, E-stop, PWM, CAN integrity | TBD |
-| T-05 | Current probe | 1 | DC to >= 100 kHz | Actuator and DC-link transients | TBD |
-| T-06 | Logic analyzer | 1 | >= 8 channel | SPI, UART, CRSF, timing | TBD |
-| T-07 | Multimeter and thermal probe | 1 set | True-RMS, thermocouples or IR | Bring-up and thermal runs | TBD |
-| T-08 | Battery charger and storage | 1 set | M18-compatible | Safe charge and storage | TBD |
+| T-01 | Current-limited lab PSU | 1 | 0–60 V / 5 A minimum | First power-up without the pack | TBD |
+| T-02 | Safety rig | 1 | Frame or tether that holds the body | Required for every balance test | TBD |
+| T-03 | Oscilloscope | 1 | 2–4 channel, ≥ 100 MHz | PWM, current shunt, CRSF, ripple | TBD |
+| T-04 | Current probe | 1 | DC to ≥ 100 kHz | Phase and DC-link transients | TBD |
+| T-05 | Logic analyzer | 1 | ≥ 8 channel | CRSF, I2C, UART timing | TBD |
+| T-06 | Multimeter and thermal probe | 1 set | True-RMS, IR or thermocouple | Voltage calibration and thermal runs | TBD |
+| T-07 | Battery charger | 1 | Original hoverboard charger | Only charger approved for this pack | In hand |
+| T-08 | Fire-safe charging surface | 1 | Non-flammable, ventilated | Li-ion pack handling | TBD |
+| T-09 | Servo tester | 1 | 1–2 ms PWM output | Verifies the stage 1 CRSF-to-PWM adapter | TBD |
 
 ## 7. Open BOM decisions
 
-- Final MCU board and debug probe after ADR-001.
-- CAN FD versus classic CAN for the RPi-MCU backbone.
-- Exact RS02 and RS05 variants, gear ratios, and cable lengths.
-- Battery voltage: 18 V baseline versus 24-36 V preferred.
-- Lidar and camera models, mounting, and power budget.
-- Frame material, link geometry, bearings, and wheel size.
-- Whether an external ADC is required for the selected MCU.
-- Final connector family and service-loop requirements.
-- Spare quantities for actuators, fuses, and harnesses.
+- Stage 2 hip actuator model, torque, and interface.
+- Mission computer model and whether it appears in stage 2 or stage 3.
+- Fuse rating after the first current measurement on the real pack.
+- Whether a precharge circuit is needed at 42 V with this mainboard.
+- Connector family for the battery, kill switch, and external devices.
+- Spare quantities for fuses, hub motors, and hall harnesses.
+- Whether the BNO055 module or a bare BNO055 with an external crystal is used.
 
 ## 8. Rules
 
-- Every line must have an owner before ordering.
+- Donor parts are reused, not duplicated. Do not order a second mainboard or a
+  second pack unless the first is destroyed.
 - Do not order a long-lead item until its interface and envelope are confirmed.
-- A substitution must preserve CAN, torque/speed, thermal, mounting, and feedback
-  requirements; record it here and in the relevant ADR.
-- Keep robot hardware, bench equipment, and optional extensions visually distinct.
-- Update this list whenever `config/robot.toml` or `docs/hardware.md` changes.
+- A substitution must preserve the interface, torque/speed, thermal, and
+  feedback requirements; record it here and in the relevant ADR.
+- Keep robot hardware, bench equipment, and optional extensions distinct.
+- Update this list whenever `config/robot.toml` or [`docs/hardware.md`](hardware.md)
+  changes.

@@ -1,64 +1,128 @@
 # System Requirements Specification (SRS)
-## Wheeled-Bipedal Autonomous Robot (Project Code: JBOT-WheeledBiped)
+## Wheeled Balancing Robot on a Donor Hoverboard (Project Code: JBOT-Wheeled Biped)
 
 ---
 
 ## 1. Overview & Objectives
-The **JBOT-WheeledBiped** is an advanced autonomous robotic platform combining wheeled mobility with bipedal balancing dynamics (similar to Roadrunner / Upkie concepts). It is designed for research, autonomous navigation, dynamic balancing, and extensible manipulation tasks in unstructured environments.
+
+**JBOT-Wheeled Biped** is a self-balancing wheeled robot built on a donor
+hoverboard and extended in two stages. Stage 1 is a two-wheel balancing platform
+that drives and steers on command from a handheld radio. Stage 2 adds two hip
+actuators so the legs can move the body independently. The wheel controller, the
+radio link, and the balancing core stay the same across both stages.
 
 ### Key Objectives:
-- High-bandwidth real-time balance control loop (≥ 1 kHz) on low-level MCUs.
-- High-level autonomous navigation, mapping (SLAM), and perception running on Raspberry Pi 5.
-- Modular Rust-based software architecture (zenoh/ROS2 middleware, safe asynchronous communication).
-- Modular hardware expansion slots for future manipulator arms and sensory upgrades.
+
+- Balance and motor control local to the hoverboard mainboard, independent of
+  the radio link and of any mission computer.
+- Radio command from a BetaFPV LiteRadio 3 Pro through a RadioMaster XR1
+  receiver over CRSF.
+- Tilt and tilt rate from a BNO055 mounted on the chassis.
+- Conservative reuse of the donor power stage: original MOSFET bridges, current
+  shunts, battery, and BMS.
+- A Rust workspace that composes the same control logic on the host and on the
+  target, with a separate embedded firmware project.
 
 ---
 
 ## 2. Hardware Specifications
 
-### 2.1. Power Subsystem
-- **Battery:** Milwaukee M18 XC5.0 (18 V Li-ion pack) is the baseline. A 24–36 V pack is the preferred option for actuator speed and torque margin; the final voltage is an open decision.
-- **Protection & Regulation:** BMS with overcurrent, thermal, and under-voltage protection; high-efficiency step-down DC-DC converters (12 V, 5 V, 3.3 V rails).
-- **Estop:** Hardware emergency stop switch interrupting power to all four actuators immediately.
+### 2.1. Reused Donor Hardware
 
-### 2.2. Compute Architecture
-- **High-Level Computer:** Raspberry Pi 5 (16GB RAM) running Linux (Ubuntu Server / Raspberry Pi OS 64-bit). Responsible for navigation, perception, high-level planning, and middleware bridging.
-- **Low-Level Microcontroller:** candidates are Pico 2 W (RP2350), ESP32-S3, and STM32H723/H743; ADR-001 selects one after benchmark. Responsible for the 1 kHz balance loop, attitude acquisition, CAN coordination, RC input, safety watchdog, and supervisory control of the actuators. The provisional RobStride RS02 hips and RS05 wheels integrate FOC, encoder, and driver. Pico 2 W needs an external CAN controller and external ADC.
-- **Interconnect:** CAN FD backbone between the MCU and Raspberry Pi 5 where required, plus a classic CAN 1 Mbit/s actuator bus through a TJA1051T/3 transceiver for the RobStride actuators; UART as a deterministic fallback. The RC receiver uses CRSF UART.
+- **Mainboard:** STM32F103RCT6, Cortex-M3 at 72 MHz, 256 KB flash, 48 KB RAM,
+  12 MOSFETs in two 3-phase bridges, hall inputs, current shunts, buzzer, status
+  LED, and a firmware-held power latch. This is the only board that drives the
+  motors.
+- **Motors:** two direct-drive hub motors, about 350 W each, 6.5 in wheels
+  (radius 0.0825 m), three hall sensors per motor. Bench limit: 10 A and 400 rpm
+  per motor until thermal behaviour is measured.
+- **Battery:** 10s2p Li-ion pack, 36 V nominal, 42.0 V full, about 30 V cutoff,
+  4.4 A·h, ~158 W·h, with an integrated BMS and the original charge port.
+- **User controls:** the original power button and charge port. The button is a
+  soft latch, not an emergency stop.
+- **Discarded:** both sideboards, the deck, and the covers. The sideboards are
+  UART slaves with their own MCU and IMU and would contend with the radio and
+  the IMU on the same wires.
 
-### 2.3. Actuation & Mechanics
-- **Actuator count:** four motors total — two RobStride RS02 hips in the body and two RobStride RS05 wheels, one wheel per leg. Both selections are provisional.
-- **Hip actuators:** provisional RobStride RS02 with approximately 17 N·m peak, integrated FOC, encoder, and driver. Preliminary sizing flags the RS02 as marginal for a 15 kg platform; verify continuous torque and thermal margin before committing. RS05 is reserved for the wheels.
-- **Wheel actuators:** provisional RobStride RS05, one per wheel; verify at least 5–8 N·m per wheel and the thermal envelope. Each wheel has its own motor; dual wheels per leg are not part of the baseline.
-- **Wheels:** one smooth-tread wheel per leg for indoor use; off-road tires are an optional swap.
-- **Wheel drive:** one powered wheel per leg avoids the scrub of a locked dual-wheel axle. Traction and slip must be validated on the target surface.
+### 2.2. Added Hardware
 
-### 2.4. Leg Mechanism (1-DOF Four-Bar)
-- **Topology:** each leg is a planar four-bar linkage with one active DOF. The links are the ground link **A–B** (the chassis/base), the upper crank **A–C** driven by the RobStride RS02 hip, the lower rocker **B–D** (passive), and the wheel fork **C–D–E** (one rigid coupler) with the wheel axle at **E**.
-- **Base:** the base is the chassis link **A–B**, which connects the hip motor axis A and the passive rocker pivot B. The moving wheel fork is not the base.
-- **Knee:** the bend of the wheel fork is rigid; there is no articulated knee joint and no independent shank control.
-- **Coupled motion:** the hip angle sets the wheel position along a fixed coupler curve. Body height and wheel fore-aft offset are coupled and cannot be commanded independently.
-- **Compliance:** an optional spring/damper between the base and the upper crank provides passive suspension and impact relief. It does not add a controllable DOF; its stiffness and travel must be included in the model if fitted.
+- **Radio transmitter:** BetaFPV LiteRadio 3 Pro, ExpressLRS 2.4 GHz, 8
+  channels. It is an operator input, never a safety path.
+- **Radio receiver:** RadioMaster XR1, ExpressLRS 2.4 GHz, CRSF output,
+  420 kbaud, connected to USART2 on the left cable.
+- **IMU:** Bosch BNO055, 9-DOF with onboard fusion, I2C at 100 Hz, mounted
+  rigidly and low on the chassis.
+- **Power:** 36–42 V to 5 V DC-DC rated for at least 60 V input, a main fuse, and
+  a latching kill switch in the battery line.
+- **Stage 2:** two hip actuators with drivers, model still open, and a leg
+  mechanism. The mainboard cannot drive them; it has only two motor bridges.
+
+### 2.3. Compute Architecture
+
+- **Low-level controller:** the donor STM32F103RCT6 mainboard. It runs the FOC
+  current loop at 16 kHz and the balance loop at 200 Hz, reads the BNO055 and the
+  hall sensors, receives CRSF setpoints, and enforces tilt, current, and voltage
+  limits.
+- **Mission computer (stage 3):** Raspberry Pi 5 class or equivalent. It sends
+  setpoints over USART3 and runs state estimation, telemetry, and navigation. It
+  is not a safety authority and cannot arm the robot.
+- **Interconnect:** CRSF on USART2; IMU on I2C2; mission computer or hip driver
+  on USART3. The right cable's pins are shared between USART3 and I2C2, so the
+  IMU moves to I2C1 (two soldered wires) when the link is needed.
+- **CAN:** present on the MCU but not routed on this board. Reserved for a later
+  controller or an external hip bus; not used in stage 1.
+
+### 2.4. Actuation & Mechanics
+
+- **Stage 1:** two hub motors, one wheel per side, no legs. Balance, forward and
+  reverse drive, turning, and spin in place.
+- **Stage 2:** two hip actuators, one per leg, driving a planar 1-DOF four-bar
+  per side. The hip angle moves the wheel along a fixed coupler curve; body
+  height and fore-aft offset are coupled.
+- **Torque budget:** about 5 N·m total from the two wheels at the bench current
+  limit. The centre of mass must stay low: at 10 kg, a 0.25 m CoM height needs
+  about 25 N·m per radian of tilt, which leaves roughly 12° of recoverable lean.
+- **Wheels:** one powered wheel per side, no shared axle, so turning in place
+  needs no scrub.
 
 ### 2.5. Sensors
-- **IMU:** BNO055 9-DoF IMU with 100 Hz fusion, mounted near the base/body center. The 1 kHz loop uses gyro propagation; ICM-42688-P is the high-rate fallback. Calibration must persist across reboots.
-- **LiDAR:** 2D LiDAR (e.g., RPLIDAR / LDROBOT) or 3D LiDAR (e.g., Livox / Ouster mini) for SLAM and obstacle detection.
-- **Vision (Optional/Upgrade):** RGB-D camera (e.g., Intel RealSense D435i / OAK-D) for visual SLAM and object detection.
+
+- **IMU:** BNO055, 100 Hz fusion, gyro propagated to the 200 Hz balance rate.
+  ICM-42688-P remains the high-rate fallback.
+- **Motor feedback:** hall sensors and phase current shunts on the mainboard.
+- **Pack monitoring:** the mainboard voltage divider and DC-link shunt, with
+  thresholds of 36.0 / 33.0 / 30.0 V.
+- **LiDAR and camera:** not part of stage 1 or stage 2; reserved for the
+  navigation stage.
 
 ---
 
 ## 3. Software Architecture & Requirements
 
 ### 3.1. Language & Ecosystem
-- **Primary Language:** Rust (edition 2021+), strictly adhering to safety, zero-cost abstractions, and `no_std` compatibility for low-level firmware where applicable.
-- **Middleware:** Zenoh and/or ROS2 (rclrs / zenoh-ros2-bridge) for distributed node communication.
+
+- **Primary language:** Rust (edition 2021+), with `no_std` firmware for the
+  mainboard and a host workspace for the higher-level software.
+- **Embedded stack:** `thumbv7m-none-eabi`, `stm32f1xx-hal`, RTIC 2, with the
+  proven fixed-point FOC core reused as generated C behind a thin shim.
+- **Middleware:** Zenoh and/or ROS 2 on the mission computer, once it exists.
 
 ### 3.2. Real-Time & Low-Level Firmware (MCU)
-- Deterministic loop frequency: $\ge 1000\text{ Hz}$ for the balance loop. Hip QDD current loops run inside the integrated actuators; wheel FOC runs in the hub driver or an external stage.
-- Balance scope is 3D: pitch via wheel torque, yaw via differential wheel torque, height via the common hip angle, and roll via differential hip height. The 2D wheeled inverted pendulum is a reduced-order model.
-- Hardware watchdog timer triggering safe shutdown/damping if communication with RPi 5 is lost ($> 100\text{ ms}$).
 
-### 3.3. High-Level Software (RPi 5)
-- **State Estimation:** Extended Kalman Filter (EKF) combining wheel odometry and IMU data.
-- **Navigation:** Nav2 / custom Rust navigation stack supporting local costmaps, global path planning, and obstacle avoidance.
-- **Safety Monitor:** System supervisor tracking CPU/GPU temperature, battery voltage, communication latency, and motor fault flags.
+- Deterministic balance loop at 200 Hz on the F103 mainboard, with the FOC
+  current loop at 16 kHz.
+- Balance scope for stage 1 is pitch and yaw only, through differential wheel
+  torque. Stage 2 adds height and roll through the hips.
+- Radio and mission-computer inputs are setpoints. Only the radio can arm.
+- Loss of both links means zero setpoints while balancing continues.
+- Hardware watchdog and tilt cutoff; a command timeout must never remove motor
+  torque while the robot is balancing.
+
+### 3.3. High-Level Software (Mission Computer)
+
+- **State Estimation:** Extended Kalman Filter combining wheel odometry and IMU
+  data.
+- **Navigation:** Nav2-equivalent stack supporting local costmaps, global path
+  planning, and obstacle avoidance.
+- **Safety Monitor:** supervisor tracking CPU temperature, battery voltage,
+  communication latency, and motor fault flags.

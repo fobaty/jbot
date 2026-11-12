@@ -6,7 +6,7 @@
 | Code | FW-001 |
 | Version | 0.1 |
 | Date | 2026-11-12 |
-| Status | Stage 1 built, not yet flashed |
+| Status | Bring-up step 1 built, not yet flashed |
 | Scope | STM32F103RCT6 hoverboard mainboard, bench bring-up |
 
 This directory holds the firmware used to turn a stock hoverboard mainboard into
@@ -53,9 +53,9 @@ Two consequences of this list:
   hangs, the button no longer cuts power. It is also small and not reachable
   during a fall. The kill switch in the battery line is the real safety path.
 
-## 2. Stage 1: EFeru baseline
+## 2. Bring-up step 1: EFeru baseline
 
-The purpose of stage 1 is to prove the whole chain before any custom code:
+The purpose of this step is to prove the whole chain before any custom code:
 toolchain, SWD access, option bytes, motor phases, hall sensors, current
 sensors, battery measurement, and the radio link.
 
@@ -205,9 +205,9 @@ board may be the alternate layout: set `BOARD_VARIANT 1` and rebuild.
 - The right sensor cable is shared between USART3 and I2C2 (PB10/PB11), so the
   PWM input, the CRSF link and an I2C IMU cannot share it.
 
-## 4. Stage 1 exit criteria
+## 4. Bring-up step 1 exit criteria
 
-Stage 1 is done when all of the following hold on the bench:
+This step is done when all of the following hold on the bench:
 
 - [ ] Firmware uploads and boots from the battery.
 - [ ] Debug UART prints the expected line.
@@ -216,7 +216,7 @@ Stage 1 is done when all of the following hold on the bench:
 - [ ] `BatV` matches a multimeter within 0.2 V.
 - [ ] No MOSFET or motor overheating after two minutes at low load.
 
-## 5. Stage 2: Rust firmware
+## 5. Bring-up step 2: Rust firmware
 
 The Rust firmware reuses the proven parts of EFeru and reimplements the rest.
 The split is intentional: the field-oriented control core is generated
@@ -264,27 +264,31 @@ behind the same interface if a pure-Rust FOC is ever wanted.
 The mainboard exposes exactly two 4-pin cables. Each carries GND, 12/15 V and
 two signal wires, and the right cable's signal pins are shared between USART3
 and I2C2. Two signals per cable means at most two devices fit on the stock
-connectors, which is enough for stage 2 and not enough for stage 3.
+connectors, which is enough for the stage 1 balance platform and not enough once
+the mission computer or the hip driver is added.
 
-**Stage 2, no soldering:**
+**Stage 1 balance platform, no soldering:**
 
 | Device | Interface | Pins | Cable |
 |---|---|---|---|
 | XR1 receiver, CRSF | USART2 | PA3 RX, PA2 TX | left |
 | BNO055 | I2C2 | PB10 SCL, PB11 SDA | right |
 
-**Stage 3, mission computer added:**
+**Stage 2 hips or stage 3 mission computer, right cable reclaimed:**
 
 | Device | Interface | Pins | Cable |
 |---|---|---|---|
 | XR1 receiver, CRSF | USART2 | PA3 RX, PA2 TX | left |
-| Robot MCU | USART3 | PB11 RX, PB10 TX | right |
+| Hip driver or mission computer | USART3 | PB11 RX, PB10 TX | right |
 | BNO055 | I2C1 remapped | PB8 SCL, PB9 SDA | two wires to the MCU |
 
-I2C1 is not routed to any connector, so stage 3 needs two 30 AWG wires soldered
+I2C1 is not routed to any connector, so this step needs two 30 AWG wires soldered
 to the TQFP64 package. Check for a PB8/PB9 test pad first. Moving the IMU
-between stages is a pin and remap change only; keep the bus behind an interface
-so the balance code does not care.
+between configurations is a pin and remap change only; keep the bus behind an
+interface so the balance code does not care.
+
+Run the BNO055 in accelerometer-gyro fusion mode: the magnetometer sees motor
+current and DC-DC fields as heading changes, which corrupts the yaw reference.
 
 ### 5.5. Sideboards
 

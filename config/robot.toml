@@ -1,38 +1,42 @@
-# JBOT-WheeledBiped baseline model configuration.
+# JBOT-Wheeled Biped baseline model configuration.
 #
-# Status: preliminary hardware values. Every number is a design estimate that
-# must be replaced by CAD or bench measurement before the BOM interface freeze.
-# The uncertainty is recorded next to each block; the validator rejects values
-# that are non-physical or use an unsupported schema version.
+# Status: stage 1 donor hardware. Values are estimates that must be replaced by
+# CAD or bench measurement. The uncertainty is recorded next to each block; the
+# validator rejects values that are non-physical or use an unsupported schema
+# version.
 #
-# Provisional hardware: BNO055 IMU, ExpressLRS 2.4G receiver (LiteRadio 3 Pro),
-# TJA1051T/3 CAN transceiver, RobStride RS02 hips and RS05 wheels. Actuator
-# models are provisional and may be replaced by cheaper equivalents. See
-# docs/hardware.md.
+# Stage 1 hardware: donor hoverboard STM32F103RCT6 mainboard, two direct-drive
+# hub motors, 10s2p 36 V pack, BNO055 IMU, RadioMaster XR1 receiver paired with
+# a BetaFPV LiteRadio 3 Pro transmitter. See docs/hardware.md.
+#
+# Stage 2 adds two hip actuators (model TBD) and the four-bar legs. The leg and
+# hip blocks are the provisional stage 2 model, not present on the robot yet.
 
 schema_version = 1
 
 [mechanical]
-# Source: mass budget for a 15 kg dry robot (MOB-28), steel/Al frame and two
-# M18-class batteries excluded from the body figure. Uncertainty: +/- 1.0 kg.
-body_mass_kg = 6.0
+# Source: donor mainboard, pack, frame, and electronics, excluding the wheels.
+# Uncertainty: +/- 1.0 kg.
+body_mass_kg = 5.0
 # Source: uniform-body estimate about the wheel axle. Uncertainty: +/- 0.10.
-body_pitch_inertia_kg_m2 = 0.35
-# Source: hub motor, rim, and tyre estimate. Uncertainty: +/- 0.2 kg.
-wheel_mass_kg = 0.9
-# Source: 180 mm nominal wheel diameter. Uncertainty: +/- 5 mm.
-wheel_radius_m = 0.09
+body_pitch_inertia_kg_m2 = 0.30
+# Source: donor hub motor with rim and tyre, weighed with the wheel fitted.
+# Uncertainty: +/- 0.3 kg.
+wheel_mass_kg = 2.3
+# Source: 6.5 in wheel. Uncertainty: +/- 3 mm.
+wheel_radius_m = 0.0825
 # Source: solid-disc estimate 0.5 * m * r^2 plus hub inertia. Uncertainty: +/- 20%.
-wheel_inertia_kg_m2 = 0.0040
-# Source: packaging sketch with the two legs outside the body. Uncertainty: +/- 20 mm.
-track_width_m = 0.42
-# Source: body centre of mass above the axle in the nominal stance. Uncertainty: +/- 50 mm.
+wheel_inertia_kg_m2 = 0.0078
+# Source: donor axle between wheel centres. Uncertainty: +/- 20 mm.
+track_width_m = 0.32
+# Source: packaging sketch with the pack and electronics above the axle.
+# Uncertainty: +/- 50 mm.
 com_height_m = 0.25
 
 [leg]
-# Planar four-bar in the fore-aft/vertical leg plane.
-# Source: preliminary linkage synthesis. Link lengths are still provisional and
-# must be confirmed against CAD and the bench. Uncertainty: +/- 5 mm per link.
+# Stage 2 only. Planar four-bar in the fore-aft/vertical leg plane.
+# Source: preliminary linkage synthesis. Link lengths are provisional and must
+# be confirmed against CAD and the bench. Uncertainty: +/- 5 mm per link.
 base_m = 0.14
 crank_m = 0.11
 rocker_m = 0.13
@@ -46,29 +50,30 @@ fork_branch = "negative"
 # Source: synthesis; limits are in hip-joint coordinates (rad).
 hip_min_rad = -1.55
 hip_max_rad = -0.70
-# Source: QDD vendor ratio placeholder. Uncertainty: +/- 1.
+# Source: placeholder for an integrated hip actuator gearbox. Uncertainty: +/- 1.
 hip_gear_ratio = 10.0
 # Optional spring between the base and the upper crank; zero means not fitted.
 spring_stiffness_nm_per_rad = 0.0
 spring_travel_rad = 0.0
 
 [drive]
-# Source: RobStride RS05 provisional selection; value is still a placeholder
-# until the vendor torque/speed/thermal datasheet is confirmed. Uncertainty: +/- 20%.
-max_wheel_torque_nm = 8.0
+# Source: donor hub motor at the 10 A bench current limit, estimated at about
+# 0.25 N*m/A. Measure on the bench before raising the limit. Uncertainty: +/- 20%.
+max_wheel_torque_nm = 2.5
+# Source: 400 rpm firmware speed limit = 41.9 rad/s, rounded down.
 max_wheel_speed_rad_s = 40.0
 max_wheel_accel_rad_s2 = 120.0
 
 [hip]
-# Source: RobStride RS02 provisional peak torque, approximately 17 N*m.
-# Continuous torque and thermal derating are pending vendor data.
+# Stage 2 only. Placeholder until the hip actuator is selected. The current
+# value is the class of actuator needed for a roughly 10 kg platform, not a vendor spec.
 max_torque_nm = 17.0
 max_speed_rad_s = 8.0
 
 [control]
-# Source: architecture timing budget. Balance loop runs on the MCU at 1 kHz.
-balance_rate_hz = 1000.0
+# Source: EFeru main loop period of 5 ms on the STM32F103.
+balance_rate_hz = 200.0
 # 30 degrees, inside the 25-35 degree requirement range.
 tilt_limit_rad = 0.5235987755982988
-# Source: SAF command-timeout budget.
+# Source: radio link-loss budget.
 command_timeout_ms = 100
