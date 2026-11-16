@@ -4,10 +4,10 @@
 |---|---|
 | Document | Detailed task breakdown (Task Breakdown) |
 | Code | TB-001 |
-| Version | 1.1 |
-| Date | 2026-11-12 |
+| Version | 1.2 |
+| Date | 2026-11-15 |
 | Status | Working document |
-| Basis | `docs/specification.md`, `docs/roadmap.md`, `docs/architecture.md`, `docs/system_requirements.md`, `docs/hardware.md`, `docs/bom.md`, `firmware/README.md` |
+| Basis | `docs/specification.md`, `docs/roadmap.md`, `docs/architecture.md`, `docs/system_requirements.md`, `docs/hardware.md`, `docs/pico-bridge.md`, `docs/bom.md`, `firmware/README.md` |
 | Scope | Donor hoverboard stage 1 → hips stage 2 → mission computer and navigation → extensions → acceptance |
 
 ---
@@ -16,8 +16,10 @@
 
 ### 0.1. Identifier structure
 
-- `M2` — hoverboard testbed and bring-up: donor board, EFeru baseline, radio, IMU, first balance.
-- `M3` — Rust balance controller and low-level firmware for the donor mainboard, stages 1–2.
+- `M2` — hoverboard testbed and bring-up: donor board, EFeru baseline, Pico 2 W,
+  radio, IMU, first balance.
+- `M3` — real-time tier firmware for stages 1–2: Pico 2 W balance controller plus
+  the EFeru torque-node profile on the F103 mainboard.
 - `M4` — sensor drivers and transport on the mission computer.
 - `M5` — mission computer onboard software: composition, estimation, supervisor, middleware.
 - `M6` — navigation, localization and SLAM.
@@ -53,10 +55,10 @@ track is retired, and `M2` is the donor hoverboard bring-up. Hardware scope live
 ### 0.4. Critical path
 
 ```text
-M2 donor bring-up: sideboards removed, EFeru baseline, radio, IMU, first balance (G1)
-  → M3 stage 1: 200 Hz balance, drive, turn, spin in place
+M2 donor bring-up: sideboards removed, EFeru baseline, Pico 2 W, radio, IMU, first balance (G1)
+  → M3 stage 1: 200 Hz balance on the Pico, drive, turn, spin in place
   → M3 stage 2: hips, legs, 3D balance
-  → M4 mission computer–mainboard transport and lidar
+  → M4 mission computer–Pico transport and lidar
   → M5 EKF and supervisor
   → M6 SLAM and localization
   → M6 planners and autonomous runs
@@ -70,8 +72,8 @@ In parallel: `M7` (safety), `M10` (CI, documentation, procurement), and BOM comp
 
 | Module | Stages | Tasks | Estimate, person-days | Key result | Gate |
 |---|---|---:|---:|---|---|
-| M2. Hoverboard testbed and bring-up | 1 | 27 | 20–30 | Sideboard removal, EFeru baseline, CRSF, BNO055 | G1 |
-| M3. Rust balance controller and low-level firmware | 1–2 | 48 | 55–80 | 16 kHz FOC, 200 Hz balance, hips, protocol | G1–G2 |
+| M2. Hoverboard testbed and bring-up | 1 | 27 | 20–30 | Sideboard removal, EFeru torque-node baseline, Pico 2 W, CRSF, BNO055 | G1 |
+| M3. Real-time tier firmware | 1–2 | 55 | 60–90 | Pico balance at 200 Hz, torque link, hips, protocol | G1–G2 |
 | M4. Sensor drivers and mission computer transport | 3 | 27 | 30–45 | UART, lidar, camera, synchronization | G3 |
 | M5. Mission computer onboard software | 3 | 26 | 35–50 | `jbot_node`, EKF, supervisor, Zenoh | G3 |
 | M6. Navigation and SLAM | 4 | 39 | 55–75 | Maps, localization, costmap, planners | G4 |
@@ -79,7 +81,7 @@ In parallel: `M7` (safety), `M10` (CI, documentation, procurement), and BOM comp
 | M8. Integration and testing | 3–5 | 22 | 30–45 | HIL, system and acceptance protocols | G3–G5 |
 | M9. Extensions | 5 | 31 | 40–60 | Camera/AI, manipulator, docking station | G5 |
 | M10. Cross-cutting work | all | 22 | 18–28 | CI, documentation, procurement, management | all |
-| **Total** | | **258** | **295–431** | | |
+| **Total** | | **265** | **300–441** | | |
 
 > Estimates are ideal person-days for a team of 2–3 engineers. The calendar plan and buffers are
 > defined separately in `docs/roadmap.md`.
@@ -108,25 +110,27 @@ Gate `B1` is the BOM baseline. Before ordering:
 ## 3. M2. Hoverboard testbed and bring-up
 
 **Goal:** turn the stock hoverboard into an instrumented, radio-controlled balancing testbed: remove
-the sideboards, prove the board and the pack, flash the EFeru baseline, wire the CRSF receiver and the
-BNO055, implement the charge interlock and safety rig, and obtain the first balance runs.
+the sideboards, prove the board and the pack, flash the EFeru torque-node baseline, mount the Pico 2 W,
+wire the CRSF receiver and the BNO055 to the Pico, implement the charge interlock and safety rig, and
+obtain the first balance runs.
 
-**Platform:** donor STM32F103RCT6 mainboard at 72 MHz, two direct-drive hub motors, 10s2p 36 V pack
-with BMS, firmware-held power latch on PA5, charge detect on PA12.
+**Platform:** donor STM32F103RCT6 mainboard at 72 MHz (torque actuator node), Raspberry Pi Pico 2 W
+(RP2350, 150 MHz, FPU) as the real-time controller, two direct-drive hub motors, 10s2p 36 V pack with
+BMS, firmware-held power latch on PA5, charge detect on PA12.
 
-**Inputs:** `docs/hardware.md` sections 2–6; `firmware/README.md` sections 1–4; `docs/bom.md`
-sections 1–3; `docs/specification.md` sections 4, 5, 9.
-**Outputs:** inspected donor board, EFeru baseline, Rust controller skeleton, calibration records,
-safety rig, G1 protocol.
+**Inputs:** `docs/hardware.md` sections 2–7; `docs/pico-bridge.md`; `firmware/README.md` sections 1–4;
+`docs/bom.md` sections 1–3; `docs/specification.md` sections 4, 5, 9.
+**Outputs:** inspected donor board, EFeru torque-node build, Pico controller skeleton, calibration
+records, safety rig, G1 protocol.
 
 ### 3.1. Donor board preparation
 
 | ID | Task | Priority | Depends on | Acceptance criterion |
 |---|---|---|---|---|
-| [ ] M2-01 | Disconnect both sideboards, remove the deck and covers, and keep the mainboard, motors, pack, button and charge port | P1 | — | No sideboard is connected; the two 4-pin cables carry only the receiver and the IMU |
+| [ ] M2-01 | Disconnect both sideboards, remove the deck and covers, and keep the mainboard, motors, pack, button and charge port | P1 | — | No sideboard is connected; the left cable carries only the Pico link and the right cable is free |
 | [ ] M2-02 | Visual inspection of the mainboard and harnesses: MOSFETs, shunts, connectors, capacitors, chafing | P1 | M2-01 | Inspection record with photographs; every fault cleared or the board rejected |
 | [ ] M2-03 | Continuity inspection: phase-to-phase resistance, hall toggling, no phase-to-ground or phase-to-15 V short, no DC-link short | P1 | M2-02 | Measurements recorded and compared between the two motors; no short found |
-| [ ] M2-04 | Insulate the 15 V pins on both cables; mount the board, pack, fuse, kill switch, DC-DC and receiver on the bench frame | P1 | M2-03 | No exposed live 15 V pin; the kill switch breaks the pack positive; power wiring short and twisted |
+| [ ] M2-04 | Insulate the 15 V pins on both cables; mount the board, pack, fuse, kill switch, DC-DC, Pico and receiver on the bench frame | P1 | M2-03 | No exposed live 15 V pin; the kill switch breaks the pack positive; the Pico has a stable 5 V rail and a reachable USB port |
 
 ### 3.2. EFeru baseline
 
@@ -137,39 +141,40 @@ safety rig, G1 protocol.
 | [ ] M2-07 | Verify the debug UART on PA2 TX at 115200 8N1: `in1/in2`, `cmdL/cmdR`, `BatADC/BatV`, `TempADC/Temp` | P1 | M2-06 | Line prints every 125 ms; values respond to stick input |
 | [ ] M2-08 | Calibrate `BAT_CALIB_REAL_VOLTAGE` and `BAT_CALIB_ADC` against a multimeter at two pack voltages | P1 | M2-07 | `BatV` within 0.2 V at both points |
 | [ ] M2-09 | Verify hall and phase direction on both wheels, lifted first; correct by swapping phases or hall order, never in software | P1 | M2-06 | Both wheels turn in the commanded direction at low current |
+| [ ] M2-28 | Build and flash `eferu-balance.patch`: `CTRL_MOD_REQ = TRQ_MODE`, `SERIAL_TIMEOUT` 20, jbot current and speed limits | P1 | M2-09 | Torque commands from a USB-UART adapter move both wheels; feedback arrives at 100 Hz |
 
 ### 3.3. Radio link
 
 | ID | Task | Priority | Depends on | Acceptance criterion |
 |---|---|---|---|---|
 | [ ] M2-10 | Bind the LiteRadio 3 Pro to the XR1 on the same ExpressLRS major version | P1 | — | Bind confirmed; link quality visible on the handset |
-| [ ] M2-11 | Wire the XR1 CRSF output to the left cable: USART2, PA3 RX / PA2 TX, 420 kbaud, 3.3 V logic | P1 | M2-10 | CRSF frames decoded; no other transmitter on the line |
-| [ ] M2-12 | Use the CRSF-to-PWM adapter on the right cable (PB10/PB11) only for the first EFeru bench test, then remove it | P1 | M2-11, M2-07 | EFeru responds to sticks through the adapter; adapter removed before the Rust controller runs |
+| [ ] M2-11 | Wire the XR1 CRSF output to the Pico UART1: GP5 RX, GP4 TX, 420 kbaud, 3.3 V logic | P1 | M2-10 | CRSF frames decoded on the Pico; no other transmitter on the line |
+| [ ] M2-12 | Confirm the XR1 pad assignment (TX vs RX) with a scope before soldering the harness | P1 | M2-10 | Pad map recorded; no contention on the CRSF line |
 | [ ] M2-13 | Record the channel map and set the transmitter failsafe; verify link loss with the motors lifted | P1 | M2-11 | CH1 steering, CH2 throttle, CH3 arm, CH4 mode, CH5 rate; loss of frames zeroes setpoints |
-| [ ] M2-14 | Implement the arming path: only the radio can arm, and the arm switch is checked at every transition | P1 | M2-11, M3-19 | Motors arm only from the switch; disarm is immediate and latched |
+| [ ] M2-14 | Implement the arming path on the Pico: only the radio can arm, and the arm switch is checked at every transition | P1 | M2-11, M3-19 | Motors arm only from the switch; disarm is immediate and latched |
 
 ### 3.4. IMU
 
 | ID | Task | Priority | Depends on | Acceptance criterion |
 |---|---|---|---|---|
-| [ ] M2-15 | Mount the BNO055 rigidly, low and centred, and wire I2C2 to the right cable: PB10 SCL, PB11 SDA, 100 kHz | P1 | M2-04 | No play in the mount; the bus answers at 0x28 or 0x29 |
-| [ ] M2-16 | Run accelerometer, gyroscope and magnetometer calibration; persist the offsets | P1 | M2-15 | Calibration status 3; offsets survive reboot |
+| [ ] M2-15 | Mount the BNO055 rigidly, low and centred, and wire it to the Pico I2C1: GP2 SDA, GP3 SCL, 400 kHz, with pull-ups on the module | P1 | M2-04 | No play in the mount; the bus answers at 0x28 or 0x29 with short, twisted wires |
+| [ ] M2-16 | Run accelerometer and gyro calibration in `IMUPLUS` mode; persist the offsets in Pico flash | P1 | M2-15 | Calibration status 3; offsets survive reboot |
 | [ ] M2-17 | Verify 100 Hz fusion, gyro propagation, and the pitch/roll sign convention against wheel direction | P1 | M2-16, M2-09 | Positive pitch leans forward; a slow tilt tracks without drift |
 
 ### 3.5. Power, charge and safety
 
 | ID | Task | Priority | Depends on | Acceptance criterion |
 |---|---|---|---|---|
-| [ ] M2-18 | Implement the charge interlock on PA12: with the charger plugged in, arming is refused and torque stays zero | P1 | M2-08, M2-14 | Plugging in the charger inhibits arming; unplugging does not arm by itself |
-| [ ] M2-19 | Implement the voltage thresholds 36.0 / 33.0 / 30.0 V and regen limiting; start runs at about 90 % charge | P1 | M2-08 | Warning, limiting and stop trigger; no BMS trip on a full pack |
-| [ ] M2-20 | Verify the kill switch and the E-stop with the motors running; logic stays powered and logging is preserved | P1 | M2-04, M2-09 | Motor power is removed; the mainboard state is logged |
+| [ ] M2-18 | Implement the charge interlock: the flag reaches the Pico (extended feedback byte or PA12 → GP11), and a plugged-in charger refuses arming and keeps torque at zero | P1 | M2-08, M2-14 | Plugging in the charger inhibits arming; unplugging does not arm by itself |
+| [ ] M2-19 | Implement the voltage thresholds 36.0 / 33.0 / 30.0 V and regen limiting on the Pico; start runs at about 90 % charge | P1 | M2-08 | Warning, limiting and stop trigger; no BMS trip on a full pack |
+| [ ] M2-20 | Verify the kill switch and the E-stop with the motors running; logic stays powered and logging is preserved | P1 | M2-04, M2-09 | Motor power is removed; the mainboard and Pico state is logged |
 | [ ] M2-21 | Build the safety rig and the tether; write the first-power-on and per-run checklists | P1 | M2-04 | The rig holds the body at any tilt; checklists are mandatory before a run |
 
 ### 3.6. First balance runs
 
 | ID | Task | Priority | Depends on | Acceptance criterion |
 |---|---|---|---|---|
-| [ ] M2-22 | Bring up the Rust controller far enough to spin one wheel: RTIC tasks, clock tree, and the FOC core through FFI (M3-02 continues the full crate) | P1 | M2-06 | The Rust binary boots and spins one wheel through the C core |
+| [ ] M2-22 | Bring up the Pico firmware far enough to send torque frames and read feedback: clock tree, UART0, `embassy` tasks (M3-02 continues the full crate) | P1 | M2-06, M2-28 | The Pico boots, streams torque frames, and reports wheel speeds from the feedback |
 | [ ] M2-23 | Balance on the rig at zero command; tune PD first | P1 | M2-17, M2-22 | Ten minutes on the rig without touching the stops |
 | [ ] M2-24 | Drive, reverse, turn, and spin in place under radio control | P1 | M2-23 | All four motions executed; current within 10 A per motor |
 | [ ] M2-25 | Verify tilt cutoff and command-loss policy: tilt overrides every source; command loss zeroes setpoints without cutting balance torque | P1 | M2-23 | Both behaviours demonstrated with the rig |
@@ -178,106 +183,120 @@ safety rig, G1 protocol.
 
 ---
 
-## 4. M3. Rust balance controller and low-level firmware
+## 4. M3. Real-time tier firmware (Pico 2 W + F103 torque node)
 
-**Goal:** implement deterministic firmware on the donor mainboard: hall and current acquisition, the
-16 kHz FOC current loop reused from the generated C core, the 200 Hz balance loop, the stage-2 hip
-link, the communication protocol, watchdog, and safe states.
+**Goal:** implement the deterministic real-time tier: the Pico 2 W balance controller (CRSF ingest,
+BNO055, 200 Hz balance, limits, state machine, telemetry, blackbox, mission link) and the EFeru
+torque-node profile on the F103 mainboard (16 kHz FOC, current limits, 100 ms serial timeout).
 
-**Platform:** STM32F103RCT6 at 72 MHz, 256 KB flash, 48 KB RAM. The board has exactly two 3-phase
-bridges, so the wheel motors are driven on-board and the stage-2 hip actuators use their own drivers.
-CAN is not routed and stays a deferred interface.
+**Platform:** Raspberry Pi Pico 2 W (RP2350, 150 MHz, FPU) as Tier 1a; STM32F103RCT6 at 72 MHz as
+Tier 1b. The F103 has exactly two 3-phase bridges, so the wheel motors are driven on-board and the
+stage-2 hip actuators use their own drivers. CAN is not routed and stays a deferred interface.
 
-**Inputs:** `docs/architecture.md` sections 3.2, 5, 7; `docs/specification.md` sections 3, 5, 8, 9;
-`docs/hardware.md`; `firmware/README.md` section 5.
-**Outputs:** `firmware/hoverboard-rs`, `jbot_protocol`, bench records, actuator/jitter/latency/E-stop
-protocols.
+**Inputs:** `docs/architecture.md` sections 3.2, 5, 7; `docs/pico-bridge.md`;
+`docs/specification.md` sections 3, 5, 8, 9; `docs/hardware.md`; `firmware/README.md` sections 2.10, 5.
+**Outputs:** `firmware/pico-bridge`, `eferu-balance.patch`, `jbot_protocol`, bench records,
+actuator/jitter/latency/E-stop protocols.
 
-### 4.1. Firmware architecture and HAL
+### 4.1. Firmware architecture and bring-up
 
 | ID | Task | Priority | Depends on | Acceptance criterion |
 |---|---|---|---|---|
-| [ ] M3-01 | Confirm the donor mainboard as the fixed controller for stages 1–2 and close ADR-001: 72 MHz, 16 kHz FOC, 200 Hz balance headroom, flash/RAM map, pin budget | P1 | — | 200 Hz balance with 16 kHz FOC and CRSF measured on the board; ADR records that no new MCU is bought |
-| [ ] M3-02 | Create `firmware/hoverboard-rs` as its own workspace: `thumbv7m-none-eabi`, `stm32f1xx-hal` 0.11, RTIC 2, build and memory map | P1 | M3-01, M2-06 | Firmware builds, flashes and starts on the donor board |
-| [ ] M3-03 | Implement initialization of clocks, timers, 16 kHz PWM, ADC/DMA, hall capture, I2C, GPIO and watchdog | P1 | M3-02 | All peripherals pass the startup self-test |
-| [ ] M3-04 | Ensure safe default states: motor output off after reset, outputs in a known state | P1 | M3-03 | Verified with an oscilloscope; complies with SAF-10 |
+| [ ] M3-01 | Confirm the two-tier split (Pico for balance, F103 for FOC) and record ADR-011: 150 MHz with FPU, 16 kHz FOC, 200 Hz balance headroom, flash/RAM map, pin budget | P1 | — | 200 Hz balance with 16 kHz FOC measured on the pair; the ADR records that no new MCU is bought |
+| [ ] M3-02 | Create `firmware/pico-bridge` as its own workspace: `thumbv8m.main-none-eabihf`, `embassy-rp`, `embassy-executor`, `defmt`, `probe-rs`, build and memory map | P1 | M3-01, M2-06 | Firmware builds, flashes and starts on the Pico; `.cargo/config.toml` is tracked despite the root ignore rule |
+| [ ] M3-03 | Implement initialization of the clock tree (150 MHz), the 200 Hz timer, UART0/UART1, I2C1, the PIO UART, GPIO and the hardware watchdog | P1 | M3-02 | All peripherals pass the startup self-test |
+| [ ] M3-04 | Ensure safe default states: zero torque after reset, outputs in a known state, no motor output before the first valid command | P1 | M3-03 | Verified with an oscilloscope on the UART and the GP10 marker; complies with SAF-10 |
 
 ### 4.2. Sensors and actuators
 
 | ID | Task | Priority | Depends on | Acceptance criterion |
 |---|---|---|---|---|
-| [ ] M3-05 | Implement the BNO055 driver over I2C: fusion configuration, calibration persistence, timestamping, gyro propagation to 200 Hz | P1 | M3-03 | Fusion valid at 100 Hz; the propagated pitch at 200 Hz is stable |
+| [ ] M3-05 | Implement the BNO055 driver on the Pico over I2C1: `IMUPLUS` fusion configuration, calibration persistence in flash, timestamping, gyro propagation to 200 Hz | P1 | M3-03 | Fusion valid at 100 Hz at 400 kHz; the propagated pitch at 200 Hz is stable |
 | [ ] M3-06 | Implement self-test, gyro and accelerometer bias calibration, and calibration persistence | P1 | M3-05 | Calibration survives reboot; error within acceptable limits |
-| [ ] M3-07 | Implement hub motor hall feedback: speed and position from 15 hall states per electrical revolution, direction, resolution and sign | P1 | M3-03 | Direction and sign match physical rotation on both wheels |
-| [ ] M3-08 | Implement acquisition of phase current, pack voltage, DC-link current and board temperature via ADC synchronized to PWM | P1 | M3-03 | Measurements are synchronous; noise and offset within acceptable limits |
+| [ ] M3-07 | Implement the mainboard feedback parser: wheel speeds, pack voltage, board temperature, echoed command; derive per-wheel speed and odometry on the Pico | P1 | M3-03 | Direction and sign match physical rotation on both wheels |
+| [ ] M3-08 | Implement pack voltage, current-equivalent and temperature acquisition by consuming the mainboard feedback frame; keep a local filtered value for the limits | P1 | M3-03 | Filtered values track a bench multimeter; noise within acceptable limits |
 
-### 4.3. FOC and actuator loops
+### 4.3. Torque path and current loop
 
-> The donor mainboard carries the power stage. The generated fixed-point FOC core and SVPWM are reused
-> through one FFI boundary (`BLDC_controller_step` plus plain structs); everything above it is Rust.
+> The F103 keeps the upstream EFeru C. The generated fixed-point FOC core and SVPWM are not ported to
+> Rust: `eferu-balance.patch` only selects `TRQ_MODE` and shortens the serial timeout. The Pico side of
+> the torque path is Rust and unit-tested.
 
 | ID | Task | Priority | Depends on | Acceptance criterion |
 |---|---|---|---|---|
-| [ ] M3-09 | Integrate the generated FOC core and SVPWM through the FFI boundary; keep the Rust side of the boundary unit-tested | P1 | M3-02 | One function, plain structs, no heap across it; a wheel spins from Rust |
-| [ ] M3-10 | Implement electrical angle calibration and hall phase-order verification for both hub motors | P1 | M3-07, M3-09 | Calibration is reproducible; wrong hall order is detected |
-| [ ] M3-11 | Run the 16 kHz current loop with current limiting and integrator saturation | P1 | M3-09, M3-10 | Step response without sustained oscillation; overshoot within tolerance |
-| [ ] M3-12 | Implement a 1–2 kHz speed loop with acceleration and speed limiting | P1 | M3-11 | Response under inertial load; stable across load changes |
-| [ ] M3-13 | Implement limits on current (10 A per motor bench profile), torque, speed (400 rpm) and temperature with derating | P1 | M3-11, M3-12 | Exceeding a limit leads to limiting, then to a fault |
-| [ ] M3-14 | Single-wheel bring-up on one hub motor: rotation direction, hall sequence, encoder, torque sign | P1 | M3-10…M3-13 | All signs and directions match; no jerks or overheating |
-| [ ] M3-15 | Verify the current loop: step, overshoot, settling time, heating | P1 | M3-11 | Metrics attached; heating within limits |
-| [ ] M3-16 | Verify the speed loop under inertial load | P1 | M3-12 | Metrics attached; stability confirmed |
+| [ ] M3-09 | Implement the EFeru command encoder and feedback decoder on the Pico, with golden byte vectors for 8-, 18- and 22-byte frames | P1 | M3-02, M2-28 | Round-trip tests pass against captured bench frames |
+| [ ] M3-10 | Verify `TRQ_MODE` scaling: ±1000 units equals ±`I_MOT_MAX`, sign convention per wheel, no ramp in the F103 | P1 | M3-09, M2-28 | A commanded 100 units produces the expected current on the bench supply |
+| [ ] M3-11 | Verify the 16 kHz current loop and its limits through the F103 profile: `I_MOT_MAX` 10 A, `I_DC_MAX` 12 A, `N_MOT_MAX` 400 rpm | P1 | M3-10 | Limits measured on the bench; no bridge fault under step load |
+| [ ] M3-12 | Measure the command-to-torque delay and the mainboard's 5 ms quantization; record the number in the architecture budget | P1 | M3-11 | Delay and jitter attached to the task; the controller design uses the measured value |
+| [ ] M3-13 | Implement the Pico-side torque limits: clamp to ±1000, rate limit, per-wheel saturation with balance priority, and a counter for every clamp | P1 | M3-09 | Clamping observable in telemetry; balance never loses authority to a yaw or speed request |
+| [ ] M3-14 | Single-wheel bring-up: rotation direction, torque sign, feedback echo, and the 100 ms timeout fallback | P1 | M3-11 | All signs and directions match; removing the command zeroes torque within 100 ms |
+| [ ] M3-15 | Verify the current loop step response through the torque interface: overshoot, settling time, heating | P1 | M3-11 | Metrics attached; heating within limits |
+| [ ] M3-16 | Verify the speed response under inertial load using the balance loop's speed controller | P1 | M3-11 | Metrics attached; stability confirmed |
 
 ### 4.4. Balance loop and motion
 
 | ID | Task | Priority | Depends on | Acceptance criterion |
 |---|---|---|---|---|
-| [ ] M3-17 | Implement the 200 Hz balance task with a fixed period, without dynamic memory allocation | P1 | M3-05, M3-07, M3-12 | Period is stable; jitter measured; no heap or blocking in the loop |
-| [ ] M3-18 | Implement the selected balance controller in firmware; take parameters from configuration | P1 | M3-17 | Behaviour on the bench matches the documented design targets |
-| [ ] M3-19 | Implement the state machine `BOOT → SELF_TEST → IDLE → BALANCE → DAMPING → FAULT → E_STOP → SHUTDOWN` | P1 | M3-03 | Transitions are validated; invalid commands do not change state |
+| [ ] M3-17 | Implement the 200 Hz balance task on a hardware timer, with a fixed period and no dynamic memory allocation | P1 | M3-05, M3-07, M3-13 | Period is stable; jitter measured on GP10; no heap or blocking in the loop |
+| [ ] M3-18 | Implement the selected balance controller in the Pico firmware; take parameters from configuration | P1 | M3-17 | Behaviour on the bench matches the documented design targets |
+| [ ] M3-19 | Implement the state machine `BOOT → SELF_TEST → IDLE → BALANCE → DAMPING → FAULT → E_STOP → SHUTDOWN` on the Pico | P1 | M3-03 | Transitions are validated; invalid commands do not change state |
 | [ ] M3-20 | Implement tilt/roll limiting, fall detection and transition to `DAMPING` | P1 | M3-17, M3-19 | Configurable tilt threshold 25–35° and roll limit; transition before the dangerous angle |
 | [ ] M3-21 | Implement torque distribution between the two wheels, and in stage 2 the hip height/roll allocation, with saturation and balance priority | P1 | M3-18 | When saturated, balance is preserved; yaw and roll degrade predictably |
-| [ ] M3-22 | Implement processing of speed and yaw commands from CRSF and the USART3 setpoint link: latest-value, validity check, acceleration limiting | P1 | M3-19 | Stale and invalid commands are ignored; acceleration is limited |
+| [ ] M3-22 | Implement processing of speed and yaw commands from CRSF and the mission link: latest-value, validity check, acceleration limiting | P1 | M3-19 | Stale and invalid commands are ignored; acceleration is limited |
 | [ ] M3-23 | Implement hip height and roll control outside the 200 Hz balance loop (four-bar, stage 2, P2) | P2 | M3-07, M3-17 | Height adjustable by at least 100 mm; roll reachable; balance loop does not degrade |
 | [ ] M3-24 | Implement odometry for the two wheels in stage 1 and for four actuators in stage 2, and publish it in telemetry | P1 | M3-07 | Odometry matches the reference on straights and turns |
 | [ ] M3-25 | Start PD balancing on the safety frame with a zero command | P1 | M3-18, M3-19 | Holding for at least 10 min without falling |
 | [ ] M3-26 | Tune the balance controller on the bench and compare against the design targets | P1 | M3-25 | Differences are explained; parameters refined |
 | [ ] M3-27 | Conduct bench tests: 10 N·s impulse, 10° deviation, 10° slope | P1 | M3-26 | All scenarios without falling; current and temperature within limits |
-| [ ] M3-28 | Measure the 200 Hz balance jitter and end-to-end latency; if jitter > 50 µs, record the controller decision | P1 | M3-25 | Measurement protocol with oscilloscope/GPIO; decision documented |
+| [ ] M3-28 | Measure the 200 Hz balance jitter, the GP10 marker, and the end-to-end latency; if jitter > 50 µs, record the controller decision | P1 | M3-25 | Measurement protocol with oscilloscope/GPIO; decision documented |
 | [ ] M3-29 | Conduct a 30 min thermal run on the bench | P1 | M3-27 | Hub motors and MOSFETs without overheating; derating does not trip falsely |
 
 ### 4.5. Communication protocol
 
 | ID | Task | Priority | Depends on | Acceptance criterion |
 |---|---|---|---|---|
-| [ ] M3-30 | Implement `jbot_protocol` with a `no_std`-compatible 8-byte header, payload up to 56 bytes and CRC-16 | P1 | M3-02 | Header is fixed; version, type, flags, sequence and timestamp are validated |
+| [ ] M3-30 | Implement `jbot_protocol` with a `no_std`-compatible 9-byte header (version, type, flags, seq u16, timestamp u32), payload up to 53 bytes and CRC-16 | P1 | M3-02 | Header is fixed; version, type, flags, sequence and timestamp are validated |
 | [ ] M3-31 | Implement messages via `postcard` and `serde`: commands, state, IMU, joints, power, faults | P1 | M3-30 | Schema is versioned; incompatible major version is rejected |
-| [ ] M3-32 | Implement UART transport: COBS, CRC-16, resynchronization on `0x00`, maximum 256 bytes | P1 | M3-30 | Corrupted and truncated frames are recovered; error counters increase |
-| [ ] M3-33 | Implement the two board links: USART2 CRSF at 420 kbaud on the left cable, USART3 framed setpoints/telemetry at 115200 on the right cable. Reserve a CAN path behind a feature flag; CAN is not routed on the donor board and is deferred for stages 1–2 | P1 | M3-30 | Both links exchange on the bench; the CAN path is documented as deferred and validated only on `vcan` |
+| [ ] M3-32 | Implement COBS transport on the Pico PIO UART: delimiter resync, 72-byte buffer, CRC-16/CCITT-FALSE, error counters | P1 | M3-30 | Corrupted and truncated frames are recovered; error counters increase |
+| [ ] M3-33 | Implement the three Pico links: UART0 EFeru torque frames at 115200, UART1 CRSF at 420 kbaud, PIO UART framed setpoints/telemetry at 460800. Reserve a CAN path behind a feature flag; CAN is not routed on the donor board and is deferred for stages 1–2 | P1 | M3-30 | All links exchange on the bench; the CAN path is documented as deferred and validated only on `vcan` |
 | [ ] M3-34 | Implement the full message set: `ControlCommand`, `ModeCommand`, `EmergencyStop`, `Heartbeat`, `RobotState`, `ImuSample`, `JointFeedback`, `PowerFeedback`, `FaultReport` | P1 | M3-31 | All messages pass round-trip; IDs and rates correspond to the architecture |
 | [ ] M3-35 | Cover the protocol with round-trip, property and fuzz tests: truncation, corrupted CRC, sequence overflow, unknown version | P1 | M3-31, M3-32 | `proptest` is green; invalid frames do not panic |
 | [ ] M3-36 | Implement processing of sequence, duplicates and stale commands | P1 | M3-34 | Duplicates are idempotent; old commands are not applied |
-| [ ] M3-37 | Ensure exchange with the mission computer equivalent (PC): command 100 Hz, telemetry 200–500 Hz; measure losses and latency | P1 | M3-34 | Losses within budget; metrics available |
+| [ ] M3-37 | Ensure exchange with the mission computer equivalent (PC): command 100 Hz, telemetry 50–100 Hz; measure losses and latency | P1 | M3-34 | Losses within budget; metrics available |
 
 ### 4.6. Safety, diagnostics and firmware operation
 
 | ID | Task | Priority | Depends on | Acceptance criterion |
 |---|---|---|---|---|
-| [ ] M3-38 | Implement IWDG, 100 ms command timeout and loss of mission computer heartbeat with transition to `DAMPING` | P1 | M3-19, M3-34 | Loss of communication > 100 ms leads to `DAMPING`; IWDG resets a hung firmware |
+| [ ] M3-38 | Implement the Pico hardware watchdog with a health-gated feed, plus the mainboard 100 ms serial timeout and the mission-link 300 ms authority window | P1 | M3-19, M3-34 | A stalled balance task resets the Pico; a stalled Pico zeroes torque within 100 ms; IWDG resets a hung F103 |
 | [ ] M3-39 | Implement fault codes, latched faults, manual reset and self-test before reset | P1 | M3-19 | Reset is possible only when the robot is stationary and self-test succeeds |
-| [ ] M3-40 | Implement a blackbox ring of the last N seconds with upload over UART (P2) | P2 | M3-38 | Data is preserved on failure; upload is reproducible |
+| [ ] M3-40 | Implement a blackbox ring of the last N seconds on the Pico with upload over the mission link or USB (P2) | P2 | M3-38 | Data is preserved on failure; upload is reproducible |
 | [ ] M3-41 | Conduct an audit: absence of heap, `panic!` and `unwrap()` in the loop; add `defmt` logging | P1 | M3-17 | Static analysis and review confirm the absence of prohibited constructs |
 | [ ] M3-42 | Implement saving calibrations to non-volatile memory and restoration after reboot | P1 | M3-06, M3-10 | Calibrations are not lost; corrupted data is detected |
-| [ ] M3-43 | Conduct fault injection on the bench: UART disconnection, brownout, overheating, overload, E-stop | P1 | M3-38, M3-39 | All faults lead to a safe state; events are logged |
-| [ ] M3-44 | Implement the firmware update and rollback path: SWD over the debug probe in stages 1–2; USB DFU or a CAN bootloader is deferred | P2 | M3-02 | Update without disassembly; failed update is rolled back |
-| [ ] M3-45 | Prepare firmware documentation: memory map, pinout, protocol, version, compatibility matrix, board variant | P1 | M3-34, M3-44 | The document allows building and flashing the board from scratch |
-| [ ] M3-46 | Integrate the ExpressLRS 2.4G receiver over CRSF UART and bind it to the LiteRadio 3 Pro; define channel mapping and failsafe | P1 | M3-19, M3-22 | Channels and arming are validated; link loss and invalid frames are handled without bypassing the kill switch |
+| [ ] M3-43 | Conduct fault injection on the bench: UART disconnection, Pico reset, brownout, overheating, overload, E-stop | P1 | M3-38, M3-39 | All faults lead to a safe state; events are logged |
+| [ ] M3-44 | Implement the firmware update and rollback path: SWD with `probe-rs` or UF2 over BOOTSEL for the Pico, SWD for the F103; a signed over-the-wire update is deferred | P2 | M3-02 | Update without disassembly; a failed update is rolled back |
+| [ ] M3-45 | Prepare firmware documentation: memory map, pinout, protocols, versions, compatibility matrix, board variants | P1 | M3-34, M3-44 | The documents allow building and flashing both boards from scratch |
+| [ ] M3-46 | Integrate the XR1 receiver over CRSF on the Pico UART1 and bind it to the LiteRadio 3 Pro; define channel mapping and failsafe | P1 | M3-19, M3-22 | Channels and arming are validated; link loss and invalid frames are handled without bypassing the kill switch |
 
 ### 4.7. Stage 2: hips and 3D balance
 
 | ID | Task | Priority | Depends on | Acceptance criterion |
 |---|---|---|---|---|
-| [ ] M3-47 | Implement the hip actuator link on USART3: height/position setpoints, feedback, CRC, sequence, 300 ms validity window and hold-on-timeout. A CAN hip driver would need an external adapter and is deferred | P1 | M3-33, M2-27 | Two hip actuators follow setpoints; a stale or corrupt frame holds the leg, never releases it |
+| [ ] M3-47 | Implement the hip actuator link: height/position setpoints, feedback, CRC, sequence, 300 ms validity window and hold-on-timeout. Decide the route — an EFeru passthrough on USART3 or a second Pico PIO UART — and record it in an ADR. A CAN hip driver would need an external adapter and is deferred | P1 | M3-33, M2-27 | Two hip actuators follow setpoints; a stale or corrupt frame holds the leg, never releases it |
 | [ ] M3-48 | Integrate the two hip actuators with the two hub motors: 3D allocation, height sweep, roll command, tether runs | P1 | M3-21, M3-23, M3-47 | Four actuators stable; height range ≥ 100 mm; no fall in the stage-2 tests |
+
+### 4.8. Pico platform specifics
+
+| ID | Task | Priority | Depends on | Acceptance criterion |
+|---|---|---|---|---|
+| [ ] M3-49 | Bring up the RP2350 hardware watchdog and confirm that a deliberate hang resets into `IDLE` with zero torque | P1 | M3-03 | Reset verified; no motor output during or after the reset |
+| [ ] M3-50 | Implement the GP10 scope marker and a jitter measurement procedure | P1 | M3-17 | Marker toggle measured on the logic analyzer; procedure documented |
+| [ ] M3-51 | Implement the USB CDC console with a text command set for bench work | P2 | M3-03 | Console prints state, counters, and accepts calibration and parameter commands |
+| [ ] M3-52 | Implement the charge-detect input path agreed in M2-18, including the fallback behaviour when the signal is missing | P1 | M2-18 | Arming blocked while charging; missing signal is treated as safe |
+| [ ] M3-53 | Decide whether `ENABLE_ODOMETRY` is enabled in the EFeru profile; if enabled, extend the parser to 22 bytes | P2 | M3-09 | Decision recorded; parser tests cover both frame lengths |
+| [ ] M3-54 | Confirm that the wireless subsystem stays uninitialised and measure the Pico's current draw on the 5 V rail | P1 | M3-03 | Current within the 5 V DC-DC budget; wireless off in the release build |
+| [ ] M3-55 | Implement `defmt` RTT logging and a panic handler that leaves the outputs safe | P1 | M3-02 | Panic dumps over RTT; torque stays zero after a panic |
+| [ ] M3-56 | Implement a startup self-test that covers IMU presence, calibration state, mainboard link, radio, pack voltage and charge state | P1 | M3-19 | `SELF_TEST` fails loudly and blocks arming when any check is missing |
 
 ---
 
@@ -305,13 +324,13 @@ deployment.
 | ID | Task | Priority | Depends on | Acceptance criterion |
 |---|---|---|---|---|
 | [ ] M4-05 | Implement the `Transport` trait with `SerialCobs` and `Mock` implementations; reserve `SocketCan` for a future CAN interface | P1 | M3-34 | All implementations pass a common test suite; `Mock` is deterministic |
-| [ ] M4-06 | Bring up the primary UART link on USART3 (PB10/PB11) at 115200 8N1 with COBS + CRC-16; verify termination and stub length with an oscilloscope. An optional USB-CAN adapter is reserved and not required | P1 | M4-05 | Stable exchange; corrupted frames are recovered; the CAN adapter is not in the control path |
-| [ ] M4-07 | Add a second UART profile at 921600 and measure the achievable rate and error rate; keep 115200 until measured | P1 | M4-05, M3-32 | Rate and error rate recorded; the default is raised only after the measurement |
+| [ ] M4-06 | Bring up the mission link: RPi GPIO14/GPIO15 ↔ Pico GP6/GP7 (PIO UART) at 460800 8N1 with COBS + CRC-16; verify the ground return and cable length with an oscilloscope. An optional USB-CAN adapter is reserved and not required | P1 | M4-05 | Stable exchange; corrupted frames are recovered; the CAN adapter is not in the control path |
+| [ ] M4-07 | Add a second UART profile at 921600 and measure the achievable rate and error rate; keep 460800 until measured | P1 | M4-05, M3-32 | Rate and error rate recorded; the default is raised only after the measurement |
 | [ ] M4-08 | Implement frame reception/transmission with validation of version, sequence, CRC, length and timeouts | P1 | M4-05 | Invalid frames are discarded; error counters are available |
 | [ ] M4-09 | Implement metrics: frame loss, CRC errors, command age, latency. Bus-off is not applicable until a CAN interface exists | P1 | M4-08 | Metrics are published in telemetry and available to the operator |
-| [ ] M4-10 | Implement transport degradation: on sustained CRC errors or loss, hold the last valid setpoint inside the validity window and then allow `DAMPING`; log the event | P1 | M4-06, M4-07 | Degradation is observable and never leaves an old setpoint applied indefinitely |
-| [ ] M4-11 | Implement mission computer–mainboard heartbeat and handshake; loss of heartbeat puts the mainboard into `DAMPING` | P1 | M4-08, M3-38 | Loss of communication is detected within 100 ms; recovery is correct |
-| [ ] M4-12 | Implement mainboard–mission computer clock offset and drift estimation via EWMA; optionally GPIO 1 PPS | P1 | M4-08 | IMU/odometry/lidar desynchronization ≤ 10 ms; timestamps are set at sample time |
+| [ ] M4-10 | Implement transport degradation: on sustained CRC errors or loss, hold the last valid setpoint inside the validity window and then release authority; log the event | P1 | M4-06, M4-07 | Degradation is observable and never leaves an old setpoint applied indefinitely |
+| [ ] M4-11 | Implement mission computer–Pico heartbeat and handshake; loss of heartbeat drops mission authority | P1 | M4-08, M3-38 | Loss of communication is detected within 300 ms; recovery is correct |
+| [ ] M4-12 | Implement Pico–mission computer clock offset and drift estimation via EWMA; optionally GPIO 1 PPS | P1 | M4-08 | IMU/odometry/lidar desynchronization ≤ 10 ms; timestamps are set at sample time |
 
 ### 5.3. Lidar driver
 
@@ -392,7 +411,7 @@ supervisor, telemetry, middleware and correct shutdown.
 | [ ] M5-18 | Implement command validation and safety envelope: stale, invalid and untrusted commands are not applied | P1 | M5-17, M3-36 | Negative tests confirm rejection of application |
 | [ ] M5-19 | Implement priority of teleoperation over autonomous motion | P1 | M5-18 | Teleoperator takes control immediately |
 | [ ] M5-20 | Ensure startup to `IDLE` ≤ 10 s and correct shutdown by command and at low charge | P1 | M5-05, M5-17 | Time is measured; logs and configuration are preserved |
-| [ ] M5-21 | Integrate systemd watchdog and restart of `jbot_node` without loss of safety | P1 | M4-02, M5-05 | A hang leads to restart; the mainboard transitions to `DAMPING` |
+| [ ] M5-21 | Integrate systemd watchdog and restart of `jbot_node` without loss of safety | P1 | M4-02, M5-05 | A hang leads to restart; the Pico keeps balancing and only the mission authority lapses |
 
 ### 6.5. HIL, telemetry and operation
 
@@ -494,7 +513,7 @@ safety requirements.
 |---|---|---|---|---|
 | [ ] M7-01 | Conduct hazard analysis and FMEA from the very beginning; update at each gate | P1 | — | Hazard and mitigation register covers mechanics, power, software and operation |
 | [ ] M7-02 | Specify a two-channel NC E-stop: disconnecting the power stage, preserving logic, latched state; the battery kill switch is the path that survives a hung firmware | P1 | — | Specification verified on the bench; complies with SAF-02, SAF-03 |
-| [ ] M7-03 | Specify and verify the watchdog chain: kill switch → IWDG → 100 ms timeout → mission computer heartbeat → systemd → supervisor | P1 | M3-38, M5-21 | Each link is verified separately and in combination |
+| [ ] M7-03 | Specify and verify the watchdog chain: kill switch → Pico hardware watchdog → 100 ms mainboard serial timeout → F103 IWDG → mission computer heartbeat → systemd → supervisor | P1 | M3-38, M5-21 | Each link is verified separately and in combination |
 | [ ] M7-04 | Record the limits matrix: current, temperature, voltage, tilt, speed, command age | P1 | — | Limits are consistent in firmware, supervisor and documentation |
 | [ ] M7-05 | Implement a fault code catalog with severity, latched flag, context and timestamp | P1 | M3-39, M5-17 | Codes are stable; published over UART and in Zenoh/ROS2 |
 | [ ] M7-06 | Conduct a safety review before each field test and gate | P1 | M7-01 | Comments are closed; admission decision recorded |
@@ -525,8 +544,8 @@ safety requirements.
 | [ ] M8-03 | Implement UART loopback and `vcan` integration tests for the reserved CAN path | P1 | M4-05, M3-32 | Tests are reproducible in CI |
 | [ ] M8-04 | Implement tests for timeouts, degradation and heartbeat loss | P1 | M4-10, M4-11 | All scenarios pass; safe state confirmed |
 | [ ] M8-05 | Implement regression traces from bench and HIL logs with golden metrics | P1 | M8-03 | Deviations from the reference are detected |
-| [ ] M8-06 | Assemble the HIL bench: mainboard, hub motors, hip actuators, mission computer, and lidar | P1 | M3-29, M4-26 | Bench is reproducible; measurements are available |
-| [ ] M8-07 | Implement latency and jitter measurement tools, measurement protocol | P1 | M3-28, M5-23 | Mission computer–mainboard–actuator latency ≤ 10 ms; jitter ≤ 50 µs |
+| [ ] M8-06 | Assemble the HIL bench: mainboard, Pico 2 W, hub motors, hip actuators, mission computer, and lidar | P1 | M3-29, M4-26 | Bench is reproducible; measurements are available |
+| [ ] M8-07 | Implement latency and jitter measurement tools, measurement protocol | P1 | M3-28, M5-23 | Mission computer → Pico → mainboard → actuator latency ≤ 10 ms; jitter ≤ 50 µs |
 | [ ] M8-08 | Implement a fault injection suite: power, communication, sensors, mission computer, firmware | P1 | M7-03, M5-22 | Each fault has an expected safe response |
 | [ ] M8-09 | Verify startup to safe `IDLE` ≤ 10 s | P1 | M5-20 | Time measured on the assembled system |
 | [ ] M8-10 | Conduct a 2–4 hour soak test and a 24-hour run with battery replacement | P1 | M8-06 | No critical failures; logs and metrics preserved |
@@ -623,7 +642,7 @@ stages.
 | [ ] M10-01 | Configure CI: `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test` on every PR | P1 | — | CI blocks merge on violation |
 | [ ] M10-02 | Include protocol property tests: round-trip, corrupted frames, sequence wraparound | P1 | M3-35 | Tests run in CI |
 | [ ] M10-03 | Include UART loopback and `vcan` integration tests | P1 | M8-03 | Tests are stable in CI |
-| [ ] M10-04 | Configure aarch64 cross-build and firmware build in CI | P1 | M4-03, M3-02 | Artifacts are published |
+| [ ] M10-04 | Configure aarch64 cross-build, the Pico cross-build and the EFeru build in CI | P1 | M4-03, M3-02 | Artifacts are published |
 | [ ] M10-05 | Include `cargo deny` and `cargo audit` | P1 | M10-01 | Vulnerabilities and license conflicts block merge |
 | [ ] M10-06 | Configure a nightly HIL/regression run | P1 | M8-06 | Results are available; regressions are detected |
 | [ ] M10-07 | Maintain ADRs for key decisions: controller, drivers, SLAM, middleware, AI runtime, deferred CAN | P1 | — | Each decision has an ADR with a status |
@@ -664,8 +683,8 @@ stages.
 
 | Requirement group | Key tasks |
 |---|---|
-| SYS-01…SYS-04 (mainboard, balance rate, actuators, IMU) | M2-01, M2-05, M2-22, M3-01, M3-05, M3-11, M3-12, M3-17, M3-28, M8-07 |
-| SYS-05…SYS-08 (upper level, communication, latency, mission computer failure) | M4-05…M4-12, M5-03, M5-12, M5-21, M8-07 |
+| SYS-01…SYS-04 (real-time tier, balance rate, actuators, IMU) | M2-01, M2-05, M2-22, M2-28, M3-01, M3-05, M3-11, M3-12, M3-17, M3-28, M8-07 |
+| SYS-05…SYS-09 (upper level, communication, latency, mission computer failure, torque link) | M3-09…M3-13, M4-05…M4-12, M5-03, M5-12, M5-21, M8-07 |
 | AUT-01…AUT-07 (donor pack, connection, battery replacement) | M2-04, M2-08, M7-04, BOM |
 | AUT-08…AUT-13 (energy budget, DC-DC, margin) | BOM |
 | AUT-14…AUT-18 (runtime, profiles) | M8-10, M8-14, M9-30 |
@@ -685,7 +704,7 @@ stages.
 | EXT-14…EXT-21 (manipulator) | M9-02, M9-14…M9-18 |
 | EXT-22…EXT-28 (docking station) | M9-19…M9-26 |
 | EXT-29…EXT-33 (AI accelerator, reserved CAN, NVMe, jitter) | M9-03…M9-05, M9-13, M4-04 |
-| INT-01…INT-10 (UART, frame format, power) | M2-11, M3-30…M3-37, M4-05…M4-12, BOM |
+| INT-01…INT-10 (UART links, frame format, power) | M2-11, M3-09, M3-30…M3-37, M4-05…M4-12, BOM |
 | INT-11…INT-22 (Rust, no_std, queues, middleware, CI) | M3-02, M3-41, M5-03…M5-11, M10-01…M10-12 |
 | SAF-01…SAF-13 (E-stop, watchdog, latched, network) | M2-20, M3-38…M3-43, M5-17…M5-21, M7-01…M7-16, BOM |
 | REL-01…REL-08 (24 h, conditions, service, calibrations) | M3-42, M4-04, M8-10, M9-27, M10-09, M10-12 |
@@ -697,7 +716,7 @@ stages.
 | Milestone | Content | Tasks | Gate |
 |---|---|---|---|
 | S0 | Documentation, workspace, and BOM baseline | M10-01, M10-07, BOM | B1 |
-| S1 | Donor wheels and balance on the safety rig | M2-01…M2-27, M3-01…M3-29 | G1 |
+| S1 | Donor wheels and balance on the safety rig | M2-01…M2-28, M3-01…M3-29, M3-49…M3-56 | G1 |
 | S2 | Hips, legs, and 3D balance | M3-47, M3-48, M3-21, M3-23, M3-29 | G2 |
 | S3 | Mission computer, transport, telemetry, lidar, EKF | M4-01…M4-27, M5-01…M5-26 | G3 |
 | S4 | SLAM, localization, navigation, 100 runs | M6-01…M6-39 | G4 |
@@ -715,10 +734,10 @@ closed, except for interface reservation and procurement.
 | ID | Task | Result by the end of week 2 |
 |---|---|---|
 | M2-01, M2-02 | Remove the sideboards, inspect the donor board and harnesses | Inspection record with continuity measurements |
-| M2-05, M2-06 | Build and flash the EFeru baseline | Board boots from the pack; debug UART prints |
-| M2-10, M2-11 | Bind the XR1 and wire CRSF to the left cable | Channel map and failsafe recorded |
-| M2-15 | Mount and wire the BNO055 | IMU answers on I2C2 at 0x28 or 0x29 |
-| M3-02 | Create the Rust workspace | Clock tree and blink on the donor board |
+| M2-05, M2-06, M2-28 | Build and flash the EFeru baseline, then the torque-node profile | Board boots from the pack; torque commands move the wheels |
+| M2-10, M2-11, M2-12 | Bind the XR1, confirm the pads, wire CRSF to the Pico | Channel map and failsafe recorded |
+| M2-15 | Mount and wire the BNO055 to the Pico | IMU answers on I2C1 at 0x28 or 0x29 |
+| M3-02 | Create the Pico workspace | Clock tree and blink on the Pico |
 | M7-01, M7-02 | Hazard analysis and E-stop specification | Draft safety document |
 | M10-13 | Order the added parts after the BOM freeze | Placed orders; the hip actuator stays deferred |
 
@@ -729,11 +748,13 @@ closed, except for interface reservation and procurement.
 | Risk | Affected tasks | Planned response |
 |---|---|---|
 | BOM is incomplete or an interface is wrong | BOM, M3-01, M10-13 | Freeze interfaces, obtain datasheets, keep spare and substitution options |
-| The donor board cannot hold 200 Hz balance with 16 kHz FOC, CRSF and IMU | M3-01, M3-17, M3-28 | Measure early; drop to 100 Hz balance or record a controller change in an ADR |
+| The Pico cannot hold 200 Hz balance with CRSF, IMU and three UARTs | M3-17, M3-28 | Measure early; drop to 100 Hz balance or move the mission link to the second hardware UART |
+| A Pico reset or hang mid-balance ends in a fall | M3-38, M3-49, M7-03 | Health-gated watchdog feed, mainboard 100 ms timeout, kill switch, fault injection |
+| The 5 ms mainboard quantization is too coarse for the balance gains | M3-12, M3-28 | Measure the delay, include it in the design, and fall back to `hoverboard-rs` only if the data demands it |
 | The donor board is damaged or the pack is at end of life | M2-02, M2-03, M8-14 | Inspect first; a second donor is the fallback, not a new design |
 | The 2p pack cannot supply two motors at 10 A plus regen | M2-19, M3-13, M8-14 | Keep the bench profile, derate early, log sag and regen current |
 | Hip actuator selection and thermal margin are insufficient | M3-29, M3-47, M10-13 | Derive the torque in stage 1; bench thermal test before ordering; substitute a larger hip or reduce mass |
-| The UART link at 115200 cannot carry the telemetry rate | M4-06, M4-10 | Measure early; use the 921600 profile; reduce telemetry before adding hardware |
+| The UART link at 460800 cannot carry the telemetry rate | M4-06, M4-10 | Measure early; use the 921600 profile; reduce telemetry before adding hardware |
 | Optional CAN adapter on USB is unstable | M4-06, M4-10 | Keep CAN out of the control path; UART remains primary |
 | Lidar produces noise or too little data | M4-13…M4-18, M6-04 | Proven model, calibration, filtering, backup driver |
 | Rust SLAM is not mature enough | M6-01…M6-12 | Backup `slam_toolbox` via the bridge, early ADR |
@@ -750,13 +771,17 @@ closed, except for interface reservation and procurement.
 | Question | Decision task | Deadline |
 |---|---|---|
 | Hip actuator: model, torque, integrated UART driver; CAN deferred | M3-47, M10-13, BOM | Before ordering the stage-2 actuator |
-| Does the mission computer appear in stage 2 or stage 3 | M4-06, BOM | Before the right cable is allocated |
+| Hip link route: EFeru passthrough on USART3 or a second Pico PIO UART | M3-47, ADR | Before the stage-2 wiring is fixed |
+| Does the mission computer appear in stage 2 or stage 3 | M4-06, BOM | Before the mission link is allocated |
 | Leg topology: 1-DOF four-bar decided; link lengths, spring, height range, E-position | M3-23, BOM | Before detailed mechanical design |
 | Donor pack condition, replacement plan, and the confirmed 2p current limit | M2-04, BOM | Before stage 1 field runs |
 | Lidar and camera: models, mounting, power, heat | M4-13, M4-19, ADR | Before purchasing sensors |
 | SLAM: Rust-native or `slam_toolbox` via bridge | M6-01, ADR-008 | Before stage 4 |
 | AI: Hailo-8L or CPU-only; runtime `ort`/`tract`/`candle` | M9-09, ADR | Before stage 5 |
-| Firmware update path: SWD probe now; USB DFU or CAN bootloader later | M3-44, M10-08 | Before production |
+| Firmware update path: `probe-rs`/UF2 for the Pico, SWD for the F103; signed OTA later | M3-44, M10-08 | Before production |
+| Pico 5 V source: dedicated buck or a tap on the mainboard rail | M2-04, BOM | Before the harness is built |
+| Charge-detect path: feedback status byte or PA12 → GP11 | M2-18, M3-52 | Before the interlock is closed |
+| `ENABLE_ODOMETRY` on or off at the start | M3-53 | Before the torque-node firmware is frozen |
 | Docking station: contacts and charging protocol through the donor charge port | M9-19, M9-21 | Before stage 5 |
 | Mass, load and height range after the prototype | BOM, M3-23 | After prototype assembly |
 | Enclosure, connectors and maintainability | M10-16, BOM | Before manufacturing the enclosure |
@@ -768,8 +793,8 @@ closed, except for interface reservation and procurement.
 
 1. All P1 requirements are confirmed by test protocols, and the traceability matrix is filled in.
 2. P2 requirements are implemented or have an approved deferral justification.
-3. Balance loop jitter ≤ 50 µs at the 200 Hz balance rate; loss of a valid command > 100 ms leads to
-   `DAMPING`.
+3. Balance loop jitter ≤ 50 µs at the 200 Hz balance rate on the Pico; loss of a valid command > 100 ms
+   zeroes the torque on the mainboard independently of the Pico.
 4. Autonomous navigation: ≥ 95 successful runs out of 100 without collisions.
 5. Runtime on the donor 10s2p pack in a typical cycle ≥ 30 min, confirmed by measurement.
 6. E-stop and protections have passed proof-test; behavior under faults complies with the SRS.
@@ -784,6 +809,7 @@ closed, except for interface reservation and procurement.
 - `docs/roadmap.md` — stages, gates and risks.
 - `docs/architecture.md` — architecture, protocols, safety concept.
 - `docs/system_requirements.md` — system requirements.
-- `docs/hardware.md` — donor hardware, I/O map, radio, IMU.
-- `firmware/README.md` — EFeru baseline and the Rust firmware plan.
+- `docs/hardware.md` — donor hardware, Pico pin map, I/O map, radio, IMU.
+- `docs/pico-bridge.md` — Pico firmware specification.
+- `firmware/README.md` — EFeru builds and the Pico firmware plan.
 - `docs/agent_workflow.md` — agent roles and task execution order.

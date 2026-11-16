@@ -109,7 +109,7 @@ use `unwrap()` in the control loop.
 
 **Responsible for:** MCU firmware (`firmware/`, the future `jbot_protocol`), `no_std`,
 FOC/drives, IMU polling, CAN/UART framing, the watchdog, a deterministic
-loop ≥ 1 kHz, and `defmt` logs.
+balance loop at 200 Hz (Pico 2 W) and FOC at 16 kHz (STM32F103), and `defmt` logs.
 
 **Rights:** write to `firmware/` and `jbot_protocol`; run cross-build, `probe-rs`,
 and read RTT/`defmt`.

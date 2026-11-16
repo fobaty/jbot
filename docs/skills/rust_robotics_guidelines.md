@@ -6,8 +6,8 @@ Rust-Embedded-Dev, Navigation-Dev, QA-Tester, Safety-Reviewer.
 This document is the project-specific skill for Rust work on JBOT-WheeledBiped. It turns
 the system requirements into engineering rules for the two compute tiers:
 
-- **MCU tier (ESP32-S3 prototype, STM32H723/H743 production candidate):** `no_std`,
-  deterministic control, FOC, IMU, watchdog, CAN/UART.
+- **MCU tier (Pico 2 W / RP2350, STM32F103):** `no_std`, deterministic control, FOC, IMU,
+  watchdog, CAN/UART. Pico 2 W runs the 200 Hz balance loop; STM32F103 runs the 16 kHz FOC.
 - **SBC tier (Raspberry Pi 5, 16 GB):** Linux, Tokio, sensor drivers, estimation,
   navigation/SLAM, telemetry, Zenoh/ROS 2 bridge.
 
@@ -41,7 +41,7 @@ instead of choosing silently.
 
 Stop and request an Architect/Safety-Reviewer decision before changing any of:
 
-- the 1 kHz balance loop, FOC loop, watchdog feeding, or fail-safe state machine;
+- the 200 Hz balance loop, FOC loop, watchdog feeding, or fail-safe state machine;
 - E-stop, command timeout, DAMPING transition, or actuator limits;
 - the RPi-MCU wire protocol, frame header, CRC, sequence, or CAN ID allocation;
 - timestamping, time synchronization, or sensor staleness policy;
@@ -68,8 +68,8 @@ Stop and request an Architect/Safety-Reviewer decision before changing any of:
 
 | Concern | MCU | Raspberry Pi 5 |
 |---|---|---|
-| Balance and posture control | **Authority**, 1 kHz | Never |
-| FOC / motor current loop | **Authority**, 20-40 kHz | Never |
+| Balance and posture control | **Authority**, 200 Hz (Pico 2 W) | Never |
+| FOC / motor current loop | **Authority**, 16 kHz (STM32F103) | Never |
 | Watchdog and fail-safe | **Authority** | Supervisor only |
 | Command validation and limits | Final authority | Proposes commands |
 | LiDAR / camera ingestion | No | **Authority** |
@@ -98,7 +98,7 @@ That improves soft real-time behavior; it does **not** make the RPi the safety a
    wall-clock display only.
 8. **Do not move the balance loop to Linux.** The MCU keeps the robot safe if the RPi
    stalls, reboots, or loses the link.
-9. **Do not put Zenoh, ROS 2, DDS, USB, or disk I/O on the 1 kHz path.**
+9. **Do not put Zenoh, ROS 2, DDS, USB, or disk I/O on the balance loop (200 Hz) path.**
 10. **No `unsafe` without a documented safety argument and review.** Prefer safe
     abstractions and isolate unavoidable hardware access in a HAL module.
 
@@ -231,7 +231,7 @@ async fn main(_spawner: Spawner) {
 **Logging**
 
 - Use `defmt` with deferred/RTT logging, not `println!`.
-- Do not log in the 1 kHz loop. Record counters and a ring buffer, then dump on request
+- Do not log in the balance loop (200 Hz). Record counters and a ring buffer, then dump on request
   or after a fault.
 - Log values, not formatted strings, to keep flash/RAM and timing predictable.
 
@@ -765,9 +765,9 @@ one timestamp.
 - Use a counting global allocator in host tests to assert zero allocations in selected
   functions. This catches accidental `format!`, `collect`, and boxed futures.
 
-### 6.2. The 1 kHz MCU loop
+### 6.2. The Pico 2 W balance loop (200 Hz) and STM32F103 FOC (16 kHz)
 
-The budget is 1000 µs per period with jitter ≤ 50 µs (`SYS-02`).
+The Pico balance loop budget is 5000 µs (5 ms) per period with jitter ≤ 50 µs (`SYS-02`). The STM32F103 FOC runs at 16 kHz (62.5 µs period).
 
 - Trigger from a hardware timer. Use a fixed-period schedule, not a delay chain that
   accumulates drift.
@@ -842,7 +842,7 @@ For affected targets, also run the cross-builds:
 ```bash
 cargo build --release -p jbot_node
 cargo build --release --target aarch64-unknown-linux-gnu -p jbot_node
-cargo build --release --target thumbv7em-none-eabihf -p firmware
+cargo build --release --target thumbv8m.main-none-eabihf -p firmware
 ```
 
 Add `cargo deny check` and `cargo audit` where the dependency set changes (`INT-21`).

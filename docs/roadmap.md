@@ -4,10 +4,10 @@
 |---|---|
 | Document | Development Roadmap |
 | Code | RB-001 |
-| Version | 1.1 |
-| Date | 2026-11-12 |
-| Status | Working document, synchronized with SRS-001 and HW-001 |
-| Related documents | `docs/specification.md`, `docs/architecture.md`, `docs/system_requirements.md`, `docs/hardware.md`, `docs/bom.md`, `firmware/README.md` |
+| Version | 1.2 |
+| Date | 2026-11-15 |
+| Status | Working document, synchronized with SRS-001, HW-001, and FW-002 |
+| Related documents | `docs/specification.md`, `docs/architecture.md`, `docs/system_requirements.md`, `docs/hardware.md`, `docs/pico-bridge.md`, `docs/bom.md`, `firmware/README.md` |
 | Scope | Donor hoverboard two-wheel stage 1 → hip-actuated stage 2 → mission computer, navigation, extensions → acceptance |
 
 ---
@@ -18,7 +18,8 @@
 
 1. **The donor hardware is fixed.** Stage 1 is built on a stock hoverboard mainboard, its two hub
    motors, and its 10s2p pack. No new motor controller, wheel actuator, or battery is bought for
-   stage 1.
+   stage 1. The one added board is the Raspberry Pi Pico 2 W, which becomes the real-time controller
+   (ADR-011); the mainboard keeps the power stage and the FOC current loop.
 2. **Stage 1 is the critical path now.** Balancing the donor platform on its own power stage is the
    main technical risk; no later work is allowed to block it.
 3. **Fail on the bench, not in the field.** Direction, limits, thermal margin, and pack sag are
@@ -37,9 +38,11 @@
   started. **B1** is the BOM baseline gate before stage 1.
 - **Milestone S0…S6** — delivery milestones in section 9.
 - **DoD** — Definition of Done, task completion criteria.
-- **HIL** — Hardware-in-the-Loop, real mainboard + real drivers + mission computer.
-- **Balance rate** — the rate of the balance task on the mainboard. It is 200 Hz in stage 1, with the
-  16 kHz FOC current loop underneath. The rate is re-measured if the controller changes.
+- **HIL** — Hardware-in-the-Loop, real Pico + real mainboard + real drivers + mission computer.
+- **Balance rate** — the rate of the balance task, which runs on the Pico 2 W. It is 200 Hz in stage 1,
+  with the 16 kHz FOC current loop on the mainboard underneath and a 5 ms command quantization.
+- **Torque node** — the F103 mainboard in `TRQ_MODE`: it applies a torque request, enforces its own
+  current limits, and zeroes torque after 100 ms without a valid frame.
 
 ### 0.3. Indicative timeline
 
@@ -64,10 +67,12 @@ are not a commitment. Key dependencies and risks matter more than the calendar p
 - [x] Donor hardware decided: stage 1 reuses the hoverboard STM32F103RCT6 mainboard, both direct-drive
       hub motors, the 10s2p pack, the power button, and the charge port. Both sideboards, the deck,
       and the covers are discarded.
+- [x] Real-time controller decided (ADR-011): a Raspberry Pi Pico 2 W (RP2350) runs the balance loop,
+      radio ingest, IMU, and safety state machine; the mainboard is the FOC torque actuator node.
 - [x] EFeru firmware baseline pinned and patched (`firmware/README.md`): builds for `VARIANT_PWM`, not
       yet flashed. The profile limits each motor to 10 A and 400 rpm for the original pack.
-- [x] Donor hardware, stage I/O map, radio link, IMU, and charge interlock documented
-      (`docs/hardware.md`, `docs/bom.md`, `firmware/README.md`).
+- [x] Donor hardware, Pico pin map, stage I/O map, radio link, IMU, and charge interlock documented
+      (`docs/hardware.md`, `docs/pico-bridge.md`, `docs/bom.md`, `firmware/README.md`).
 - [x] System requirements formulated (`docs/system_requirements.md`).
 - [x] Architecture and safety concept designed (`docs/architecture.md`).
 - [x] SRS with requirement traceability created (`docs/specification.md`).
@@ -85,10 +90,10 @@ are not a commitment. Key dependencies and risks matter more than the calendar p
 ### 1.3. Critical path
 
 ```
-donor bring-up: sideboard removal, inspection, EFeru baseline, radio, IMU
+donor bring-up: sideboard removal, inspection, EFeru torque-node baseline, Pico 2 W, radio, IMU
 → balance on the safety rig → drive, reverse, turn, spin in place
 → stage 2 hips and 3D balance
-→ mission computer–mainboard link → EKF/odometry
+→ mission computer–Pico link → EKF/odometry
 → SLAM and localization → planners → autonomous runs → extensions → acceptance
 ```
 
@@ -106,8 +111,9 @@ assemblies before detailed firmware and mechanical work. The donor parts are reu
 
 ### 2.1. Tasks
 
-- [ ] Complete the donor reuse list and the added-parts list in [`docs/bom.md`](bom.md): main fuse,
-      kill switch, DC-DC 5 V, XR1 receiver, BNO055, debug probe, USB-UART adapter, safety rig.
+- [ ] Complete the donor reuse list and the added-parts list in [`docs/bom.md`](bom.md): Pico 2 W, main
+      fuse, kill switch, DC-DC 5 V / 1.5 A, XR1 receiver, BNO055, Pico debug probe or USB cable,
+      USB-UART adapter, safety rig.
 - [ ] Record explicitly that the mainboard, both hub motors, the 10s2p pack, the power button, and the
       charge port come from the donor and are not purchased.
 - [ ] Record that the **only long-lead item is the stage 2 hip actuator**. Leave it unordered until
@@ -118,10 +124,12 @@ assemblies before detailed firmware and mechanical work. The donor parts are reu
 - [ ] Resolve every `TBD` that affects an interface, envelope, connector, or mounting point.
 - [ ] Size the main fuse (30–40 A) and the kill switch (latching, ≥ 40 A) after the first current
       measurement on the real pack.
+- [ ] Choose the Pico's 5 V source (dedicated buck or a tap on the mainboard rail) and measure the
+      inrush before the harness is built.
 - [ ] Record substitutions with their ADR links and update `config/robot.toml`, `docs/hardware.md`, and
       `docs/bom.md`.
-- [ ] Freeze the interfaces needed by firmware, harnesses, and the chassis: the two 4-pin cables, SWD,
-      and the fused DC-DC branch.
+- [ ] Freeze the interfaces needed by firmware, harnesses, and the chassis: the two 4-pin cables, the
+      Pico pin map, SWD on both boards, and the fused DC-DC branch.
 
 ### 2.2. Gate B1 — hardware baseline
 
@@ -146,19 +154,20 @@ assemblies before detailed firmware and mechanical work. The donor parts are reu
 ## 3. Stage 1. Donor hoverboard bring-up and balance (G1)
 
 **Goal:** turn the stock hoverboard into a radio-controlled balancing platform: remove the sideboards,
-prove the donor board and the pack, flash the EFeru baseline, wire the CRSF receiver and the BNO055,
-then replace the stock input path with the Rust controller and balance, drive, and turn.
+prove the donor board and the pack, flash the EFeru torque-node baseline, mount the Pico 2 W, wire the
+CRSF receiver and the BNO055 to the Pico, then bring up the balance controller and drive and turn.
 
 **Indicative duration:** 2–3 weeks.
 
 > **Note:** the donor mainboard is the only board that drives the wheel motors in stages 1 and 2. It has
 > exactly two 3-phase bridges, so a third and fourth motor need external drivers in stage 2. CAN is not
-> routed on this board: stages 1 and 2 use UART/CRSF only.
+> routed on this board: stages 1 and 2 use UART/CRSF only. After ADR-011 the Pico owns the balance loop
+> and the mainboard is a torque node on the left cable.
 
 ### 3.1. Donor preparation
 
 - [ ] Disconnect both sideboards and set them aside for reference. They must never be reconnected: they
-      transmit their own protocol on the two signal wires the receiver and the IMU need.
+      transmit their own protocol on the two signal wires the Pico link and the hip link need.
 - [ ] Remove the deck and the covers; keep the mainboard, both hub motors, the pack, the power button,
       and the charge port.
 - [ ] Visual inspection: burnt MOSFETs, cracked shunts, corroded connectors, chafed motor and hall
@@ -167,8 +176,8 @@ then replace the stock input path with the Rust controller and balance, drive, a
       the wheel is turned, no phase-to-ground and no phase-to-15 V short, no short across the DC link.
 - [ ] Insulate the 15 V pins of both 4-pin cables; identify the two signal wires with a multimeter
       before connecting anything.
-- [ ] Mount the mainboard, pack, fuse, kill switch, DC-DC, and receiver on the bench frame; keep power
-      wiring short and twisted.
+- [ ] Mount the mainboard, pack, fuse, kill switch, DC-DC, Pico, and receiver on the bench frame; keep
+      power wiring short and twisted.
 
 ### 3.2. EFeru baseline
 
@@ -183,13 +192,15 @@ then replace the stock input path with the Rust controller and balance, drive, a
 - [ ] Verify hall and phase direction on both wheels with the wheels lifted; correct by swapping two
       phase wires or the hall order, never in software.
 - [ ] Confirm the profile limits: 10 A per motor, 12 A DC, 400 rpm.
+- [ ] Apply `eferu-balance.patch` and flash the torque-node build: `TRQ_MODE`, `SERIAL_TIMEOUT` 20
+      (100 ms), same limits. Verify that 8-byte commands move both wheels and that feedback arrives at
+      100 Hz.
 
 ### 3.3. Radio link
 
 - [ ] Bind the BetaFPV LiteRadio 3 Pro to the RadioMaster XR1 on the same ExpressLRS major version.
-- [ ] Wire the XR1 CRSF output to the left cable: USART2, PA3 RX / PA2 TX, 420 kbaud, 3.3 V logic.
-- [ ] Use the CRSF-to-PWM adapter on the right cable (PB10/PB11) only for the first bench test of the
-      EFeru baseline, then remove it.
+- [ ] Confirm the XR1 pad assignment (TX vs RX) with a scope before soldering the harness.
+- [ ] Wire the XR1 CRSF output to the Pico UART1: GP5 RX, GP4 TX, 420 kbaud, 3.3 V logic.
 - [ ] Record the channel map: CH1 steering, CH2 throttle, CH3 arm, CH4 mode, CH5 rate, CH6–CH8 spare.
 - [ ] Set the failsafe on the transmitter and verify it with the motors lifted: loss of frames zeroes the
       setpoints and keeps the balance torque.
@@ -200,26 +211,26 @@ then replace the stock input path with the Rust controller and balance, drive, a
 
 - [ ] Mount the BNO055 rigidly on the chassis, low and centred between the wheels, axes aligned with
       the robot frame.
-- [ ] Wire I2C2 to the right cable: PB10 SCL, PB11 SDA, 100 kHz, address 0x28 or 0x29.
-- [ ] Run accelerometer, gyroscope, and magnetometer calibration; persist the offsets and restore them
-      at boot.
+- [ ] Wire the BNO055 to the Pico I2C1: GP2 SDA, GP3 SCL, 400 kHz, address 0x28 or 0x29. Keep the wires
+      short and twisted.
+- [ ] Run accelerometer and gyro calibration in `IMUPLUS` mode; persist the offsets in Pico flash and
+      restore them at boot.
 - [ ] Verify 100 Hz fusion output, gyro propagation to the 200 Hz balance rate, and the sign convention
       against the wheel direction.
 
-### 3.5. Rust controller
+### 3.5. Pico controller
 
-- [ ] Create `firmware/hoverboard-rs` as its own workspace: `thumbv7m-none-eabi`, `stm32f1xx-hal` 0.11,
-      RTIC 2, static priorities for the 16 kHz FOC interrupt and the 200 Hz balance task.
-- [ ] Reuse the generated fixed-point FOC core and SVPWM through one FFI boundary
-      (`BLDC_controller_step` plus plain structs); everything above the boundary is Rust.
-- [ ] Implement clocks, timers, 16 kHz PWM, ADC/DMA, hall capture, and the watchdog.
+- [ ] Create `firmware/pico-bridge` as its own workspace: `thumbv8m.main-none-eabihf`, `embassy-rp`,
+      `embassy-executor`, `embassy-sync`, `defmt`, `probe-rs`, with a tracked `.cargo/config.toml`.
+- [ ] Implement the clock tree, the 200 Hz hardware timer, UART0/UART1, I2C1, the PIO UART, GPIO, and the
+      hardware watchdog.
+- [ ] Implement the EFeru command encoder and feedback decoder with golden byte vectors.
 - [ ] Implement the CRSF parser, channel mapping, arming, and failsafe.
 - [ ] Implement the BNO055 driver, the pitch estimate, and gyro propagation between fusion samples.
 - [ ] Implement the 200 Hz balance task with a fixed period, no heap, no blocking, and no `panic!`.
-- [ ] Implement the 16 kHz current loop with 10 A per motor and 400 rpm limits, thermal derating, and
-      integrator saturation.
+- [ ] Implement the torque limits, saturation priority, and the clamp counters.
 - [ ] Implement the state machine `BOOT → SELF_TEST → IDLE → BALANCE → DAMPING → FAULT → E_STOP` and
-      the watchdog (100 ms command timeout, link loss → `DAMPING`).
+      the health-gated watchdog feed.
 - [ ] Implement telemetry to the handset over CRSF: pack voltage, current, board temperature, state.
 
 ### 3.6. First balance and driving
@@ -228,6 +239,8 @@ then replace the stock input path with the Rust controller and balance, drive, a
 - [ ] Drive forward, reverse, turn, and spin in place under radio control.
 - [ ] Verify tilt cutoff: it fires before the dangerous angle and overrides every command source.
 - [ ] Verify command loss: setpoints go to zero while the balance torque is preserved.
+- [ ] Measure the command-to-torque delay and the 5 ms mainboard quantization; feed the result into the
+      controller budget.
 - [ ] Two-minute thermal run at low load; record MOSFET, motor, and pack temperature.
 - [ ] Verify the voltage thresholds (warning 36.0 V, limiting 33.0 V, stop 30.0 V) and regen limiting;
       start runs at about 90 % charge.
@@ -236,23 +249,25 @@ then replace the stock input path with the Rust controller and balance, drive, a
 
 ### 3.7. Stage artifacts
 
-- Donor board with the EFeru baseline and the rebuild instructions.
-- `firmware/hoverboard-rs`: Rust controller with the FOC core behind FFI.
-- Wiring diagram for the bench: left cable CRSF, right cable IMU, DC-DC branch, fuse, kill switch.
+- Donor board with the EFeru baseline, the torque-node profile, and the rebuild instructions.
+- `firmware/pico-bridge`: balance controller with CRSF, BNO055, torque link, safety, telemetry.
+- Wiring diagram for the bench: left cable Pico link, Pico I2C1 to the IMU, Pico UART1 to the XR1,
+  DC-DC branch, fuse, kill switch.
 - Calibration records: battery divider, BNO055 offsets, channel map.
 - Bench protocol: balance, drive, tilt cutoff, link loss, thermal, charge interlock.
 
 ### 3.8. Gate G1 — pass criteria
 
-- [ ] Firmware boots from the pack, with no bench supply connected.
-- [ ] Radio link up: CRSF frames at 420 kbaud on USART2, channel map and failsafe verified.
+- [ ] Both firmwares boot from the pack, with no bench supply connected.
+- [ ] Radio link up: CRSF frames at 420 kbaud on the Pico UART1, channel map and failsafe verified.
 - [ ] Battery voltage within 0.2 V of a multimeter at two pack voltages.
 - [ ] Both wheels spin in the commanded direction, first lifted and then on the ground.
 - [ ] The robot balances on the safety rig at zero command for 10 minutes.
 - [ ] Tilt cutoff works and overrides every command source.
 - [ ] Loss of the radio link zeroes the setpoints without cutting the balance torque.
+- [ ] A Pico reset zeroes torque on the mainboard within 100 ms.
 - [ ] A 2-minute thermal run leaves MOSFETs and motors within their limits.
-- [ ] No sideboard is connected; the two cables carry only the receiver and the IMU.
+- [ ] No sideboard is connected; the left cable carries only the Pico link and the right cable is free.
 
 ### 3.9. Stage risks
 
@@ -260,24 +275,25 @@ then replace the stock input path with the Rust controller and balance, drive, a
 |---|---|---|
 | Chip is read-protected and the unlock erases the stock firmware | No way back to stock | Accepted; the EFeru baseline is the reference from then on |
 | Board is the alternate layout | Wrong pin and sensor configuration | Try `BOARD_VARIANT 1`; record the variant |
-| Receiver and IMU cannot share the right cable | Contention, no link | Stage 1 uses the left cable for CRSF and the right cable for I2C2 |
+| XR1 pads are wired backwards | No CRSF data | Confirm TX/RX with a scope before soldering |
 | Regen on a full pack trips the BMS | DC-link spike, fall | Start at about 90 % charge, limit regen current, measure the behaviour |
 | The 2p pack sags under 10 A per motor | Early limiting, BMS cut | Keep the bench profile, derate early, log pack voltage |
 | Hall or phase order is wrong | Jerk, overheating | Verify direction lifted first; fix in wiring |
+| A Pico hang or reset ends in a fall | Fall | Health-gated watchdog feed, mainboard 100 ms timeout, kill switch, fault injection |
 
 ---
 
 ## 4. Stage 2. Hip actuation, legs, and 3D balance (G2)
 
-**Goal:** add two hip actuators and one planar 1-DOF four-bar leg per side, move the IMU off the shared
-right cable, use USART3 for the hip driver or the mission computer, and control height and roll through
-the hips while pitch and yaw stay on the wheels.
+**Goal:** add two hip actuators and one planar 1-DOF four-bar leg per side, use the mainboard's free
+USART3 for the hip driver, and control height and roll through the hips while pitch and yaw stay on the
+wheels. The IMU does not move: it is already on the Pico.
 
 **Indicative duration:** 6–10 weeks.
 
 > **Note:** the donor mainboard cannot drive a third and fourth motor. The hip actuators need their own
 > drivers. The interface preference is UART; CAN is a deferred interface because the F103 CAN pins are
-> not routed on this board.
+> not routed on this board. USART3 is free at stage 1 because the radio and the IMU live on the Pico.
 
 ### 4.1. Hip actuator selection and test
 
@@ -297,26 +313,25 @@ the hips while pitch and yaw stay on the wheels.
 - [ ] Add hard stops so a hip fault cannot drive the leg past the coupler curve.
 - [ ] Verify the coupler curve, backlash, and stiffness on the bench before powering the hips.
 
-### 4.3. Stage-2 I/O move
+### 4.3. Stage-2 I/O
 
-- [ ] Move the BNO055 from I2C2 to I2C1 remapped on PB8/PB9 with two soldered 30 AWG wires; check for
-      test pads first.
-- [ ] Re-run the IMU calibration and re-verify orientation after the move.
-- [ ] Free the right cable: USART3 (PB10/PB11) now carries the hip driver or the mission computer,
-      115200 8N1, framed with CRC.
-- [ ] Keep the balance code independent of which I2C peripheral carries the IMU.
+- [ ] Confirm the right cable: USART3 (PB10/PB11) carries the hip driver, 115200 8N1, framed with CRC.
+      No soldering is needed and the IMU stays on the Pico I2C1.
+- [ ] Decide the hip command route: an EFeru passthrough on USART3, or a second Pico PIO UART. Record
+      the decision in an ADR.
 - [ ] Record that a CAN interface is deferred: it requires a future mainboard revision or an external
       adapter on the mission computer, not a firmware setting.
 
 ### 4.4. Control and allocation
 
-- [ ] Implement the hip link on USART3: height or position setpoints, feedback, CRC, sequence, 300 ms
+- [ ] Implement the hip link: height or position setpoints, feedback, CRC, sequence, 300 ms
       validity window, and a timeout that holds the leg.
 - [ ] Implement the hip height loop at 50–100 Hz outside the 200 Hz balance loop.
 - [ ] Implement height and roll allocation through the hips, and pitch and yaw through the wheels.
 - [ ] Implement saturation priority: balance first, then roll, then height. A saturated hip never
       reduces the wheel torque needed to stay upright.
-- [ ] Keep the balance loop at 200 Hz; re-measure the achievable rate if the controller changes.
+- [ ] Keep the balance loop at 200 Hz on the Pico; re-measure the achievable rate if the controller
+      changes.
 - [ ] Implement odometry for four actuators and publish it in telemetry.
 
 ### 4.5. Stage-2 tests
@@ -333,7 +348,7 @@ the hips while pitch and yaw stay on the wheels.
 
 - Two hip actuators with test records and derating curves.
 - Four-bar legs, chassis, forks, and hard stops with a measured coupler curve.
-- USART3 hip link and the updated I/O map.
+- Hip link and the updated I/O map.
 - Control allocation documentation and tuned parameters.
 - Stage-2 test protocol and logs.
 
@@ -341,11 +356,11 @@ the hips while pitch and yaw stay on the wheels.
 
 - [ ] Four actuators run stably: two hub motors and two hip actuators, each with its own current limit.
 - [ ] Hip motion covers at least 100 mm of body height inside the coupler curve.
-- [ ] Balance runs at 200 Hz; jitter and end-to-end latency measured, and a decision recorded if the
-      donor board cannot hold them.
-- [ ] Mission computer equivalent (PC) to mainboard: command 100 Hz, telemetry 200–500 Hz, frame loss
+- [ ] Balance runs at 200 Hz on the Pico; jitter and end-to-end latency measured, including the 5 ms
+      mainboard quantization.
+- [ ] Mission computer equivalent (PC) to Pico: command 100 Hz, telemetry 50–100 Hz, frame loss
       measured.
-- [ ] Loss of a valid command > 100 ms leads to `DAMPING`.
+- [ ] Loss of a valid command > 100 ms zeroes the torque on the mainboard independently of the Pico.
 - [ ] The kill switch and E-stop disconnect actuator power; logging is preserved.
 - [ ] No fall in the stage-2 field tests: rig, height sweep, roll command, drive and turn.
 - [ ] Thirty-minute thermal run without overheating of hub motors, hip actuators, and MOSFETs.
@@ -358,7 +373,7 @@ the hips while pitch and yaw stay on the wheels.
 | Hip actuator torque or thermal margin is insufficient | Redesign, slip | Measure the required torque in stage 1; bench thermal test before ordering |
 | The actuator has no suitable UART interface | Extra driver board, delay | Prefer integrated UART drivers; CAN requires an external adapter |
 | Coupler curve limits the height range | Missed requirement | Synthesize link lengths early; verify on the bench; hard stops |
-| Soldering the IMU to I2C1 fails | Stage 2 blocked | Check PB8/PB9 test pads; fallback keeps the IMU on I2C2 and leaves USART3 unused |
+| The F103 has no spare UART for both hips and the mission link | Blocked stage 2 | The mission computer is on the Pico, so USART3 is free; a second Pico PIO UART is the fallback |
 | Added mass raises the centre of mass | More hip torque needed | Keep the pack and electronics low and centred; measure mass and CoM |
 | Hip motion disturbs balance | Fall | Allocation priority, rate separation, hard stops, tether |
 
@@ -366,8 +381,9 @@ the hips while pitch and yaw stay on the wheels.
 
 ## 5. Stage 3. Mission computer, lidar, and basic Rust software (G3)
 
-**Goal:** combine the mainboard and the mission computer (Raspberry Pi 5 class) into one system:
-transport, telemetry, lidar, state estimation, and supervisor. Balancing remains on the mainboard.
+**Goal:** combine the Pico real-time tier and the mission computer (Raspberry Pi 5 class) into one
+system: transport, telemetry, lidar, state estimation, and supervisor. Balancing remains on the Pico
+and never leaves it.
 
 **Indicative duration:** 4–6 weeks.
 
@@ -376,32 +392,33 @@ transport, telemetry, lidar, state estimation, and supervisor. Balancing remains
 - [ ] Install a 64-bit OS (Ubuntu 24.04 LTS arm64 or Raspberry Pi OS 64-bit) on NVMe.
 - [ ] Configure cooling and temperature control; verify throttling under load.
 - [ ] Add a dedicated 5 V / 5 A converter for the mission computer, rated for at least 60 V input, on
-      its own fused branch. The stage 1 converter is 5 V / 1 A for the receiver and IMU only.
+      its own fused branch. The stage 1 converter is 5 V / 1.5 A for the Pico, receiver, and IMU.
 - [ ] Configure the network, SSH/VPN, disable unnecessary services; isolate the robot network.
 - [ ] Prepare systemd units for `jbot-node`, `zenohd`, the lidar driver, and the ROS2 bridge;
       `Restart=on-failure`, watchdog, resource limits.
 - [ ] Make the root FS predominantly read-only, with a separate partition for maps and logs (P2).
 - [ ] Configure cross-compilation for `aarch64-unknown-linux-gnu` (or musl) and CI builds.
 
-### 5.2. Mission computer–mainboard transport
+### 5.2. Mission computer–Pico transport
 
 - [ ] Implement the `Transport` trait in `jbot_hardware`: `SerialCobs`, `Mock`; reserve a `SocketCan`
       implementation for a future CAN interface.
-- [ ] Bring up the primary link on USART3 (PB10/PB11) at 115200 8N1, COBS + CRC-16, and verify the
-      waveform and termination with an oscilloscope.
+- [ ] Bring up the mission link: RPi GPIO14/GPIO15 ↔ Pico GP6/GP7 (PIO UART) at 460800 8N1, COBS +
+      CRC-16, and verify the waveform, ground return, and cable length with an oscilloscope.
 - [ ] Add a second UART profile at 921600 for the same link and record the achievable rate and error
       rate before raising the default.
 - [ ] Implement frame reception/transmission, version, sequence, CRC, and timeout validation.
 - [ ] Implement metrics: frame loss, CRC errors, command age, latency. Bus-off is not applicable until
       a CAN interface exists.
 - [ ] Implement transport degradation: on sustained CRC errors or loss, hold the last valid setpoint
-      inside the validity window, then `DAMPING`.
-- [ ] Implement mission computer–mainboard heartbeat and handshake; on loss — `DAMPING` on the mainboard.
+      inside the validity window, then release authority to the radio.
+- [ ] Implement mission computer–Pico heartbeat and handshake; on loss the mission authority lapses and
+      the radio keeps the robot balanced.
 - [ ] Reserve an optional USB-CAN adapter for diagnostics only; it is never part of the control path.
 
 ### 5.3. Time synchronization
 
-- [ ] Implement mainboard–mission computer time offset and drift estimation (EWMA) from frame timestamps.
+- [ ] Implement Pico–mission computer time offset and drift estimation (EWMA) from frame timestamps.
 - [ ] Provide a GPIO sync pulse / 1 PPS (optional).
 - [ ] Ensure timestamps at the sensor sampling instant, not at the processing instant.
 - [ ] Verify IMU/odometry/lidar desynchronization ≤ 10 ms.
@@ -437,12 +454,12 @@ transport, telemetry, lidar, state estimation, and supervisor. Balancing remains
 
 ### 5.7. HIL and fault tolerance
 
-- [ ] Assemble a HIL test bench: mainboard, hub motors, hip actuators, mission computer, lidar (or a
-      lidar simulator).
+- [ ] Assemble a HIL test bench: Pico, mainboard, hub motors, hip actuators, mission computer, lidar (or
+      a lidar simulator).
 - [ ] Verify fault injection: killing `jbot-node`, UART disconnection, lidar staleness, mission
       computer reboot.
-- [ ] Verify that a mission computer failure does not cause a fall: the mainboard transitions to
-      `DAMPING`/`IDLE` on timeout.
+- [ ] Verify that a mission computer failure does not cause a fall: the Pico keeps balancing and the
+      radio retains authority.
 - [ ] Verify boot to safe `IDLE` ≤ 10 s.
 - [ ] Conduct a short soak test (2–4 hours) with metric logging.
 
@@ -458,10 +475,12 @@ transport, telemetry, lidar, state estimation, and supervisor. Balancing remains
 
 ### 5.9. Gate G3 — pass criteria
 
-- [ ] End-to-end command delay mission computer–mainboard–actuator ≤ 10 ms (measured).
-- [ ] Loss of heartbeat/command > 100 ms → `DAMPING`; a mission computer failure does not cause a fall.
-- [ ] Stable UART link with telemetry at 200–500 Hz; losses and errors within budget. An optional CAN
-      interface is verified or explicitly deferred.
+- [ ] End-to-end command delay mission computer → Pico → mainboard → actuator ≤ 10 ms (measured,
+      including the 5 ms quantization).
+- [ ] Loss of mission authority > 300 ms falls back to the radio without a fall; the mainboard zeroes
+      torque after 100 ms without frames.
+- [ ] Stable mission link at 460800; losses and errors within budget. An optional CAN interface is
+      verified or explicitly deferred.
 - [ ] Lidar publishes data ≥ 10 Hz; desynchronization with IMU ≤ 10 ms.
 - [ ] EKF runs at 100–200 Hz; pose and velocity are reproducible on replay.
 - [ ] Boot to `IDLE` ≤ 10 s; logs and configuration are preserved.
@@ -472,7 +491,7 @@ transport, telemetry, lidar, state estimation, and supervisor. Balancing remains
 
 | Risk | Impact | Mitigation |
 |---|---|---|
-| The 115200 UART cannot carry the telemetry rate | Delays, losses | Measure early; raise to 921600; reduce telemetry before adding hardware |
+| The 460800 UART cannot carry the telemetry rate | Delays, losses | Measure early; raise to 921600; reduce telemetry before adding hardware |
 | Optional CAN adapter on USB is unstable | Diagnostics gaps | Keep CAN out of the control path; UART remains primary |
 | Time desynchronization | EKF/SLAM errors | Timestamps at sampling, offset estimation, GPIO sync |
 | Lidar produces noise/little data | Poor SLAM | Choose a proven model, calibration, filtering |
@@ -671,8 +690,8 @@ compromising balancing, safety, and baseline navigation.
 - [ ] Hazard analysis and FMEA from the very beginning; update at every gate.
 - [ ] E-stop specification: two-channel NC loop, disconnection of the power section, preservation of
       logic; the kill switch in the battery line remains the only stop that works with a hung firmware.
-- [ ] Watchdog chain: kill switch → mainboard IWDG → 100 ms command timeout → mission computer
-      heartbeat → systemd → supervisor.
+- [ ] Watchdog chain: kill switch → Pico hardware watchdog → 100 ms mainboard serial timeout → F103
+      IWDG → mission computer heartbeat → systemd → supervisor.
 - [ ] Limits on current, temperature, tilt, voltage; latched faults and manual reset.
 - [ ] Proof-test of E-stop and protections at least once every 12 months (P2).
 - [ ] Safety audit before every field test.
@@ -682,7 +701,7 @@ compromising balancing, safety, and baseline navigation.
 - [ ] `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test` on every PR.
 - [ ] Protocol property tests: round-trip, corrupted frames, sequence wraparound.
 - [ ] Integration tests: UART loopback, `vcan` for the reserved CAN path, timeouts, degradation.
-- [ ] aarch64 cross-build and firmware build in CI.
+- [ ] aarch64 cross-build, the Pico cross-build, and the EFeru build in CI.
 - [ ] `cargo deny`, `cargo audit`.
 - [ ] HIL tests and regression on recorded logs.
 - [ ] Definition of Done for control loop changes: unit + HIL + jitter/delay + rollback.
@@ -699,8 +718,8 @@ compromising balancing, safety, and baseline navigation.
 
 ### 8.4. Procurement and production
 
-- [ ] Order the added stage 1 parts after the BOM freeze: fuse, kill switch, DC-DC, receiver, IMU,
-      probe.
+- [ ] Order the added stage 1 parts after the BOM freeze: Pico 2 W, fuse, kill switch, DC-DC, receiver,
+      IMU, probe.
 - [ ] Treat the stage 2 hip actuator as the only long-lead item; place the order after stage 1 balance
       is proven.
 - [ ] Provide a spare kit of fuses, connectors, and consumables.
@@ -742,7 +761,7 @@ compromising balancing, safety, and baseline navigation.
 
 | SRS section | Requirements | Stages |
 |---|---|---|
-| 3. Computing architecture | SYS-01…SYS-08 | 1, 2, 3 |
+| 3. Computing architecture | SYS-01…SYS-09 | 1, 2, 3 |
 | 4. Autonomy and power | AUT-01…AUT-30 | 1, 3, 5 |
 | 5. Mobility and dynamics | MOB-01…MOB-30 | 1, 2, 4 |
 | 6. Navigation | NAV-01…NAV-35 | 3, 4 |
@@ -758,7 +777,8 @@ compromising balancing, safety, and baseline navigation.
 1. All P1 requirements are confirmed by test protocols.
 2. P2 requirements are implemented or have an agreed deferral justification.
 3. There are no critical failures or open safety defects.
-4. Balancing loop jitter ≤ 50 µs at the 200 Hz balance rate; command loss → `DAMPING` within 100 ms.
+4. Balancing loop jitter ≤ 50 µs at the 200 Hz balance rate on the Pico; loss of a valid command for
+   more than 100 ms zeroes the torque on the mainboard independently of the Pico.
 5. Autonomous navigation: ≥ 95 successful runs out of 100 without collisions.
 6. Runtime from the donor 10s2p pack (158 W·h) in a typical cycle ≥ 30 min, confirmed by measurement.
 7. The documentation and source code package has been delivered in full.
@@ -769,20 +789,23 @@ compromising balancing, safety, and baseline navigation.
 ## 12. Open questions affecting the plan
 
 1. Hip actuator: model, torque, and thermal margin; integrated UART driver preferred, CAN deferred.
-2. Does the mission computer appear in stage 2 or stage 3? In stage 2 USART3 is already taken by the hip
-   driver, so both devices cannot share the right cable.
+2. Hip link route: an EFeru passthrough on the mainboard's USART3, or a second Pico PIO UART. USART3 is
+   free because the radio and the IMU live on the Pico.
 3. Leg topology: decided — 1-DOF four-bar. Remaining: link lengths, spring, height range, and
    E-position.
 4. Lidar and camera: specific models, mounting, power, thermal budget.
 5. SLAM: Rust-native stack or `slam_toolbox` via the ROS2 bridge?
 6. AI: Hailo-8L or CPU-only; runtime `ort` / `tract` / `candle`.
-7. Firmware update path: SWD over the debug probe during stages 1–2; USB DFU or a CAN bootloader later.
+7. Firmware update path: `probe-rs` or UF2 for the Pico, SWD for the F103 during stages 1–2; signed
+   over-the-wire updates later.
 8. Docking station: contact standard and the charging protocol through the donor pack's charge port.
 9. Mass, payload, and height range after prototype manufacturing.
-10. Requirements for the enclosure, connectors, and maintainability.
+10. Requirements for the enclosure, connectors, and maintainability, including Pico mounting.
 11. Regen and BMS behaviour on the donor 2p pack: how much regen current it accepts at high SoC.
 12. Whether a future mainboard revision exposes CAN, or CAN stays an external adapter on the mission
     computer.
+13. Pico 5 V source: dedicated buck or a tap on the mainboard rail, with the inrush measured.
+14. Charge-detect path: an extra status byte in the EFeru feedback frame, or PA12 → GP11.
 
 ---
 
@@ -790,11 +813,13 @@ compromising balancing, safety, and baseline navigation.
 
 - [ ] Disconnect the sideboards, inspect the donor board and harnesses, and record the continuity
       measurements.
-- [ ] Build and flash the EFeru baseline; verify the debug UART and calibrate the battery divider.
-- [ ] Wire the XR1 to the left cable, bind it, and verify the channel map and failsafe.
-- [ ] Mount the BNO055 on I2C2 and run the full calibration.
-- [ ] Complete `docs/bom.md` for the added parts (fuse, kill switch, DC-DC, receiver, IMU) and place
-      that order.
-- [ ] Start `firmware/hoverboard-rs`: workspace, clocks, RTIC tasks, FOC core via FFI.
+- [ ] Build and flash the EFeru baseline, then the torque-node profile; verify the debug UART, calibrate
+      the battery divider, and confirm that 8-byte commands move the wheels.
+- [ ] Mount the Pico, wire UART0 to the mainboard's left cable, and confirm feedback at 100 Hz.
+- [ ] Confirm the XR1 pads, wire CRSF to the Pico UART1, bind it, and verify the channel map and failsafe.
+- [ ] Mount the BNO055 on the Pico I2C1 and run the calibration.
+- [ ] Complete `docs/bom.md` for the added parts (Pico, fuse, kill switch, DC-DC, receiver, IMU) and
+      place that order.
+- [ ] Start `firmware/pico-bridge`: workspace, clocks, `embassy` tasks, EFeru framing.
 - [ ] Set up the safety rig and the first-power-on checklist.
 - [ ] Start hazard analysis and the E-stop specification.

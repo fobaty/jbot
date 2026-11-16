@@ -38,7 +38,7 @@ The SRS is a mandatory document for all project stages. Deviations from the requ
 | Nav2 equivalent | Autonomous navigation stack in Rust, functionally equivalent to ROS2 Nav2 |
 | SoC / SoH | State of Charge / State of Health of the battery |
 | E-stop | Hardware emergency stop |
-| MCU | Real-time microcontroller — donor hoverboard mainboard, STM32F103RCT6 (Cortex-M3, 72 MHz, 256 KB flash, 48 KB RAM) |
+| MCU | Real-time microcontroller — Raspberry Pi Pico 2 W (RP2350, dual Cortex-M33 at 150 MHz with FPU, 520 KB SRAM) for balance control, plus the donor STM32F103RCT6 mainboard as the torque actuator node |
 | RPi | Upper-level compute unit, Raspberry Pi 5 class; also referred to as the mission computer |
 | Stage 1 | Platform with two hub wheels only, no hip actuators |
 | Stage 2 | Platform with two hub wheels plus two hip actuators, four actuators total |
@@ -69,7 +69,7 @@ The Robot is intended for:
 ### 2.2. Development goals
 
 1. Ensure safe autonomous movement powered by the donor 10s2p Li-ion pack (36 V nominal, ~158 W·h).
-2. Implement balancing and actuator control on the mainboard MCU with hard real-time.
+2. Implement balancing and actuator control on the real-time MCU tier (Pico 2 W for the control loop, STM32F103 for the torque/FOC path) with hard real-time.
 3. Implement the SLAM, localization, and navigation stack in Rust on the mission computer with a ROS2 bridge.
 4. Ensure modular extensibility: camera, manipulator, automatic charging dock.
 5. Ensure traceability of requirements, tests, and architectural decisions.
@@ -103,18 +103,20 @@ The Robot is intended for:
 1. Mechanical platform: a donor hoverboard base converted into a balancing robot. Stage 1 uses two direct-drive hub wheels only; stage 2 adds two legs, each a planar 1-DOF four-bar with one wheel, giving four actuators total (2 hub wheels + 2 hips).
 2. Power subsystem: donor 10s2p pack (36 V nominal, 42.0 V full, ~30 V cutoff, 4.4 A·h, ~158 W·h) with integrated BMS and original charge port, 30–40 A main fuse, latching kill switch in the battery line, firmware-held power latch on PA5, charge-detect input PA12, DC-DC 12 V / 5 V / 3.3 V.
 3. Computing subsystem:
-   - real-time MCU: donor STM32F103RCT6 mainboard, fixed for stages 1–2; a later controller is an open option only if the platform outgrows it;
-   - mission computer (stage 3): Raspberry Pi 5 class, linked over UART, setpoints only;
+   - real-time control tier: Raspberry Pi Pico 2 W (RP2350) running the balance loop, arming, limits, and telemetry; fixed for stages 1–2;
+   - torque actuator node: donor STM32F103RCT6 mainboard running the 16 kHz FOC current loop, current limits, hall capture, power latch, and a 100 ms command timeout;
+   - mission computer (stage 3): Raspberry Pi 5 class, linked to the Pico over UART, setpoints only;
    - wheel drives: two donor hub motors (~350 W each, 6.5 in wheel) driven by the 12 MOSFETs in two 3-phase bridges, with FOC/SVPWM implemented in the mainboard firmware;
    - hip actuators (stage 2): model TBD, with external drivers, because the mainboard cannot drive them;
-   - radio link: BetaFPV LiteRadio 3 Pro transmitter (ExpressLRS 2.4 GHz, 8 channels) to a RadioMaster XR1 receiver (CRSF, 420 kbaud) on USART2;
-   - links: USART3 or I2C2 on the shared PB10/PB11 pins to the mission computer or hip driver; the F103 CAN controller exists but its pins are not routed on the donor board, so CAN is not used in stages 1–2.
+   - radio link: BetaFPV LiteRadio 3 Pro transmitter (ExpressLRS 2.4 GHz, 8 channels) to a RadioMaster XR1 receiver (CRSF, 420 kbaud) on the Pico's UART1;
+   - links: Pico UART0 to the mainboard's USART2 (torque commands and feedback); the mainboard's free USART3 on PB10/PB11 is available for the stage 2 hip driver; the F103 CAN controller exists but its pins are not routed on the donor board, so CAN is not used in stages 1–2.
 4. Sensor subsystem:
-   - IMU BNO055 on I2C2, 100 Hz fusion, gyro propagated to the 200 Hz balance rate; moves to I2C1 remapped (PB8/PB9, two soldered wires) at stage 2, when the hip driver takes USART3 and I2C2 is no longer free;
+   - IMU BNO055 on the Pico's I2C1 at 400 kHz, 100 Hz fusion, gyro propagated to the 200 Hz balance rate; it does not move between stages;
    - 2D or 3D lidar;
    - optional RGB-D camera.
 5. Software:
-   - MCU firmware (`no_std`, Rust);
+   - Pico firmware in Rust (`no_std`, `embassy-rp`), separate Cargo workspace;
+   - mainboard firmware: pinned upstream EFeru C, patched to `TRQ_MODE`;
    - onboard `jbot-node` program in Rust;
    - crates `jbot_common`, `jbot_hardware`, `jbot_navigation`, `jbot_node`;
    - Zenoh / ROS2 bridge.
@@ -139,14 +141,15 @@ The Robot is intended for:
 
 | ID | Requirement | Priority |
 |---|---|---|
-| SYS-01 | Balance and FOC control must be performed on the mainboard MCU (STM32F103RCT6), not on Linux | P1 |
+| SYS-01 | Balance control must run on the real-time MCU tier (Pico 2 W / RP2350), never on Linux; the FOC current loop must run on the donor mainboard MCU (STM32F103RCT6), not on Linux | P1 |
 | SYS-02 | Balance loop: 200 Hz, jitter not more than 50 µs | P1 |
 | SYS-03 | FOC current loop: 16 kHz (SVPWM, two 3-phase bridges) | P1 |
-| SYS-04 | IMU: BNO055 fusion at 100 Hz, gyro propagated to the 200 Hz balance rate | P1 |
+| SYS-04 | IMU: BNO055 fusion at 100 Hz on the Pico, gyro propagated to the 200 Hz balance rate | P1 |
 | SYS-05 | High-level control and state estimation: 100–200 Hz; radio setpoints up to 250 Hz; mission computer setpoints 50–100 Hz | P1 |
-| SYS-06 | Loss of mission computer–mainboard communication, or of the radio link, for more than 100 ms must lead to zero setpoints and `DAMPING`; torque is never removed while balancing | P1 |
-| SYS-07 | End-to-end latency of the mission computer–mainboard–actuator command: not more than 10 ms | P1 |
+| SYS-06 | Loss of the radio link, the Pico–mainboard link, or the mission computer link for more than 100 ms (300 ms for the mission link) must lead to zero setpoints; the mainboard independently zeroes torque after 100 ms without a valid command, and torque is never removed while the robot is upright and the link is intact | P1 |
+| SYS-07 | End-to-end latency of the mission computer → Pico → mainboard → actuator command: not more than 10 ms, including the mainboard's 5 ms command quantization | P1 |
 | SYS-08 | The mission computer is not a safety authority and cannot arm the Robot; a mission computer failure must not cause a fall | P1 |
+| SYS-09 | The Pico–mainboard link must use the stock EFeru `VARIANT_USART` frame format in `TRQ_MODE`, with a 100 ms serial timeout on the mainboard | P1 |
 
 ---
 
@@ -196,9 +199,9 @@ The Robot is intended for:
 | AUT-23 | Warning threshold: 36.0 V — acceleration limiting and operator notification | P1 |
 | AUT-24 | Limiting threshold: 33.0 V — torque and speed limiting | P1 |
 | AUT-25 | Emergency stop threshold: 30.0 V confirmed for 500 ms — actuator shutdown, transition to `FAULT`, controlled shutdown | P1 |
-| AUT-26 | Threshold decisions must be made by the MCU independently of the mission computer | P1 |
+| AUT-26 | Threshold decisions must be made by the real-time controller (Pico 2 W) independently of the mission computer | P1 |
 | AUT-27 | The Robot must reduce load before the battery BMS protection trips; spontaneous BMS shutdown must not be a normal scenario | P1 |
-| AUT-28 | Power telemetry: voltage, current, SoC, SoH, temperature — over the mainboard link at not less than 50 Hz (CAN only in a future controller generation) | P1 |
+| AUT-28 | Power telemetry: voltage, current, SoC, SoH, temperature — from the mainboard feedback through the Pico to the mission link at not less than 50 Hz (CAN only in a future controller generation) | P1 |
 | AUT-29 | Threshold events must be logged with a timestamp, current, and voltage | P1 |
 | AUT-30 | During E-stop, the actuator power circuits are disconnected; at stage 1 the latching kill switch in the battery line removes all battery power, so the event is latched in non-volatile memory as soon as it is detected | P1 |
 
@@ -419,7 +422,7 @@ prototype uses one wheel per leg; dual wheels per leg are deferred.
 |---|---|---|
 | EXT-29 | PCIe 2.0 x1 / USB 3.0 reservation for an AI accelerator (Hailo-8L or equivalent) | P2 |
 | EXT-30 | Consideration of the power and thermal budget of the AI accelerator; separate overcurrent protection | P2 |
-| EXT-31 | External diagnostic port — isolated; UART on the donor mainboard, CAN deferred to a future controller generation | P2 |
+| EXT-31 | External diagnostic port — isolated; UART via the Pico, CAN deferred to a future controller generation | P2 |
 | EXT-32 | Ability to add an NVMe drive for maps, logs, and models | P2 |
 | EXT-33 | All expansions must not increase the balance loop jitter by more than 50 µs | P1 |
 
@@ -439,18 +442,26 @@ prototype uses one wheel per leg; dual wheels per leg are deferred.
 
 | ID | Requirement | Priority |
 |---|---|---|
-| INT-01 | Primary link for stages 1–2 — UART: USART2 (PA2 TX, PA3 RX, not 5 V tolerant) to the ExpressLRS receiver, USART3 (PB10/PB11) to the mission computer or hip driver. CAN FD is reserved for a future controller generation and is not present on the donor mainboard. | P1 |
-| INT-02 | Frame up to 64 bytes: 8-byte header, up to 56 bytes of payload; over UART the same header is carried inside COBS framing | P1 |
+| INT-01 | Primary link for stages 1–2 — UART: Pico UART0 (GP0/GP1) to the mainboard USART2 (PA2 TX, PA3 RX, not 5 V tolerant, left 4-pin cable), carrying the EFeru torque command and feedback; Pico UART1 (GP4/GP5) to the XR1 receiver at 420 kbaud CRSF; Pico PIO UART (GP6/GP7) to the mission computer. The mainboard's USART3 (PB10/PB11) is free for the stage 2 hip driver. CAN FD is reserved for a future controller generation and is not present on the donor mainboard. | P1 |
+| INT-02 | Framed protocol (mission-computer link): 9-byte header, payload up to 53 bytes, CRC-16, at most 64 bytes before COBS. The Pico–mainboard link keeps the stock EFeru 8-byte command and 18-byte feedback frames and is not framed with COBS. | P1 |
 | INT-03 | CAN FD (reserved, not fitted on the donor board): 120 Ω termination at both ends, stub length less than 0.3 m | P3 |
-| INT-04 | UART: 8N1 with COBS and CRC-16; the ExpressLRS receiver link runs at 420 kbaud CRSF, the mission computer link at 921600 bit/s or 1 Mbit/s | P1 |
-| INT-05 | All frames: protocol version, type, flags, 16-bit sequence, timestamp, CRC-16 | P1 |
+| INT-04 | UART: 8N1 with COBS and CRC-16 on the mission-computer link; the ExpressLRS receiver link runs at 420 kbaud CRSF; the Pico–mainboard link runs at 115200 with the EFeru XOR checksum; the mission computer link runs at 460800, raised to 921600 only after measuring the error rate | P1 |
+| INT-05 | All framed-protocol messages: protocol version, type, flags, 16-bit sequence, Pico timestamp, CRC-16. The EFeru frames are unchanged and carry no sequence | P1 |
 | INT-06 | Control commands — latest-value; telemetry — loss-tolerant | P1 |
 | INT-07 | E-stop and heartbeat have the highest priority and are not displaced by telemetry | P1 |
 | INT-08 | Message schema — `postcard`/`serde`, little-endian, fixed header | P1 |
-| INT-09 | External operator port — isolated; UART on the donor mainboard, CAN reserved | P2 |
+| INT-09 | External operator port — isolated; UART via the Pico, CAN reserved | P2 |
 | INT-10 | Power: VBAT 30–42 V (donor 10s pack), 12 V / 5 A, 5 V / 5–6 A, 3.3 V / 1 A | P1 |
 
-> **Link note.** Stages 1–2 use UART only. USART2 (left 4-pin cable, PA2/PA3, not 5 V tolerant) carries the ExpressLRS CRSF receiver; USART3 and I2C2 share PB10/PB11 on the right cable, so exactly one function is active at a time — the BNO055 sits on I2C2 in stage 1. The STM32F103RCT6 has a CAN controller, but its pins are not routed on the donor board and no transceiver is fitted, so CAN FD appears only as a reserved future path (INT-03, EXT-16, EXT-31). INT-01 applies to the mission computer–mainboard link.
+> **Link note.** Stages 1–2 use UART only, across three links. The radio is no
+> longer on the mainboard: the XR1 feeds the Pico's UART1 at 420 kbaud CRSF, and
+> the BNO055 sits on the Pico's I2C1 at 400 kHz. The left mainboard cable carries
+> only the Pico link (USART2, EFeru `TRQ_MODE`). Because the receiver and the IMU
+> left the mainboard, the right cable's PB10/PB11 are free for USART3, which is
+> reserved for the stage 2 hip driver; I2C2 stays unused and the IMU never moves.
+> The STM32F103RCT6 has a CAN controller, but its pins are not routed on the donor
+> board and no transceiver is fitted, so CAN FD appears only as a reserved future
+> path (INT-03, EXT-16, EXT-31).
 
 ### 8.2. Software requirements
 
@@ -466,7 +477,7 @@ prototype uses one wheel per leg; dual wheels per leg are deferred.
 | INT-18 | Logging — structured (`tracing`), with node/task/robot ID; no high-frequency logging in the control loop | P1 |
 | INT-19 | Metrics: frame loss, CRC errors, bus-off, command age, jitter, voltage, temperatures, faults | P1 |
 | INT-20 | MCU blackbox: ring buffer of the last N seconds with upload capability | P2 |
-| INT-21 | CI: `cargo fmt --check`, `cargo clippy -D warnings`, `cargo test`, aarch64 cross-build, firmware build, `cargo deny`, `cargo audit` | P1 |
+| INT-21 | CI: `cargo fmt --check`, `cargo clippy -D warnings`, `cargo test`, aarch64 cross-build, Pico cross-build (`thumbv8m.main-none-eabihf`), mainboard EFeru build, `cargo deny`, `cargo audit` | P1 |
 | INT-22 | Deployment on the mission computer via systemd with `Restart=on-failure`, watchdog, and resource limits | P1 |
 
 ---
@@ -478,13 +489,13 @@ prototype uses one wheel per leg; dual wheels per leg are deferred.
 | SAF-01 | Safety has the highest priority over functionality and performance | P1 |
 | SAF-02 | E-stop — a hardware function independent of Linux and the MCU: latching kill switch in the battery line plus a dual-channel NC loop. The power button is a soft latch and is not an E-stop. | P1 |
 | SAF-03 | E-stop removes actuator power; logic power is preserved for logging and shutdown where a separate logic branch is fitted. At stage 1 the kill switch removes all battery power, so the event is latched in non-volatile memory as soon as it is detected. | P1 |
-| SAF-04 | Watchdog chain: hardware E-stop → MCU IWDG → 100 ms command watchdog → radio and mission computer heartbeat → systemd watchdog → supervisor | P1 |
-| SAF-05 | Upon loss of a valid command for more than 100 ms, the MCU transitions to `DAMPING` with zero setpoints; torque is never removed while balancing | P1 |
+| SAF-04 | Watchdog chain: hardware E-stop → Pico hardware watchdog → mainboard 100 ms command timeout → mainboard IWDG → radio and mission computer heartbeat → systemd watchdog → supervisor | P1 |
+| SAF-05 | Upon loss of a valid command for more than 100 ms, the Pico zeroes the setpoints and keeps balancing; the mainboard independently zeroes torque after 100 ms without a valid frame | P1 |
 | SAF-06 | On a critical fault, the actuators are shut down and the fault is latched until a manual reset | P1 |
 | SAF-07 | Reset of a critical fault is possible only when the Robot is stationary and the self-test passes | P1 |
 | SAF-08 | All faults are published over the mainboard link and to Zenoh/ROS2 with a code, severity, and timestamp | P1 |
 | SAF-09 | Invalid, stale, and invalidated commands do not change the actuator setpoint | P1 |
-| SAF-10 | Brownout puts the MCU into a safe state; drivers are disabled by default | P1 |
+| SAF-10 | Brownout puts the real-time controller into a safe state; the Pico resets to `IDLE` with zero torque and the mainboard zeroes torque within 100 ms; drivers are disabled by default | P1 |
 | SAF-11 | External access: SSH/VPN, without directly exposing control ports to the internet | P1 |
 | SAF-12 | Authentication of Zenoh/ROS2 endpoints where supported; isolation of the robot network | P2 |
 | SAF-13 | Periodic proof-test of E-stop and protection circuits — at least once every 12 months | P2 |
@@ -583,17 +594,20 @@ prototype uses one wheel per leg; dual wheels per leg are deferred.
 
 ## 14. Open questions
 
-1. Final MCU: fixed for stages 1–2 as the donor STM32F103RCT6 mainboard (Cortex-M3, 72 MHz, 256 KB flash, 48 KB RAM). A later controller (STM32H7 class or equivalent) remains an open option only if the platform outgrows the F103; no selection is required for stages 1–2.
-2. Actuator interface: stage 1 uses two donor hub motors driven by the mainboard's 12 MOSFETs. Stage 2 adds two hip actuators (model TBD) with their own drivers on USART3; torque, thermal, and mechanical envelopes are still to be fixed. USART3 is the only free port, so the hip driver and the later mission computer must share it — the multiplexing or arbitration scheme is still open.
+1. Real-time controller: the balance loop runs on the Pico 2 W (RP2350, dual Cortex-M33 at 150 MHz), the FOC current loop on the donor STM32F103RCT6 mainboard. The split is fixed for stages 1–2; a later actuator controller (STM32H7 class or equivalent) remains an open option only if the platform outgrows the F103.
+2. Actuator interface: stage 1 uses two donor hub motors driven by the mainboard's 12 MOSFETs. Stage 2 adds two hip actuators (model TBD) with their own drivers on the mainboard's USART3; torque, thermal, and mechanical envelopes are still to be fixed. USART3 is now the only free mainboard port, so the hip driver takes it; the mission computer connects to the Pico instead, so those two no longer share a port.
 3. Leg topology (stage 2): decided — 1-DOF four-bar (base A–B, upper crank A–C, lower rocker B–D, wheel fork C–D–E, optional spring). Remaining: link lengths, spring rate/travel, height range, and E-position.
 4. Selection of lidar and camera, their mounting, and impact on the mass/power budget.
 5. Nav2 as is via the bridge or a fully Rust `jbot_navigation` stack.
 6. AI accelerator: Hailo-8L or CPU-only; runtime `ort` / `tract` / `candle`.
-7. Firmware update path: SWD debug probe or the STM32 system bootloader over UART; the donor board exposes no dedicated USB port, so a CAN bootloader is deferred with the future controller.
-8. Requirements for the enclosure, connectors, and maintainability.
+7. Firmware update path: SWD debug probe or UF2 for the Pico, SWD or the STM32 system bootloader over UART for the mainboard; the donor board exposes no dedicated USB port, so a CAN bootloader is deferred with the future controller.
+8. Requirements for the enclosure, connectors, and maintainability, including Pico mounting and USB console access.
 9. Refinement of mass, payload, and height adjustment range after prototype manufacturing.
 10. Dock standard and the parameters of the original hoverboard charger.
 11. Power pack: stages 1–2 use the donor 10s2p pack (36 V nominal, 42.0 V full, 4.4 A·h, ~158 W·h). A larger pack of the same voltage class is a future option; the runtime targets in section 3.2 assume the donor pack.
+12. Pico 5 V source: a dedicated 60 V-input buck or a tap on the mainboard's internal rail. Both need an inrush and headroom measurement.
+13. Charge-detect path after ADR-011: forward the PA12 flag in the EFeru feedback frame, or wire PA12 to a spare Pico GPIO.
+14. Measured Pico → mainboard actuator delay and jitter; this decides whether the 5 ms command quantization needs a Rust F103 controller.
 
 ---
 
