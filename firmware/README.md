@@ -24,11 +24,11 @@ never affect `cargo test --workspace`.
 
 | Path | Content |
 |---|---|
-| `eferu/` | Upstream clone of `EFeru/hoverboard-firmware-hack-FOC`, pinned commit `4f141cbc97b297e194fd58e56444bd0322f902ac` (2026-07-04). Git-ignored; recreate with the command in section 2. |
-| `eferu-jbot.patch` | Local configuration delta applied on top of the pinned commit (limits, variant, debug output). |
-| `eferu-bench.patch` | Bench-only delta: fixes the `unlock` target for the ST-Link clone. |
-| `eferu-balance.patch` | Production torque-node delta: `CTRL_MOD_REQ = TRQ_MODE`, `SERIAL_TIMEOUT` 160 → 20. Not created yet. |
-| `pico-bridge/` | Rust firmware for the Pico 2 W (section 5). Separate Cargo workspace. |
+| `stm32f103/eferu/` | Upstream clone of `EFeru/hoverboard-firmware-hack-FOC`, pinned commit `4f141cbc97b297e194fd58e56444bd0322f902ac` (2026-07-04). Git-ignored; recreate with the command in section 2. |
+| `stm32f103/eferu-jbot.patch` | Local configuration delta applied on top of the pinned commit (limits, variant, debug output). |
+| `stm32f103/eferu-bench.patch` | Bench-only delta: fixes the `unlock` target for the ST-Link clone. |
+| `stm32f103/eferu-balance.patch` | Production torque-node delta: `CTRL_MOD_REQ = TRQ_MODE`, `SERIAL_TIMEOUT` 160 → 20. Not created yet. |
+| `pico2w/` | Rust firmware for the Pico 2 W (section 5). Separate Cargo workspace. |
 
 ## 1.1. Hardware in scope
 
@@ -76,7 +76,7 @@ sensors, battery measurement, and the radio link.
 
 ```sh
 cd firmware
-mkdir -p eferu && cd eferu
+mkdir -p stm32f103 && cd stm32f103
 git init -q
 git remote add origin https://github.com/EFeru/hoverboard-firmware-hack-FOC.git
 git fetch -q --depth 1 origin 4f141cbc97b297e194fd58e56444bd0322f902ac
@@ -232,7 +232,7 @@ board.
 | Binary | 32 312 bytes, md5 `64ab7b58ceea8ba4a7c1f5ea3d6914d0` |
 
 ```sh
-cd firmware/eferu
+cd firmware/stm32f103
 git apply ../eferu-bench.patch       # once, on top of the pinned upstream commit
 pio run -e VARIANT_USART             # .pio/build/VARIANT_USART/firmware.bin
 pio run -e VARIANT_USART -t upload
@@ -276,7 +276,7 @@ command is more dangerous than losing balance under operator control. Because of
 that, do **not** enable `ELECTRIC_BRAKE_ENABLE` for balance.
 
 ```sh
-cd firmware/eferu
+cd firmware/stm32f103
 git apply ../eferu-balance.patch
 pio run -e VARIANT_USART
 pio run -e VARIANT_USART -t upload
@@ -309,7 +309,7 @@ This step is done when all of the following hold on the bench:
 
 ## 5. Bring-up step 2: Pico 2 W firmware
 
-The balance controller is Rust on the Pico 2 W, in `firmware/pico-bridge/`. The
+The balance controller is Rust on the Pico 2 W, in `firmware/pico2w/`. The
 mainboard is not rewritten: it keeps the pinned EFeru C and its validated 16 kHz
 FOC core.
 
@@ -413,7 +413,7 @@ Rules:
 
 ### 5.7. Repository rules
 
-`firmware/pico-bridge` is its own Cargo workspace so that the root workspace
+`firmware/pico2w` is its own Cargo workspace so that the root workspace
 keeps building for the host. The root `.gitignore` ignores every
 `.cargo/config.toml`, so the embedded target configuration needs an explicit
 exception. `firmware/eferu` stays out of version control: it is recreated from

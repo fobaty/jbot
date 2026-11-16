@@ -185,11 +185,12 @@ jbot/
 │   └── jbot_node/              # High-level executable for the mission computer
 ├── firmware/
 │   ├── README.md               # EFeru builds, flashing, Pico plan
-│   ├── eferu-jbot.patch        # Config delta applied to the stock firmware
-│   ├── eferu-bench.patch       # Bench-only unlock fix for the ST-Link clone
-│   ├── eferu-balance.patch     # Torque-node profile: TRQ_MODE, 100 ms timeout
-│   ├── eferu/                  # Upstream firmware clone (git-ignored)
-│   └── pico-bridge/            # Pico 2 W Rust firmware (separate workspace)
+│   ├── stm32f103/              # STM32F103 hoverboard mainboard firmware
+│   │   ├── eferu/              # Upstream EFeru C (git-ignored)
+│   │   ├── eferu-jbot.patch
+│   │   ├── eferu-bench.patch
+│   │   └── eferu-balance.patch
+│   └── pico2w/                 # Pico 2 W Rust firmware (separate workspace)
 └── docs/
     ├── specification.md        # System Requirements Specification (SRS-001)
     ├── architecture.md         # System architecture and safety concept
@@ -251,7 +252,7 @@ Wiring, recovery from a read-protected chip, and the bench checklist are in
 ### Pico firmware
 
 ```bash
-cd firmware/pico-bridge
+cd firmware/pico2w
 cargo run --release                  # flash over SWD via probe-rs, RTT attached
 ```
 
