@@ -5,7 +5,7 @@
 | Document | Development Roadmap |
 | Code | RB-001 |
 | Version | 1.2 |
-| Date | 2026-11-15 |
+
 | Status | Working document, synchronized with SRS-001, HW-001, and FW-002 |
 | Related documents | `docs/specification.md`, `docs/architecture.md`, `docs/system_requirements.md`, `docs/hardware.md`, `docs/pico-bridge.md`, `docs/bom.md`, `firmware/README.md` |
 | Scope | Donor hoverboard two-wheel stage 1 → hip-actuated stage 2 → mission computer, navigation, extensions → acceptance |

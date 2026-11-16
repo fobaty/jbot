@@ -5,7 +5,7 @@
 | Document | Donor hardware, real-time controller, radio link, IMU, and interfaces |
 | Code | HW-001 |
 | Version | 0.3 |
-| Date | 2026-11-15 |
+
 | Status | Stage 1 baseline fixed; stage 2 actuators open |
 | Scope | STM32F103RCT6 hoverboard mainboard, Pico 2 W, hub motors, 10s pack, XR1/LiteRadio, BNO055, hip actuators |
 

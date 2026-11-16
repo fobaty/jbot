@@ -5,7 +5,7 @@
 | Document | Detailed task breakdown (Task Breakdown) |
 | Code | TB-001 |
 | Version | 1.2 |
-| Date | 2026-11-15 |
+
 | Status | Working document |
 | Basis | `docs/specification.md`, `docs/roadmap.md`, `docs/architecture.md`, `docs/system_requirements.md`, `docs/hardware.md`, `docs/pico-bridge.md`, `docs/bom.md`, `firmware/README.md` |
 | Scope | Donor hoverboard stage 1 → hips stage 2 → mission computer and navigation → extensions → acceptance |

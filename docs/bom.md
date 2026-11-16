@@ -5,7 +5,7 @@
 | Document | Component and assembly list |
 | Code | BOM-001 |
 | Version | 0.3 |
-| Date | 2026-11-15 |
+
 | Status | Stage 1 donor hardware fixed; Pico 2 W added; stage 2 open |
 | Scope | Robot, donor reuse, bench, and integration hardware |
 

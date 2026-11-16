@@ -5,7 +5,7 @@
 | Document | Real-time controller firmware (Pico 2 W / RP2350) |
 | Code | FW-002 |
 | Version | 0.1 |
-| Date | 2026-11-15 |
+| Status | Stage 1 Pico 2 W firmware specification |
 | Status | Planned; not implemented |
 | Scope | Balance control, radio ingest, IMU, mainboard torque link, mission link, safety |
 

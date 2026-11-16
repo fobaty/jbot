@@ -5,7 +5,7 @@
 |---|---|
 | Status | Living document (stage 1 donor hardware baseline, Pico 2 W real-time controller) |
 | Version | 0.4 |
-| Last updated | 2026-11-15 |
+
 | Related documents | `docs/system_requirements.md`, `docs/hardware.md`, `docs/roadmap.md`, `docs/pico-bridge.md` |
 | Scope | Compute tiers, power subsystem, communication interfaces, Rust software stack, safety concept |
 

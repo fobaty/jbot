@@ -5,7 +5,7 @@
 | Document | Two-board firmware: Pico 2 W real-time controller, F103 torque node |
 | Code | FW-001 |
 | Version | 0.2 |
-| Date | 2026-11-15 |
+
 | Status | Mainboard bring-up step 1 flashed; USART bench link verified; Pico firmware planned |
 | Scope | STM32F103RCT6 hoverboard mainboard (EFeru C) and Raspberry Pi Pico 2 W (Rust) |
 
