@@ -6,7 +6,7 @@
 | Code | FW-001 |
 | Version | 0.1 |
 | Date | 2026-11-12 |
-| Status | Bring-up step 1 built, not yet flashed |
+| Status | Bring-up step 1 flashed; USART bench link verified |
 | Scope | STM32F103RCT6 hoverboard mainboard, bench bring-up |
 
 This directory holds the firmware used to turn a stock hoverboard mainboard into
@@ -196,6 +196,41 @@ board may be the alternate layout: set `BOARD_VARIANT 1` and rebuild.
 
 `VARIANT_PWM` is selected through the PlatformIO environment, not through
 `config.h`.
+
+### 2.9. Bench link-test build (`VARIANT_USART`)
+
+Before the radio link exists, the board is driven over its own cable from a
+Raspberry Pi Pico 2 W on USART2. This is the build currently flashed on the
+bench board.
+
+| Item | Value |
+|---|---|
+| Variant | `VARIANT_USART` (`-D VARIANT_USART`) |
+| Source delta | `eferu-bench.patch`: unlock target only, `config.h` is upstream stock |
+| Input | USART2, PA3 RX / PA2 TX, 115200 8N1, left cable |
+| Limits | stock: `I_MOT_MAX` 15 A, `N_MOT_MAX` 1000 rpm |
+| Control | `VLT_MODE`, `FOC_CTRL` |
+| Silent-input timeout | `SERIAL_TIMEOUT` 160 x 5 ms, about 0.8 s |
+| Binary | 32 312 bytes, md5 `64ab7b58ceea8ba4a7c1f5ea3d6914d0` |
+
+```sh
+cd firmware/eferu
+git apply ../eferu-bench.patch       # once, on top of the pinned upstream commit
+pio run -e VARIANT_USART             # .pio/build/VARIANT_USART/firmware.bin
+pio run -e VARIANT_USART -t upload
+```
+
+The stock `unlock` target fails on the ST-Link clone with `init mode failed`; the
+patch switches it to `interface/stlink.cfg`, adds `shutdown` and reminds you to
+power-cycle. On a protected chip also run OpenOCD with `-c "adapter speed 100"`.
+
+Command frames are 8 bytes (`<HhhH`: `0xABCD`, steer, speed, checksum), feedback
+frames are 18 bytes (`<HhhhhhhHH`), both at 20 Hz. The host side - the Pico
+bridge, the Mac console and the wire protocol - lives in
+[`tools/hover/`](../tools/hover/README.md).
+
+`VLT_MODE` with the stock 1000 rpm scale means commands below about 30 units can
+stall on cogging. The balancing controller will run in `SPD_MODE` instead.
 
 ## 3. Known constraints of the stock EFeru behaviour
 
