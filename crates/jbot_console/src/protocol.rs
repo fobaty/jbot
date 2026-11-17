@@ -66,6 +66,17 @@ pub struct Telemetry {
     pub has_orientation: bool,
     /// Both `vset` and `wset` were present in the sample.
     pub has_setpoints: bool,
+    /// Firmware BNO055 mount selector: 0 normal, 1 flip-x, 2 flip-y,
+    /// 3 rot +90° X, 4 rot −90° X, 5 rot +90° Y, 6 rot −90° Y.
+    pub mount: Option<u8>,
+    /// Applied pitch zero offset, degrees.
+    pub zero_offset_deg: Option<f32>,
+    /// Applied roll zero offset, degrees.
+    pub roll_zero_offset_deg: Option<f32>,
+    /// Applied balance (level) reference, degrees.
+    pub level_deg: Option<f32>,
+    /// Operator arm latch for the balance law.
+    pub armed: Option<bool>,
 }
 
 impl Telemetry {
@@ -124,6 +135,16 @@ pub struct Stat {
     pub fb_frames: u32,
     /// Bytes discarded while resynchronising the feedback parser.
     pub fb_discarded: u32,
+    /// Applied pitch zero offset, degrees.
+    pub zero_deg: Option<f32>,
+    /// Applied roll zero offset, degrees.
+    pub zroll_deg: Option<f32>,
+    /// Applied balance (level) reference, degrees.
+    pub level_deg: Option<f32>,
+    /// BNO055 mount selector: 0 normal .. 6 rot −90° Y.
+    pub mount: Option<u8>,
+    /// Operator arm latch for the balance law.
+    pub armed: Option<bool>,
     /// Original line, kept for the event log.
     pub raw: String,
 }
@@ -197,6 +218,11 @@ pub fn parse_telemetry(line: &str) -> Option<Telemetry> {
                 telemetry.steer_setpoint_rps = parse_f32(value)?.to_radians();
                 saw_steer_setpoint = true;
             }
+            "mnt" => telemetry.mount = Some(parse_mount(value)?),
+            "zof" => telemetry.zero_offset_deg = Some(parse_f32(value)?),
+            "zro" => telemetry.roll_zero_offset_deg = Some(parse_f32(value)?),
+            "lvl" => telemetry.level_deg = Some(parse_f32(value)?),
+            "arm" => telemetry.armed = Some(parse_flag(value)?),
             _ => {}
         }
     }
@@ -291,6 +317,36 @@ pub fn parse_stat(line: &str) -> Option<Stat> {
                     recognised = true;
                 }
             }
+            "zero" => {
+                if let Some(parsed) = parse_f32(value) {
+                    stat.zero_deg = Some(parsed);
+                    recognised = true;
+                }
+            }
+            "zroll" => {
+                if let Some(parsed) = parse_f32(value) {
+                    stat.zroll_deg = Some(parsed);
+                    recognised = true;
+                }
+            }
+            "level" => {
+                if let Some(parsed) = parse_f32(value) {
+                    stat.level_deg = Some(parsed);
+                    recognised = true;
+                }
+            }
+            "mount" => {
+                if let Some(parsed) = parse_mount(value) {
+                    stat.mount = Some(parsed);
+                    recognised = true;
+                }
+            }
+            "armed" => {
+                if let Some(parsed) = parse_flag(value) {
+                    stat.armed = Some(parsed);
+                    recognised = true;
+                }
+            }
             _ => {}
         }
     }
@@ -320,6 +376,13 @@ pub fn classify(line: &str) -> Option<Message> {
         return Some(Message::Banner(line.to_owned()));
     }
     Some(Message::Garbage(line.to_owned()))
+}
+
+fn parse_mount(value: &str) -> Option<u8> {
+    match value {
+        "0" | "1" | "2" | "3" | "4" | "5" | "6" => value.parse().ok(),
+        _ => None,
+    }
 }
 
 fn parse_u32(value: &str) -> Option<u32> {
@@ -378,7 +441,7 @@ fn parse_feedback_word(value: &str) -> Option<bool> {
 mod tests {
     use super::*;
 
-    const FULL: &str = "T step=19043 loop=200 imu=ok cal=3 pitch=1.50 roll=-2.25 hdg=87.40 gy=0.06 gx=-0.12 gz=0.03 err=0x00 mb=ok L=12 R=-13 bat=41.50 tmp=39.3 age=3 estop=0 vset=0.25 wset=-15.00";
+    const FULL: &str = "T step=19043 loop=200 imu=ok cal=3 pitch=1.50 roll=-2.25 hdg=87.40 gy=0.06 gx=-0.12 gz=0.03 err=0x00 mb=ok L=12 R=-13 bat=41.50 tmp=39.3 age=3 estop=0 vset=0.25 wset=-15.00 mnt=1 zof=1.75 zro=-0.50 lvl=0.30 arm=1";
 
     #[test]
     fn parses_a_full_sample() {
@@ -398,6 +461,30 @@ mod tests {
         assert!((telemetry.steer_setpoint_deg_s() + 15.0).abs() < 1e-5);
         assert!(telemetry.has_orientation);
         assert!(telemetry.has_setpoints);
+        assert_eq!(telemetry.mount, Some(1));
+        assert_eq!(telemetry.zero_offset_deg, Some(1.75));
+        assert_eq!(telemetry.roll_zero_offset_deg, Some(-0.50));
+        assert_eq!(telemetry.level_deg, Some(0.30));
+        assert_eq!(telemetry.armed, Some(true));
+    }
+
+    #[test]
+    fn legacy_sample_has_no_mount_fields() {
+        let line = "T step=7 loop=199 imu=stale cal=1 pitch=-4.00 gy=0.10 err=0x05 mb=none L=0 R=0 bat=39.20 tmp=31.0 age=4294967295 estop=1";
+        let telemetry = parse_telemetry(line).expect("legacy sample should parse");
+        assert_eq!(telemetry.mount, None);
+        assert_eq!(telemetry.zero_offset_deg, None);
+        assert_eq!(telemetry.roll_zero_offset_deg, None);
+        assert_eq!(telemetry.level_deg, None);
+        assert_eq!(telemetry.armed, None);
+    }
+
+    #[test]
+    fn rejects_out_of_range_mount() {
+        assert!(parse_telemetry("T step=1 pitch=1.0 mnt=7").is_none());
+        assert!(parse_telemetry("T step=1 pitch=1.0 mnt=normal").is_none());
+        let telemetry = parse_telemetry("T step=1 pitch=1.0 mnt=2").expect("mnt=2 is valid");
+        assert_eq!(telemetry.mount, Some(2));
     }
 
     #[test]
@@ -432,7 +519,7 @@ mod tests {
 
     #[test]
     fn parses_stat_reply() {
-        let line = "stat up=12.5 loop=200 stream=20 trim=0.50 estop=0 steps=2500 imu=2500 imu_err=2 imu_code=1 fb=100 fb_drop=7";
+        let line = "stat up=12.5 loop=200 stream=20 trim=0.50 estop=0 steps=2500 imu=2500 imu_err=2 imu_code=1 fb=100 fb_drop=7 zero=1.75 zroll=-0.50 level=0.30 mount=1 armed=1";
         let stat = parse_stat(line).expect("stat should parse");
         assert!((stat.uptime_s - 12.5).abs() < 1e-6);
         assert_eq!(stat.loop_hz, 200);
@@ -440,6 +527,11 @@ mod tests {
         assert!((stat.trim_deg - 0.5).abs() < 1e-6);
         assert_eq!(stat.imu_errors, 2);
         assert_eq!(stat.fb_discarded, 7);
+        assert_eq!(stat.zero_deg, Some(1.75));
+        assert_eq!(stat.zroll_deg, Some(-0.50));
+        assert_eq!(stat.level_deg, Some(0.30));
+        assert_eq!(stat.mount, Some(1));
+        assert_eq!(stat.armed, Some(true));
         assert_eq!(stat.raw, line);
     }
 

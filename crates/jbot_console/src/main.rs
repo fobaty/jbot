@@ -8,6 +8,7 @@
 
 mod app;
 mod attitude;
+mod axiscal;
 mod link;
 mod protocol;
 mod theme;

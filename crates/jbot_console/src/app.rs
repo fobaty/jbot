@@ -8,6 +8,7 @@ use eframe::egui::{
 };
 
 use crate::attitude;
+use crate::axiscal::{self, Lean, Measurements, MOUNT_COUNT, MOUNT_NAMES};
 use crate::link::{available_ports, looks_like_pico, LinkEvent, LinkHandle};
 use crate::protocol::{Message, Stat, Telemetry, MAX_STREAM_HZ};
 use crate::theme;
@@ -64,6 +65,56 @@ struct LogEntry {
     text: String,
 }
 
+/// State of the guided mount (axis) calibration wizard. The wizard sweeps
+/// every firmware mount selector while the operator holds one known pose at
+/// a time, then picks the selector whose attitude convention matches
+/// reality. See `axiscal` for the scoring rules.
+#[derive(Clone)]
+enum AxisCal {
+    /// No guided calibration in progress.
+    Idle,
+    /// Waiting for the operator to press "Capture upright".
+    PromptBaseline,
+    /// Waiting for the operator to press the button for lean `usize`.
+    PromptLean(usize),
+    /// Sweeping the mount selectors for one pose.
+    Capturing {
+        kind: CaptureKind,
+        mount: usize,
+        window_start: Instant,
+        samples: Vec<(f32, f32)>,
+    },
+    /// Sweep finished with a trustworthy detection.
+    Done {
+        detection: axiscal::Detection,
+        scores: [f32; MOUNT_COUNT],
+    },
+    /// Sweep finished without a trustworthy detection; original mount
+    /// restored.
+    Failed {
+        reason: String,
+        scores: [f32; MOUNT_COUNT],
+    },
+}
+
+impl AxisCal {
+    /// True while the wizard owns the pose sweep; other calibration controls
+    /// are locked out in that state.
+    fn running(&self) -> bool {
+        matches!(
+            self,
+            Self::PromptBaseline | Self::PromptLean(_) | Self::Capturing { .. }
+        )
+    }
+}
+
+/// Which pose is being swept.
+#[derive(Clone, Copy)]
+enum CaptureKind {
+    Baseline,
+    Lean(usize),
+}
+
 /// Desktop console.
 pub struct ConsoleApp {
     link: Option<LinkHandle>,
@@ -88,7 +139,15 @@ pub struct ConsoleApp {
     applied_speed: f32,
     applied_steer_deg: f32,
     trim_deg: f32,
+    mount: u8,
+    zero_offset_deg: Option<f32>,
+    roll_zero_offset_deg: Option<f32>,
+    level_deg: Option<f32>,
+    armed: bool,
     confirm_reboot: bool,
+    axis_cal: AxisCal,
+    axis_cal_data: Measurements,
+    axis_cal_saved_mount: u8,
 
     events: VecDeque<LogEntry>,
     started: Instant,
@@ -128,7 +187,15 @@ impl ConsoleApp {
             applied_speed: 0.0,
             applied_steer_deg: 0.0,
             trim_deg: 0.0,
+            mount: 0,
+            zero_offset_deg: None,
+            roll_zero_offset_deg: None,
+            level_deg: None,
+            armed: false,
             confirm_reboot: false,
+            axis_cal: AxisCal::Idle,
+            axis_cal_data: Measurements::default(),
+            axis_cal_saved_mount: 0,
             events: VecDeque::new(),
             started,
         };
@@ -213,6 +280,22 @@ impl ConsoleApp {
                     self.applied_speed = telemetry.speed_setpoint_mps;
                     self.applied_steer_deg = telemetry.steer_setpoint_deg_s();
                 }
+                if let Some(mount) = telemetry.mount {
+                    self.mount = mount;
+                }
+                if let Some(offset) = telemetry.zero_offset_deg {
+                    self.zero_offset_deg = Some(offset);
+                }
+                if let Some(offset) = telemetry.roll_zero_offset_deg {
+                    self.roll_zero_offset_deg = Some(offset);
+                }
+                if let Some(level) = telemetry.level_deg {
+                    self.level_deg = Some(level);
+                }
+                if let Some(armed) = telemetry.armed {
+                    self.armed = armed;
+                }
+                self.axis_cal_sample(telemetry.pitch_deg, telemetry.roll_deg);
                 self.telemetry = Some(telemetry);
                 self.telemetry_at = Some(Instant::now());
             }
@@ -230,6 +313,22 @@ impl ConsoleApp {
                         u8::from(stat.estop),
                     ),
                 );
+                if let Some(zero) = stat.zero_deg {
+                    self.zero_offset_deg = Some(zero);
+                }
+                if let Some(zroll) = stat.zroll_deg {
+                    self.roll_zero_offset_deg = Some(zroll);
+                }
+                if let Some(level) = stat.level_deg {
+                    self.level_deg = Some(level);
+                    self.trim_deg = level;
+                }
+                if let Some(mount) = stat.mount {
+                    self.mount = mount;
+                }
+                if let Some(armed) = stat.armed {
+                    self.armed = armed;
+                }
                 self.stat = Some(stat);
             }
             Message::Ok(text) => {
@@ -264,6 +363,34 @@ impl ConsoleApp {
         } else if let Some(rest) = text.strip_prefix("ok trim ") {
             if let Ok(value) = rest.trim().parse::<f32>() {
                 self.trim_deg = value;
+                self.level_deg = Some(value);
+            }
+        } else if let Some(rest) = text.strip_prefix("ok zero ") {
+            for token in rest.split_whitespace() {
+                if let Some(value) = token.strip_prefix("pitch=") {
+                    if let Ok(parsed) = value.parse::<f32>() {
+                        self.zero_offset_deg = Some(parsed);
+                    }
+                } else if let Some(value) = token.strip_prefix("roll=") {
+                    if let Ok(parsed) = value.parse::<f32>() {
+                        self.roll_zero_offset_deg = Some(parsed);
+                    }
+                }
+            }
+        } else if let Some(rest) = text.strip_prefix("ok level ") {
+            if let Ok(value) = rest.trim().parse::<f32>() {
+                self.level_deg = Some(value);
+                self.trim_deg = value;
+            }
+        } else if text == "ok armed" {
+            self.armed = true;
+        } else if text == "ok disarmed" {
+            self.armed = false;
+        } else if let Some(rest) = text.strip_prefix("ok mount ") {
+            if let Some(value) = rest.split_whitespace().next() {
+                if let Ok(parsed) = value.parse::<u8>() {
+                    self.mount = parsed;
+                }
             }
         } else if let Some(rest) = text.strip_prefix("ok stream ") {
             if let Ok(value) = rest.trim().parse::<u32>() {
@@ -316,6 +443,11 @@ impl ConsoleApp {
             steer_setpoint_rps: self.applied_steer_deg.to_radians(),
             has_orientation: true,
             has_setpoints: true,
+            mount: Some(self.mount),
+            zero_offset_deg: Some(self.zero_offset_deg.unwrap_or(1.8)),
+            roll_zero_offset_deg: Some(self.roll_zero_offset_deg.unwrap_or(-0.6)),
+            level_deg: Some(self.level_deg.unwrap_or(self.trim_deg)),
+            armed: Some(false),
         });
         self.telemetry_at = Some(now);
     }
@@ -333,6 +465,8 @@ impl ConsoleApp {
                 input.key_pressed(egui::Key::Space),
                 input.key_pressed(egui::Key::E),
                 input.key_pressed(egui::Key::C),
+                input.key_pressed(egui::Key::Z),
+                input.key_pressed(egui::Key::L),
             )
         });
 
@@ -356,6 +490,175 @@ impl ConsoleApp {
         }
         if keys.6 {
             self.clear_estop();
+        }
+        if keys.7 {
+            self.calibrate_zero();
+        }
+        if keys.8 {
+            self.calibrate_level();
+        }
+    }
+
+    fn calibrate_zero(&mut self) {
+        self.send("zero");
+        self.log(
+            Level::Info,
+            "zero calibration: hold the robot at the vertical reference, capturing current pitch/roll as zero",
+        );
+    }
+
+    fn calibrate_level(&mut self) {
+        self.send("level");
+        self.log(
+            Level::Info,
+            "level calibration: hold the robot at the balance stance, capturing it as the balance reference",
+        );
+    }
+
+    /// True while the guided mount wizard owns the sweep.
+    fn axis_cal_running(&self) -> bool {
+        self.axis_cal.running()
+    }
+
+    fn axis_cal_sample(&mut self, pitch_deg: f32, roll_deg: f32) {
+        if let AxisCal::Capturing { samples, .. } = &mut self.axis_cal {
+            samples.push((pitch_deg, roll_deg));
+        }
+    }
+
+    fn axis_cal_start(&mut self) {
+        if !self.demo && !self.connected {
+            self.log(
+                Level::Error,
+                "guided mount calibration needs a live link to the firmware (or demo mode)",
+            );
+            return;
+        }
+        self.axis_cal_saved_mount = self.mount;
+        self.axis_cal_data = Measurements::default();
+        self.send("stream 5");
+        self.axis_cal = AxisCal::PromptBaseline;
+        self.log(
+            Level::Info,
+            "guided mount calibration: stand the robot UPRIGHT and still, then press Capture",
+        );
+    }
+
+    fn axis_cal_cancel(&mut self) {
+        let saved = self.axis_cal_saved_mount;
+        self.send(format!("mount {saved}"));
+        self.send(format!("stream {}", self.stream_hz));
+        self.axis_cal = AxisCal::Idle;
+        self.log(
+            Level::Warn,
+            "guided mount calibration cancelled; mount restored",
+        );
+    }
+
+    fn axis_cal_begin_sweep(&mut self, kind: CaptureKind) {
+        self.send("mount 0");
+        self.axis_cal = AxisCal::Capturing {
+            kind,
+            mount: 0,
+            window_start: Instant::now(),
+            samples: Vec::with_capacity(16),
+        };
+    }
+
+    /// Advance the wizard's windowed capture; called once per frame.
+    fn update_axis_cal(&mut self) {
+        const WINDOW: Duration = Duration::from_millis(800);
+        let (kind, mount, samples) = match &mut self.axis_cal {
+            AxisCal::Capturing {
+                kind,
+                mount,
+                window_start,
+                samples,
+            } => {
+                if window_start.elapsed() < WINDOW {
+                    return;
+                }
+                (*kind, *mount, std::mem::take(samples))
+            }
+            _ => return,
+        };
+        let Some(mean) = mean_pair(&samples) else {
+            self.axis_cal_restore_after_failure("no telemetry from the firmware during the sweep");
+            return;
+        };
+        match kind {
+            CaptureKind::Baseline => self.axis_cal_data.upright[mount] = Some(mean),
+            CaptureKind::Lean(index) => self.axis_cal_data.leans[index][mount] = Some(mean),
+        }
+        if mount + 1 < MOUNT_COUNT {
+            let next = mount + 1;
+            self.send(format!("mount {next}"));
+            self.axis_cal = AxisCal::Capturing {
+                kind,
+                mount: next,
+                window_start: Instant::now(),
+                samples: Vec::with_capacity(16),
+            };
+            return;
+        }
+        match kind {
+            CaptureKind::Baseline => {
+                self.axis_cal = AxisCal::PromptLean(0);
+                self.log(
+                    Level::Info,
+                    "upright reference captured; now hold the FORWARD lean and press its button",
+                );
+            }
+            CaptureKind::Lean(index) => {
+                if index + 1 < Lean::ALL.len() {
+                    self.axis_cal = AxisCal::PromptLean(index + 1);
+                } else {
+                    self.axis_cal_finish();
+                }
+            }
+        }
+    }
+
+    fn axis_cal_restore_after_failure(&mut self, reason: &str) {
+        let saved = self.axis_cal_saved_mount;
+        self.send(format!("mount {saved}"));
+        self.send(format!("stream {}", self.stream_hz));
+        self.axis_cal = AxisCal::Failed {
+            reason: reason.to_owned(),
+            scores: axiscal::scores(&self.axis_cal_data),
+        };
+        self.log(
+            Level::Error,
+            "guided mount calibration aborted; mount restored",
+        );
+    }
+
+    fn axis_cal_finish(&mut self) {
+        let scores = axiscal::scores(&self.axis_cal_data);
+        let detection = axiscal::detect(&scores);
+        self.send(format!("stream {}", self.stream_hz));
+        if detection.confident {
+            self.send(format!("mount {}", detection.best));
+            self.axis_cal = AxisCal::Done { detection, scores };
+            self.log(
+                Level::Info,
+                format!(
+                    "guided mount calibration: detected {} (selector {})",
+                    MOUNT_NAMES[detection.best], detection.best
+                ),
+            );
+        } else {
+            let saved = self.axis_cal_saved_mount;
+            self.send(format!("mount {saved}"));
+            self.axis_cal = AxisCal::Failed {
+                reason: "no selector matched confidently; hold a larger lean (20–30°) and retry"
+                    .to_owned(),
+                scores,
+            };
+            self.log(
+                Level::Warn,
+                "guided mount calibration: no confident match; original mount restored",
+            );
         }
     }
 
@@ -613,7 +916,7 @@ impl ConsoleApp {
                     .show(ui, |ui| {
                         self.link_controls(ui);
                         self.drive_controls(ui);
-                        self.imu_controls(ui);
+                        self.calibration_controls(ui);
                         self.system_controls(ui);
                     });
             });
@@ -726,11 +1029,105 @@ impl ConsoleApp {
         );
     }
 
-    fn imu_controls(&mut self, ui: &mut egui::Ui) {
-        section(ui, "IMU / TRIM");
+    fn calibration_controls(&mut self, ui: &mut egui::Ui) {
+        section(ui, "CALIBRATION");
+        let busy = self.axis_cal_running();
+        ui.add_enabled_ui(!busy, |ui| {
+            ui.horizontal(|ui| {
+                ui.label("Mount");
+                egui::ComboBox::from_id_salt("mount")
+                    .width(150.0)
+                    .selected_text(mount_name(self.mount))
+                    .show_ui(ui, |ui| {
+                        for (selector, name) in
+                            MOUNT_NAMES.iter().enumerate().map(|(i, n)| (i as u8, *n))
+                        {
+                            if ui
+                                .selectable_value(&mut self.mount, selector, name)
+                                .clicked()
+                            {
+                                self.send(format!("mount {selector}"));
+                            }
+                        }
+                    });
+            });
+        });
+        if busy {
+            ui.label(
+                RichText::new("Mount locked while the guided calibration sweeps the selectors.")
+                    .size(10.0)
+                    .color(theme::AMBER),
+            );
+        }
+        self.axis_cal_ui(ui);
+        ui.label(
+            RichText::new("Re-capture zero and level after changing the mount.")
+                .size(10.0)
+                .color(theme::MUTED),
+        );
+        ui.add_enabled_ui(!busy, |ui| {
+            ui.horizontal(|ui| {
+                if ui.button("Calibrate ZERO").clicked() {
+                    self.calibrate_zero();
+                }
+                if ui.button("Calibrate LEVEL").clicked() {
+                    self.calibrate_level();
+                }
+            });
+        });
+        ui.add_enabled_ui(!busy, |ui| {
+            ui.horizontal(|ui| {
+                let arm_button = egui::Button::new(
+                    RichText::new(if self.armed { "ARMED" } else { "ARM BALANCE" })
+                        .strong()
+                        .color(Color32::WHITE),
+                )
+                .fill(if self.armed {
+                    theme::GREEN
+                } else {
+                    theme::AMBER
+                })
+                .min_size(egui::vec2(ui.available_width() * 0.62, 34.0));
+                if ui.add(arm_button).clicked() {
+                    self.send("arm");
+                }
+                if ui.button("DISARM").clicked() {
+                    self.send("disarm");
+                }
+            });
+        });
+        ui.label(
+            RichText::new("ARM is refused until zero and level are captured this session.")
+                .size(10.0)
+                .color(theme::MUTED),
+        );
+        let zero_text = self
+            .zero_offset_deg
+            .map_or_else(|| "--".to_owned(), |value| format!("{value:+.2}°"));
+        let roll_text = self
+            .roll_zero_offset_deg
+            .map_or_else(|| "--".to_owned(), |value| format!("{value:+.2}°"));
+        let level_text = self
+            .level_deg
+            .map_or_else(|| "--".to_owned(), |value| format!("{value:+.2}°"));
+        ui.label(
+            RichText::new(format!(
+                "zero {zero_text} · roll {roll_text} · level {level_text}"
+            ))
+            .monospace()
+            .size(11.0)
+            .color(theme::TEXT),
+        );
+        ui.label(
+            RichText::new(
+                "Zero: hold the robot at the vertical reference. Level: hold it at the balance stance.",
+            )
+            .size(10.0)
+            .color(theme::MUTED),
+        );
         ui.add(
             egui::Slider::new(&mut self.trim_deg, -10.0..=10.0)
-                .text("Pitch trim")
+                .text("Level trim")
                 .suffix(" °")
                 .step_by(0.1),
         );
@@ -786,9 +1183,11 @@ impl ConsoleApp {
         );
         ui.add_space(8.0);
         ui.label(
-            RichText::new("Keys: ↑/↓ speed · ←/→ steer · Space zero · E e-stop · C clear")
-                .size(10.0)
-                .color(theme::MUTED),
+            RichText::new(
+                "Keys: ↑/↓ speed · ←/→ steer · Space zero · E e-stop · C clear · Z zero · L level",
+            )
+            .size(10.0)
+            .color(theme::MUTED),
         );
     }
 
@@ -1044,6 +1443,27 @@ impl ConsoleApp {
                     theme::TEXT,
                 );
                 chip(ui, "STEP", telemetry.step.to_string(), theme::MUTED);
+                chip(ui, "MOUNT", mount_name(self.mount).to_owned(), theme::TEXT);
+                if let Some(level) = self.level_deg {
+                    chip(ui, "LEVEL", format!("{level:+.2}°"), theme::TEXT);
+                }
+                if let Some(zero) = self.zero_offset_deg {
+                    chip(ui, "ZERO", format!("{zero:+.2}°"), theme::MUTED);
+                }
+                chip(
+                    ui,
+                    "ARM",
+                    if self.armed {
+                        "YES".to_owned()
+                    } else {
+                        "no".to_owned()
+                    },
+                    if self.armed {
+                        theme::GREEN
+                    } else {
+                        theme::MUTED
+                    },
+                );
             } else {
                 ui.label(
                     RichText::new("waiting for telemetry")
@@ -1171,7 +1591,7 @@ impl ConsoleApp {
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         ui.label(
                             RichText::new(
-                                "E e-stop · C clear · Space zero · ↑/↓ speed · ←/→ steer",
+                                "E e-stop · C clear · Space zero · ↑/↓ speed · ←/→ steer · Z zero · L level",
                             )
                             .size(10.0)
                             .color(theme::MUTED),
@@ -1182,10 +1602,176 @@ impl ConsoleApp {
     }
 }
 
+impl ConsoleApp {
+    /// Render the guided mount (axis) calibration wizard.
+    fn axis_cal_ui(&mut self, ui: &mut egui::Ui) {
+        egui::CollapsingHeader::new("Guided axis calibration")
+            .default_open(false)
+            .show(ui, |ui| {
+                ui.label(
+                    RichText::new(
+                        "Re-soldering or re-mounting the IMU changes which way its axes point. \
+                         This wizard sweeps every mount selector while you hold one pose at a \
+                         time, then applies the match.",
+                    )
+                    .size(10.0)
+                    .color(theme::MUTED),
+                );
+                let state = self.axis_cal.clone();
+                match state {
+                    AxisCal::Idle => {
+                        if ui.button("Start guided calibration").clicked() {
+                            self.axis_cal_start();
+                        }
+                    }
+                    AxisCal::PromptBaseline => {
+                        ui.label("Step 1/5 · Stand the robot UPRIGHT and hold it still");
+                        if ui.button("Capture upright").clicked() {
+                            self.axis_cal_begin_sweep(CaptureKind::Baseline);
+                        }
+                        if ui.button("Cancel").clicked() {
+                            self.axis_cal_cancel();
+                        }
+                    }
+                    AxisCal::PromptLean(index) => {
+                        let lean = Lean::ALL[index];
+                        ui.label(format!("Step {}/5 · {}", index + 2, lean.instruction()));
+                        if ui.button(lean.button_label()).clicked() {
+                            self.axis_cal_begin_sweep(CaptureKind::Lean(index));
+                        }
+                        if ui.button("Cancel").clicked() {
+                            self.axis_cal_cancel();
+                        }
+                    }
+                    AxisCal::Capturing { kind, mount, .. } => {
+                        let step = match kind {
+                            CaptureKind::Baseline => "upright".to_owned(),
+                            CaptureKind::Lean(index) => Lean::ALL[index].button_label().to_owned(),
+                        };
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            ui.label(format!(
+                                "measuring {step} · mount {}/{}",
+                                mount + 1,
+                                MOUNT_COUNT
+                            ));
+                        });
+                        ui.label(
+                            RichText::new("Hold the pose; the sweep cycles through the selectors.")
+                                .size(10.0)
+                                .color(theme::MUTED),
+                        );
+                        if ui.button("Cancel").clicked() {
+                            self.axis_cal_cancel();
+                        }
+                    }
+                    AxisCal::Done { detection, scores } => {
+                        ui.label(
+                            RichText::new(format!(
+                                "Detected: {} (selector {})",
+                                MOUNT_NAMES[detection.best], detection.best
+                            ))
+                            .color(theme::GREEN)
+                            .strong(),
+                        );
+                        ui.label(
+                            RichText::new(format!(
+                                "runner-up: {} · margin {:.1}",
+                                MOUNT_NAMES[detection.second],
+                                detection.second_score - detection.best_score
+                            ))
+                            .size(10.0)
+                            .color(theme::MUTED),
+                        );
+                        Self::scores_table(ui, &scores, Some(detection.best));
+                        ui.label(
+                            RichText::new(
+                                "Mount applied. Now hold the robot upright and press \
+                                 Calibrate ZERO, then Calibrate LEVEL.",
+                            )
+                            .size(10.0)
+                            .color(theme::MUTED),
+                        );
+                        if ui.button("Close").clicked() {
+                            self.axis_cal = AxisCal::Idle;
+                        }
+                    }
+                    AxisCal::Failed { reason, scores } => {
+                        ui.label(RichText::new(format!("Failed: {reason}")).color(theme::RED));
+                        let best = scores
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, score)| score.is_finite())
+                            .min_by(|a, b| a.1.total_cmp(b.1))
+                            .map(|(index, _)| index);
+                        Self::scores_table(ui, &scores, best);
+                        ui.horizontal(|ui| {
+                            if ui.button("Retry").clicked() {
+                                self.axis_cal_start();
+                            }
+                            if ui.button("Close").clicked() {
+                                self.axis_cal = AxisCal::Idle;
+                            }
+                        });
+                    }
+                }
+            });
+    }
+
+    /// Render the per-selector score table; the winner (when known) is
+    /// highlighted in green. Lower is better.
+    fn scores_table(ui: &mut egui::Ui, scores: &[f32; MOUNT_COUNT], best: Option<usize>) {
+        egui::Grid::new("axis_cal_scores")
+            .num_columns(2)
+            .spacing([12.0, 2.0])
+            .show(ui, |ui| {
+                for (index, score) in scores.iter().enumerate() {
+                    let text_color = if best == Some(index) {
+                        theme::GREEN
+                    } else {
+                        theme::MUTED
+                    };
+                    ui.label(
+                        RichText::new(format!("{} ({})", MOUNT_NAMES[index], index))
+                            .monospace()
+                            .size(10.0)
+                            .color(text_color),
+                    );
+                    ui.label(
+                        RichText::new(if score.is_infinite() {
+                            "—".to_owned()
+                        } else {
+                            format!("{score:.1}")
+                        })
+                        .monospace()
+                        .size(10.0)
+                        .color(text_color),
+                    );
+                    ui.end_row();
+                }
+            });
+    }
+}
+
+fn mean_pair(samples: &[(f32, f32)]) -> Option<(f32, f32)> {
+    if samples.is_empty() {
+        return None;
+    }
+    let mut pitch = 0.0_f32;
+    let mut roll = 0.0_f32;
+    for &(p, r) in samples {
+        pitch += p;
+        roll += r;
+    }
+    let n = samples.len() as f32;
+    Some((pitch / n, roll / n))
+}
+
 impl eframe::App for ConsoleApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.poll_link();
         self.update_demo();
+        self.update_axis_cal();
         self.handle_shortcuts(ui.ctx());
         self.top_bar(ui);
         self.bottom_bar(ui);
@@ -1247,6 +1833,13 @@ fn section(ui: &mut egui::Ui, title: &str) {
             .color(theme::ACCENT),
     );
     ui.separator();
+}
+
+fn mount_name(mount: u8) -> &'static str {
+    MOUNT_NAMES
+        .get(mount as usize)
+        .copied()
+        .unwrap_or("unknown")
 }
 
 fn chip(ui: &mut egui::Ui, label: &str, value: String, color: Color32) {

@@ -51,8 +51,13 @@ pub fn horizon(ui: &mut egui::Ui, telemetry: Option<&Telemetry>, height: f32, st
     };
     let center = inner.center();
     let pixels_per_degree = (inner.height() * 0.5 / 45.0).max(1.0);
-    let rotation = -roll.to_radians();
-    let horizon_y = center.y + pitch * pixels_per_degree;
+    // The robot's pitch is positive when it leans forward (nose down), so the
+    // horizon rises on screen, unlike an aircraft attitude indicator. Roll is
+    // positive when leaning left; the world then appears rotated clockwise
+    // (left end of the horizon up). In egui's y-down coordinates both angles
+    // are applied with the sign that matches that picture.
+    let rotation = roll.to_radians();
+    let horizon_y = center.y - pitch * pixels_per_degree;
 
     let big = inner.width().max(inner.height()) * 3.0;
     let corner = |x: f32, y: f32| rotate(pos2(x, y), center, rotation);
@@ -78,7 +83,7 @@ pub fn horizon(ui: &mut egui::Ui, telemetry: Option<&Telemetry>, height: f32, st
         if mark == 0 {
             continue;
         }
-        let y = center.y + (pitch - mark as f32) * pixels_per_degree;
+        let y = center.y - (pitch - mark as f32) * pixels_per_degree;
         if y < inner.top() - 40.0 || y > inner.bottom() + 40.0 {
             continue;
         }
@@ -365,7 +370,7 @@ fn draw_bank_scale(painter: &egui::Painter, center: Pos2, inner: Rect, roll: f32
         );
     }
 
-    let roll_rad = roll.to_radians();
+    let roll_rad = -roll.to_radians();
     let tip = rotate(center + egui::vec2(0.0, -(radius - 1.0)), center, roll_rad);
     let left = rotate(
         center + egui::vec2(0.0, -(radius - 14.0)),

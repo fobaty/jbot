@@ -5,7 +5,8 @@ BNO055 attitude live: an artificial horizon with a pitch ladder, a bank scale an
 a compass, alongside the control-loop, power, and drive instruments. The same
 window sends the `speed`, `steer`, `trim`, `stream`, `estop`, and `clear`
 commands defined in [`docs/pico-bridge.md`](../../docs/pico-bridge.md) section
-8.1.
+8.1: the attitude horizon and compass, the drive setpoints, and the IMU
+mount/zero/level calibration commands.
 
 The goal is a single tool for bench bring-up that replaces the scattered
 `tools/pico` Python scripts: one window for attitude, telemetry, drive setpoints,
@@ -45,12 +46,21 @@ The layout is a fixed instrument board:
 - **Drive** — speed and steering setpoints with `Apply` and `Zero`, quick presets,
   a latched `E-STOP`, and `Clear`.
 - **Link** — stream rate, `Ping` / `Stat` / `Help`, and `Reset stats`.
-- **IMU / trim** — pitch trim and `Reinit BNO055`.
+- **Calibration** — BNO055 mount selector (`normal` / `flip X` / `flip Y` /
+  `rot ±90° X/Y`) or the guided **axis calibration**: stand the robot
+  upright, lean it forward, backward, left and right, pressing the matching
+  button after each pose; the console sweeps all mount selectors and applies
+  the one whose attitude response matches the motion (a score table shows
+  the verdict). Also `Calibrate ZERO` (capture the current pose as the
+  attitude zero), `Calibrate LEVEL` (capture the balance stance as the
+  balance reference), an `ARM BALANCE` / `DISARM` gate, a level trim slider,
+  and `Reinit BNO055`. Arming is refused until zero and level are captured.
 - **System** — `Reboot` behind an explicit confirmation.
 - **Event log** — every reply, disconnect, and safety action with a timestamp.
 
 Status chips show the connection state, whether telemetry is fresh, the IMU
-calibration byte, and the emergency-stop latch.
+calibration byte, the mount selector, the zero and level offsets, and the
+emergency-stop latch.
 
 ## Keyboard
 
@@ -63,6 +73,8 @@ Shortcuts are ignored while a text field has focus.
 | `Space` | Zero speed and steering |
 | `E` | Latch the firmware e-stop |
 | `C` | Clear the e-stop latch |
+| `Z` | Calibrate zero (capture current attitude as offsets) |
+| `L` | Calibrate level (capture balance stance as the reference) |
 
 ## Architecture
 
@@ -98,5 +110,9 @@ values, and unknown keys.
 ## Note on motion
 
 The firmware currently runs with `Gains::SAFE`, so the torque command stays at
-zero. The drive setpoints and the emergency stop behave correctly, but the robot
-will not move until the control gains are tuned and enabled in the firmware.
+zero: **the wheels cannot spin, regardless of the speed and steering
+setpoints sent from this console.** The drive setpoints and the emergency stop
+behave correctly, but the robot will not move until the control gains are
+tuned on the safety rig and enabled in the firmware. Balance gains are never
+enabled silently; the bench procedure lives in `docs/pico-bridge.md` section
+10.
