@@ -164,6 +164,7 @@ bags/
 # AI / agent tooling (kept out of the repository)
 # ---------------------------------------------------------------------------
 AGENTS.md
+opencode.jsonc
 .opencode/
 .claude/
 .cursor/
