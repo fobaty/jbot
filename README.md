@@ -180,6 +180,7 @@ jbot/
 │   └── robot.toml              # Typed robot configuration
 ├── crates/
 │   ├── jbot_common/            # Shared messages, state types, configuration
+│   ├── jbot_console/           # Native bench console for the Pico USB CDC link
 │   ├── jbot_hardware/          # HAL: transports, sensors, actuators
 │   ├── jbot_navigation/        # Costmaps, planners, navigation stack
 │   └── jbot_node/              # High-level executable for the mission computer
@@ -259,6 +260,18 @@ cargo run --release                  # flash over SWD via probe-rs, RTT attached
 The pin map, the task schedule, the link protocols, and the state machine are in
 [`docs/pico-bridge.md`](docs/pico-bridge.md).
 
+### Pico console
+
+```bash
+cargo run -p jbot_console -- --demo       # UI with synthetic telemetry
+cargo run -p jbot_console                 # live BNO055 and telemetry
+```
+
+The native console shows the artificial horizon, compass, attitude, battery,
+wheel, and control instruments, and drives the `speed`/`steer`/`trim`/`estop`
+commands from one window. See
+[`crates/jbot_console/README.md`](crates/jbot_console/README.md).
+
 ### Quality gates
 
 Run before every merge:
@@ -336,6 +349,7 @@ Two donor-specific hazards matter from day one:
 | [`docs/roadmap.md`](docs/roadmap.md) | Phases, gates, schedule, critical path |
 | [`docs/tasks.md`](docs/tasks.md) | Granular task breakdown |
 | [`docs/agent_workflow.md`](docs/agent_workflow.md) | Contribution and review workflow |
+| [`crates/jbot_console/README.md`](crates/jbot_console/README.md) | Native Pico console: attitude, compass, drive controls |
 | [`firmware/README.md`](firmware/README.md) | EFeru builds, flash, wiring, Pico plan |
 
 ---

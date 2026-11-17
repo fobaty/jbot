@@ -31,8 +31,16 @@ pub struct Telemetry {
     pub imu_system_cal: u8,
     /// Pitch used by the control law, in degrees.
     pub pitch_deg: f32,
+    /// Roll from the fused BNO055 Euler frame, in degrees.
+    pub roll_deg: f32,
+    /// Heading from the fused BNO055 Euler frame, in degrees.
+    pub heading_deg: f32,
     /// Pitch rate used by the control law, in degrees per second.
     pub gyro_y_dps: f32,
+    /// Roll rate from the BNO055, in degrees per second.
+    pub gyro_x_dps: f32,
+    /// Yaw rate from the BNO055, in degrees per second.
+    pub gyro_z_dps: f32,
     /// `SYS_ERR` register, zero when the BNO055 reports no fault.
     pub sys_err: u8,
     /// At least one mainboard feedback frame has been received.
@@ -49,6 +57,10 @@ pub struct Telemetry {
     pub feedback_age_ms: u32,
     /// Latched emergency stop is active.
     pub estop: bool,
+    /// Forward/backward speed setpoint, meters per second.
+    pub speed_setpoint_mps: f32,
+    /// Steering setpoint, radians per second.
+    pub steer_setpoint_rps: f32,
 }
 
 /// Latest snapshot, refreshed on every control step.
@@ -60,6 +72,10 @@ pub static REINIT: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 static STREAM_HZ: AtomicU32 = AtomicU32::new(DEFAULT_STREAM_HZ);
 /// Pitch trim in radians, stored as `f32` bits.
 static PITCH_TRIM_BITS: AtomicU32 = AtomicU32::new(0);
+/// Desired forward/backward speed setpoint in meters per second, stored as `f32` bits.
+static SPEED_SETPOINT_BITS: AtomicU32 = AtomicU32::new(0);
+/// Desired steering/yaw rate setpoint in radians per second, stored as `f32` bits.
+static STEER_SETPOINT_BITS: AtomicU32 = AtomicU32::new(0);
 /// Latched emergency stop.
 static ESTOP: AtomicBool = AtomicBool::new(false);
 /// Measured control loop rate, hertz.
@@ -109,6 +125,26 @@ pub fn pitch_trim_rad() -> f32 {
 /// Set the pitch trim in radians.
 pub fn set_pitch_trim_rad(rad: f32) {
     PITCH_TRIM_BITS.store(rad.to_bits(), Ordering::Relaxed);
+}
+
+/// Forward/backward speed setpoint in meters per second.
+pub fn speed_setpoint_mps() -> f32 {
+    f32::from_bits(SPEED_SETPOINT_BITS.load(Ordering::Relaxed))
+}
+
+/// Set the forward/backward speed setpoint in meters per second.
+pub fn set_speed_setpoint_mps(mps: f32) {
+    SPEED_SETPOINT_BITS.store(mps.to_bits(), Ordering::Relaxed);
+}
+
+/// Steering setpoint in radians per second.
+pub fn steer_setpoint_rps() -> f32 {
+    f32::from_bits(STEER_SETPOINT_BITS.load(Ordering::Relaxed))
+}
+
+/// Set the steering setpoint in radians per second.
+pub fn set_steer_setpoint_rps(rps: f32) {
+    STEER_SETPOINT_BITS.store(rps.to_bits(), Ordering::Relaxed);
 }
 
 /// Emergency stop latch.

@@ -234,6 +234,10 @@ answers each command with one `ok`/`err`/`stat` line and, while streaming, sends
 | `stream <hz>` | `ok stream <hz>` | `0` disables the stream, clamped to `0..=200` |
 | `trim` | `ok trim <deg>` | Query the pitch trim |
 | `trim <deg>` | `ok trim <deg>` | Accepted range `-90..=90` |
+| `speed` | `ok speed <mps>` | Query the speed setpoint |
+| `speed <mps>` | `ok speed <mps>` | Accepted range `-5..=5` |
+| `steer` | `ok steer <deg/s>` | Query the steering setpoint |
+| `steer <deg/s>` | `ok steer <deg/s>` | Accepted range `-180..=180` |
 | `reinit` | `ok reinit` | Re-runs the BNO055 start-up sequence |
 | `estop` | `ok estop` | Latches the emergency stop |
 | `clear` | `ok clear` | Clears the latch |
@@ -242,6 +246,7 @@ answers each command with one `ok`/`err`/`stat` line and, while streaming, sends
 
 Rejected input gets `err <reason>`: `err unknown command: <text>`,
 `err stream needs 0..200`, `err trim needs degrees in -90..90`,
+`err speed needs mps in -5..5`, `err steer needs degrees/s in -180..180`,
 `err use: stats reset`, `err line too long` (over 64 bytes), or
 `err line is not utf8`.
 
@@ -261,7 +266,7 @@ The control task publishes one snapshot per 5 ms tick to a `Signal`; the console
 task decides how often to print it, so the rate is independent of the loop.
 
 ```
-T step=19043 loop=200 imu=ok cal=0 pitch=40.50 gy=0.06 err=0x00 mb=ok L=0 R=0 bat=41.50 tmp=39.3 age=3 estop=0
+T step=19043 loop=200 imu=ok cal=3 pitch=1.50 roll=-2.25 hdg=87.40 gy=0.06 gx=-0.12 gz=0.03 err=0x00 mb=ok L=0 R=0 bat=41.50 tmp=39.3 age=3 estop=0 vset=0.00 wset=0.00
 ```
 
 | Field | Meaning |
@@ -271,12 +276,15 @@ T step=19043 loop=200 imu=ok cal=0 pitch=40.50 gy=0.06 err=0x00 mb=ok L=0 R=0 ba
 | `imu` | `ok` when the sample is younger than 50 ms, otherwise `stale` |
 | `cal` | `CALIB_STAT` system byte, `0..=3` |
 | `pitch`, `gy` | Pitch and pitch rate used by the control law, degrees and °/s |
+| `roll`, `hdg` | Roll and heading from the fused Euler frame, degrees |
+| `gx`, `gz` | Roll and yaw rate from the BNO055, °/s |
 | `err` | `SYS_ERR` register, hexadecimal; `0x00` is healthy |
 | `mb` | `ok` once a feedback frame has arrived, otherwise `none` |
 | `L`, `R` | Measured wheel speed, rpm |
 | `bat`, `tmp` | Pack voltage and board temperature; `tmp` is scaled from EFeru decidegrees |
 | `age` | Age of the last feedback frame in milliseconds, `4294967295` when none arrived |
 | `estop` | Firmware emergency stop latch, `0` or `1` |
+| `vset`, `wset` | Speed setpoint in m/s and steering setpoint in °/s |
 
 Unknown keys are ignored by the host, so fields can be added without breaking a
 client.
@@ -294,7 +302,9 @@ client.
   firmware, becomes the limit.
 
 The bench application in `tools/pico` drives this protocol: telemetry panels,
-event log, CSV recording, and the same commands from a keyboard.
+event log, CSV recording, and the same commands from a keyboard. The native
+`jbot-console` (`crates/jbot_console`) speaks the same protocol and adds the
+attitude horizon and compass view.
 
 ## 9. Build, flash, debug
 

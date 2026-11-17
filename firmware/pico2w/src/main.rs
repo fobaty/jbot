@@ -300,9 +300,8 @@ fn control_step(
     let input = BalanceInput {
         pitch_rad: sample.euler.pitch_deg.to_radians() - pitch_trim_rad,
         pitch_rate_rad_s: sample.gyro.y_dps.to_radians(),
-        // The setpoint is zero until the radio link exists.
-        speed_error_mps: -measured_speed,
-        yaw_rate_error_rad_s: -sample.gyro.z_dps.to_radians(),
+        speed_error_mps: state::speed_setpoint_mps() - measured_speed,
+        yaw_rate_error_rad_s: state::steer_setpoint_rps() - sample.gyro.z_dps.to_radians(),
     };
 
     let torque: WheelTorque = balance(&input, &GAINS);
@@ -324,7 +323,11 @@ fn snapshot(
         imu_calibrated: sample.imu_calibrated(),
         imu_system_cal: sample.calibration.system,
         pitch_deg: sample.euler.pitch_deg,
+        roll_deg: sample.euler.roll_deg,
+        heading_deg: sample.euler.heading_deg,
         gyro_y_dps: sample.gyro.y_dps,
+        gyro_x_dps: sample.gyro.x_dps,
+        gyro_z_dps: sample.gyro.z_dps,
         sys_err: sample.sys_err,
         feedback_present: feedback_at.is_some(),
         speed_left_rpm: feedback.speed_left_rpm,
@@ -333,18 +336,22 @@ fn snapshot(
         board_temp_c: feedback.board_temp_celsius(),
         feedback_age_ms: feedback_at.map_or(u32::MAX, |at| at.elapsed().as_millis() as u32),
         estop: state::estop(),
+        speed_setpoint_mps: state::speed_setpoint_mps(),
+        steer_setpoint_rps: state::steer_setpoint_rps(),
     }
 }
 
 /// One structured log line per second for a debug probe.
 fn log_telemetry(telemetry: &Telemetry) {
     info!(
-        "tick={} loop={} imu[{}] ready={} pitch={=f32} gyro_y={=f32} cal={} sys_err=0x{:x} | mainboard[{}] speed=({}, {}) rpm battery={=f32} V temp={=f32} C age={} ms estop={}",
+        "tick={} loop={} imu[{}] ready={} pitch={=f32} roll={=f32} heading={=f32} gyro_y={=f32} cal={} sys_err=0x{:x} | mainboard[{}] speed=({}, {}) rpm battery={=f32} V temp={=f32} C age={} ms estop={}",
         telemetry.control_steps,
         telemetry.loop_hz,
         if telemetry.imu_fresh { "ok" } else { "stale" },
         telemetry.imu_calibrated,
         telemetry.pitch_deg,
+        telemetry.roll_deg,
+        telemetry.heading_deg,
         telemetry.gyro_y_dps,
         telemetry.imu_system_cal,
         telemetry.sys_err,

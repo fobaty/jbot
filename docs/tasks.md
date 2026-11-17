@@ -291,7 +291,7 @@ actuator/jitter/latency/E-stop protocols.
 |---|---|---|---|---|
 | [ ] M3-49 | Bring up the RP2350 hardware watchdog and confirm that a deliberate hang resets into `IDLE` with zero torque | P1 | M3-03 | Reset verified; no motor output during or after the reset |
 | [ ] M3-50 | Implement the GP10 scope marker and a jitter measurement procedure | P1 | M3-17 | Marker toggle measured on the logic analyzer; procedure documented |
-| [ ] M3-51 | Implement the USB CDC console with a text command set for bench work | P2 | M3-03 | Console prints state, counters, and accepts calibration and parameter commands |
+| [x] M3-51 | Implement the USB CDC console with a text command set for bench work | P2 | M3-03 | Console prints state, counters, and accepts calibration and parameter commands |
 | [ ] M3-52 | Implement the charge-detect input path agreed in M2-18, including the fallback behaviour when the signal is missing | P1 | M2-18 | Arming blocked while charging; missing signal is treated as safe |
 | [ ] M3-53 | Decide whether `ENABLE_ODOMETRY` is enabled in the EFeru profile; if enabled, extend the parser to 22 bytes | P2 | M3-09 | Decision recorded; parser tests cover both frame lengths |
 | [ ] M3-54 | Confirm that the wireless subsystem stays uninitialised and measure the Pico's current draw on the 5 V rail | P1 | M3-03 | Current within the 5 V DC-DC budget; wireless off in the release build |

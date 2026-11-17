@@ -1,0 +1,14 @@
+[package]
+name = "jbot_console"
+version = "0.1.0"
+edition = "2021"
+authors = ["Chief Robotics Architect"]
+description = "Desktop console and BNO055 attitude display for the JBOT Pico 2 W bridge"
+
+[[bin]]
+name = "jbot-console"
+path = "src/main.rs"
+
+[dependencies]
+eframe = "0.37"
+serialport = "4.10"

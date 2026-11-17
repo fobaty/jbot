@@ -35,7 +35,7 @@ const PACKET_SIZE: u16 = 64;
 /// Longest accepted command line, including the terminating newline.
 const MAX_LINE: usize = 64;
 /// Reply buffer; longer replies are truncated rather than dropped.
-const REPLY_BUFFER: usize = 256;
+const REPLY_BUFFER: usize = 384;
 /// Banner sent every time the host configures the interface.
 const BANNER: &[u8] = b"JBOT pico bridge 0.1 ready\n";
 /// Poll interval while the telemetry stream is disabled.
@@ -157,7 +157,7 @@ async fn handle_command(class: &mut Console, line: &[u8]) -> Action {
             reply(
                 class,
                 format_args!(
-                    "ok help: ping | stat | stream <hz> | trim <deg> | reinit | estop | clear | stats reset | reboot"
+                    "ok help: ping | stat | stream <hz> | speed <mps> | steer <deg/s> | trim <deg> | reinit | estop | clear | stats reset | reboot"
                 ),
             )
             .await;
@@ -222,6 +222,42 @@ async fn handle_command(class: &mut Console, line: &[u8]) -> Action {
                 }
             },
         },
+        "speed" => match argument {
+            None => {
+                reply(
+                    class,
+                    format_args!("ok speed {:.2}", state::speed_setpoint_mps()),
+                )
+                .await;
+            }
+            Some(value) => match parse_f32(value) {
+                Some(mps) if mps.is_finite() && (-5.0..=5.0).contains(&mps) => {
+                    state::set_speed_setpoint_mps(mps);
+                    reply(class, format_args!("ok speed {:.2}", mps)).await;
+                }
+                _ => {
+                    reply(class, format_args!("err speed needs mps in -5..5")).await;
+                }
+            },
+        },
+        "steer" => match argument {
+            None => {
+                reply(
+                    class,
+                    format_args!("ok steer {:.2}", state::steer_setpoint_rps().to_degrees()),
+                )
+                .await;
+            }
+            Some(value) => match parse_f32(value) {
+                Some(deg) if deg.is_finite() && (-180.0..=180.0).contains(&deg) => {
+                    state::set_steer_setpoint_rps(deg.to_radians());
+                    reply(class, format_args!("ok steer {:.2}", deg)).await;
+                }
+                _ => {
+                    reply(class, format_args!("err steer needs degrees/s in -180..180")).await;
+                }
+            },
+        },
         "reinit" => {
             state::REINIT.signal(());
             reply(class, format_args!("ok reinit")).await;
@@ -259,13 +295,17 @@ fn format_telemetry<'a>(buffer: &'a mut [u8], telemetry: &Telemetry) -> &'a [u8]
     format(
         buffer,
         format_args!(
-            "T step={} loop={} imu={} cal={} pitch={:.2} gy={:.2} err=0x{:02x} mb={} L={} R={} bat={:.2} tmp={:.1} age={} estop={}",
+            "T step={} loop={} imu={} cal={} pitch={:.2} roll={:.2} hdg={:.2} gy={:.2} gx={:.2} gz={:.2} err=0x{:02x} mb={} L={} R={} bat={:.2} tmp={:.1} age={} estop={} vset={:.2} wset={:.2}",
             telemetry.control_steps,
             telemetry.loop_hz,
             if telemetry.imu_fresh { "ok" } else { "stale" },
             telemetry.imu_system_cal,
             telemetry.pitch_deg,
+            telemetry.roll_deg,
+            telemetry.heading_deg,
             telemetry.gyro_y_dps,
+            telemetry.gyro_x_dps,
+            telemetry.gyro_z_dps,
             telemetry.sys_err,
             if telemetry.feedback_present { "ok" } else { "none" },
             telemetry.speed_left_rpm,
@@ -274,6 +314,8 @@ fn format_telemetry<'a>(buffer: &'a mut [u8], telemetry: &Telemetry) -> &'a [u8]
             telemetry.board_temp_c,
             telemetry.feedback_age_ms,
             u8::from(telemetry.estop),
+            telemetry.speed_setpoint_mps,
+            telemetry.steer_setpoint_rps.to_degrees(),
         ),
     )
 }

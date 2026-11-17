@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/jbot_common",
+    "crates/jbot_console",
     "crates/jbot_hardware",
     "crates/jbot_navigation",
     "crates/jbot_node",

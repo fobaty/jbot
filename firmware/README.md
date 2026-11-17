@@ -491,13 +491,16 @@ python3 -m serial.tools.miniterm /dev/cu.usbmodemJBOT_PICO_011 115200
 The console is bidirectional. Telemetry lines look like this:
 
 ```
-T step=19043 loop=200 imu=ok cal=0 pitch=40.50 gy=0.06 err=0x00 mb=ok L=0 R=0 bat=41.50 tmp=39.3 age=3 estop=0
+T step=19043 loop=200 imu=ok cal=3 pitch=1.50 roll=-2.25 hdg=87.40 gy=0.06 gx=-0.12 gz=0.03 err=0x00 mb=ok L=0 R=0 bat=41.50 tmp=39.3 age=3 estop=0 vset=0.00 wset=0.00
 ```
 
-and the commands are `help`, `ping`, `stat`, `stream <hz>`, `trim <deg>`,
-`reinit`, `estop`, `clear`, `stats reset` and `reboot`. The full protocol,
-including the `stat` fields and the IMU error codes, is in
-`docs/pico-bridge.md` section 8.1.
+and the commands are `help`, `ping`, `stat`, `stream <hz>`, `speed <mps>`,
+`steer <deg/s>`, `trim <deg>`, `reinit`, `estop`, `clear`, `stats reset` and
+`reboot`. The full protocol, including the `stat` fields and the IMU error
+codes, is in `docs/pico-bridge.md` section 8.1. `roll`, `hdg`, `gx` and `gz`
+come from the fused BNO055 frame; `vset` and `wset` echo the speed and steering
+setpoints. In `IMUPLUS` mode `hdg` is relative to power-on and drifts slowly, so
+it is a heading, not a magnetic compass.
 
 A quick check without a terminal UI:
 
@@ -532,11 +535,13 @@ run can be checked from a script instead of by eye.
 | `imu=stale`, `imu_code=1` | I2C failure to the BNO055; check the four wires and the address strap. |
 | `loop` below 195 | The 5 ms tick is missing deadlines; suspect USB or `defmt` cost before the control law. |
 
-The bench console lives in `tools/pico` (see `tools/pico/README.md`):
+The Python bench console lives in `tools/pico` (see `tools/pico/README.md`):
 `jbot_console.py` is a curses application with telemetry panels, an event log,
 CSV recording and hotkeys for the commands above, and `--no-ui` gives a plain
 text mode for scripts. `jbot_link.py` holds the protocol layer, so the same code
-runs in tests and headless jobs.
+runs in tests and headless jobs. The native Rust console in `crates/jbot_console`
+(see its README) adds the artificial horizon and compass view and drives the same
+`stream`, `speed`, `steer`, `trim`, `estop` and `clear` commands.
 
 Host checks for the shared logic:
 

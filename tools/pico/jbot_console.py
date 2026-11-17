@@ -45,8 +45,8 @@ RECONNECT_S = 2.0
 UI_PERIOD = 1.0 / 30.0
 
 KEY_HELP = (
-    "  : command  s stream  t trim  p ping  i stat  e estop  c clear  "
-    "r reinit  L log  R reboot  x clear  q quit"
+    "  : cmd  s stream  v speed  w steer  t trim  ↑/↓ speed  ←/→ steer  "
+    "space zero  e estop  c clear  p ping  i stat  e estop  L log  q quit"
 )
 
 LEVEL_STYLE = {
@@ -111,6 +111,8 @@ class Session:
         self.next_retry = 0.0
         self.notice = ""
         self._headless_seen = 0
+        self._speed_setpoint = 0.0
+        self._steer_setpoint = 0.0
 
     def log(self, level, text):
         self.events.add(level, text)
@@ -336,6 +338,10 @@ def handle_key(stdscr, session, key):
         session.prompt = ""
     elif key == ord("s"):
         session.prompt = "stream "
+    elif key == ord("v"):
+        session.prompt = "speed "
+    elif key == ord("w"):
+        session.prompt = "steer "
     elif key == ord("t"):
         session.prompt = "trim "
     elif key == ord("p"):
@@ -351,6 +357,28 @@ def handle_key(stdscr, session, key):
     elif key == ord("c"):
         session.send("clear")
         session.log("info", "e-stop clear requested")
+    elif key == ord("W") or key == curses.KEY_UP:
+        session._speed_setpoint = round(min(5.0, session._speed_setpoint + 0.1), 2)
+        cmd = f"speed {session._speed_setpoint}"
+        session.send(cmd)
+    elif key == ord("S") or key == curses.KEY_DOWN:
+        session._speed_setpoint = round(max(-5.0, session._speed_setpoint - 0.1), 2)
+        cmd = f"speed {session._speed_setpoint}"
+        session.send(cmd)
+    elif key == ord("A") or key == curses.KEY_LEFT:
+        session._steer_setpoint = round(max(-180.0, session._steer_setpoint - 10.0), 2)
+        cmd = f"steer {session._steer_setpoint}"
+        session.send(cmd)
+    elif key == ord("D") or key == curses.KEY_RIGHT:
+        session._steer_setpoint = round(min(180.0, session._steer_setpoint + 10.0), 2)
+        cmd = f"steer {session._steer_setpoint}"
+        session.send(cmd)
+    elif key == ord(" "):
+        session._speed_setpoint = 0.0
+        session._steer_setpoint = 0.0
+        session.send("speed 0")
+        session.send("steer 0")
+        session.log("warn", "motors zeroed")
     elif key == ord("L"):
         session.toggle_csv()
     elif key == ord("R"):
