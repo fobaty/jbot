@@ -60,6 +60,8 @@ pub struct ImuSample {
     pub euler: Euler,
     /// Fused angular rate.
     pub gyro: AngularRate,
+    /// Gravity vector in the sensor frame, m/s^2.
+    pub gravity_ms2: [f32; 3],
     /// Current calibration state.
     pub calibration: Calibration,
     /// `SYS_ERR` register, zero when the device reports no error.
@@ -151,16 +153,19 @@ impl<'d, T: Instance> Bno055<'d, T> {
         Err(ImuError::NotReady)
     }
 
-    /// Read one fused sample. Four short transfers; the caller owns the rate.
+    /// Read one fused sample. Five short transfers; the caller owns the rate.
     pub async fn sample(&mut self) -> Result<ImuSample, ImuError> {
         let euler = self.read_burst::<6>(reg::EULER_DATA).await?;
         let gyro = self.read_burst::<6>(reg::GYRO_DATA).await?;
+        let gravity = self.read_burst::<6>(reg::GRAVITY_DATA).await?;
         let calibration = self.read_reg(reg::CALIB_STAT).await?;
         let sys_err = self.read_reg(reg::SYS_ERR).await?;
+        let gravity = bno055::decode_vector(&gravity);
 
         Ok(ImuSample {
             euler: bno055::decode_euler(&euler),
             gyro: bno055::decode_gyro(&gyro),
+            gravity_ms2: [gravity.x, gravity.y, gravity.z],
             calibration: Calibration::from_byte(calibration),
             sys_err,
         })

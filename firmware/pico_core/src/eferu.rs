@@ -207,14 +207,18 @@ impl Feedback {
         f32::from(self.board_temp_decideg_c) * 0.1
     }
 
-    /// Wheel speed converted from rpm to metres per second.
-    pub fn wheel_speed_mps(self, wheel_radius_m: f32) -> (f32, f32) {
-        // rpm -> rad/s is 2*pi/60, and v = omega * r.
+    /// Common-mode forward speed in m/s.
+    ///
+    /// The hoverboard mounts its hub motors mirrored, so the hall-sensor
+    /// readings for the two wheels have opposite signs during common-mode
+    /// motion, and the mainboard computes forward speed as `(L - R) / 2`.
+    /// The sign follows that convention; whether it matches physical
+    /// "forward" depends on motor wiring and must be confirmed on the bench
+    /// before enabling the outer speed loop (the sign only matters when
+    /// `speed_kp != 0`; the balance loop does not depend on it).
+    pub fn forward_speed_mps(self, wheel_radius_m: f32) -> f32 {
         let scale = core::f32::consts::TAU * wheel_radius_m / 60.0;
-        (
-            f32::from(self.speed_left_rpm) * scale,
-            f32::from(self.speed_right_rpm) * scale,
-        )
+        0.5 * (f32::from(self.speed_left_rpm) - f32::from(self.speed_right_rpm)) * scale
     }
 }
 
@@ -308,6 +312,22 @@ mod tests {
         let mut frame = Command::new(10, -20).encode();
         frame[7] ^= 0xFF;
         assert_eq!(Command::decode(&frame), Err(FrameError::BadChecksum));
+    }
+
+    #[test]
+    fn forward_speed_matches_hoverboard_convention() {
+        // Mirrored hub motors report opposite signs for the same physical
+        // motion; the hoverboard computes forward speed as (L - R) / 2.
+        let feedback = Feedback {
+            speed_left_rpm: -250,
+            speed_right_rpm: 250,
+            ..Feedback::default()
+        };
+        let scale = core::f32::consts::TAU * 0.0825 / 60.0;
+        assert!((feedback.forward_speed_mps(0.0825) - (-250.0 * scale)).abs() < 1e-6);
+
+        let idle = Feedback::default();
+        assert_eq!(idle.forward_speed_mps(0.0825), 0.0);
     }
 
     #[test]

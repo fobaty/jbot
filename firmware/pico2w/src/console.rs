@@ -25,6 +25,7 @@ use embassy_usb::{Builder, Config, UsbDevice};
 use static_cell::StaticCell;
 
 use crate::state::{self, Telemetry};
+use jbot_pico_core::mount::Mount;
 
 /// USB vendor id used for development boards without an assigned id.
 const VID: u16 = 0x1209;
@@ -157,7 +158,7 @@ async fn handle_command(class: &mut Console, line: &[u8]) -> Action {
             reply(
                 class,
                 format_args!(
-                    "ok help: ping | stat | stream <hz> | speed <mps> | steer <deg/s> | trim <deg> | reinit | estop | clear | stats reset | reboot"
+                    "ok help: ping | stat | stream <hz> | speed <mps> | steer <deg/s> | trim <deg> | zero | level | mount <name> | arm | disarm | reinit | estop | clear | stats reset | reboot"
                 ),
             )
             .await;
@@ -170,7 +171,7 @@ async fn handle_command(class: &mut Console, line: &[u8]) -> Action {
             reply(
                 class,
                 format_args!(
-                    "stat up={:.1} loop={} stream={} trim={:.2} estop={} steps={} imu={} imu_err={} imu_code={} fb={} fb_drop={}",
+                    "stat up={:.1} loop={} stream={} trim={:.2} estop={} steps={} imu={} imu_err={} imu_code={} fb={} fb_drop={} zero={:.2} zroll={:.2} level={:.2} mount={} kp={:.1} kd={:.1} armed={} zcapt={} lcapt={}",
                     uptime_s,
                     state::loop_hz(),
                     state::stream_hz(),
@@ -182,6 +183,15 @@ async fn handle_command(class: &mut Console, line: &[u8]) -> Action {
                     state::read(&state::IMU_LAST_ERROR),
                     state::read(&state::FB_FRAMES),
                     state::read(&state::FB_DISCARDED),
+                    state::zero_pitch_rad().to_degrees(),
+                    state::zero_roll_rad().to_degrees(),
+                    state::pitch_trim_rad().to_degrees(),
+                    state::mount(),
+                    crate::GAINS.pitch_kp,
+                    crate::GAINS.pitch_kd,
+                    u8::from(state::armed()),
+                    u8::from(state::zero_captured()),
+                    u8::from(state::level_captured()),
                 ),
             )
             .await;
@@ -254,10 +264,99 @@ async fn handle_command(class: &mut Console, line: &[u8]) -> Action {
                     reply(class, format_args!("ok steer {:.2}", deg)).await;
                 }
                 _ => {
-                    reply(class, format_args!("err steer needs degrees/s in -180..180")).await;
+                    reply(
+                        class,
+                        format_args!("err steer needs degrees/s in -180..180"),
+                    )
+                    .await;
                 }
             },
         },
+        "zero" => {
+            if !state::imu_fresh() {
+                reply(class, format_args!("err zero needs a fresh IMU sample")).await;
+            } else {
+                let (pitch, roll) = state::latest_mapped_attitude();
+                state::set_zero_pitch_rad(pitch.to_radians());
+                state::set_zero_roll_rad(roll.to_radians());
+                state::set_zero_captured(true);
+                state::set_armed(false);
+                reply(
+                    class,
+                    format_args!("ok zero pitch={:.2} roll={:.2}", pitch, roll),
+                )
+                .await;
+            }
+        }
+        "level" => {
+            if !state::imu_fresh() {
+                reply(class, format_args!("err level needs a fresh IMU sample")).await;
+            } else {
+                let (pitch, _) = state::latest_mapped_attitude();
+                let level = pitch - state::zero_pitch_rad().to_degrees();
+                state::set_pitch_trim_rad(level.to_radians());
+                state::set_level_captured(true);
+                state::set_armed(false);
+                reply(class, format_args!("ok level {:.2}", level)).await;
+            }
+        }
+        "mount" => {
+            match argument {
+                None => {
+                    let mount = Mount::from_u32(state::mount());
+                    reply(
+                        class,
+                        format_args!("ok mount {} {}", mount.as_u32(), mount.name()),
+                    )
+                    .await;
+                }
+                Some(value) => match Mount::from_name(value) {
+                    Some(mount) => {
+                        state::set_mount(mount.as_u32());
+                        // Zero and level were captured against the previous
+                        // attitude mapping; they are almost never valid for the
+                        // new mount and must be re-captured.
+                        state::set_zero_captured(false);
+                        state::set_level_captured(false);
+                        state::set_armed(false);
+                        reply(
+                            class,
+                            format_args!(
+                                "ok mount {} {} (re-capture zero and level)",
+                                mount.as_u32(),
+                                mount.name()
+                            ),
+                        )
+                        .await;
+                    }
+                    None => {
+                        reply(
+                        class,
+                        format_args!("err mount needs normal, flipx, flipy, rotxp, rotxm, rotyp or rotym"),
+                    )
+                    .await;
+                    }
+                },
+            }
+        }
+        "arm" => {
+            if state::estop() {
+                reply(class, format_args!("err arm refused: e-stop latched")).await;
+            } else if !state::imu_fresh() {
+                reply(class, format_args!("err arm refused: IMU sample is stale")).await;
+            } else if !state::zero_captured() {
+                reply(class, format_args!("err arm refused: capture zero first")).await;
+            } else if !state::level_captured() {
+                reply(class, format_args!("err arm refused: capture level first")).await;
+            } else {
+                state::set_armed(true);
+                reply(class, format_args!("ok armed")).await;
+            }
+        }
+        "disarm" => {
+            state::set_armed(false);
+            reply(class, format_args!("ok disarmed")).await;
+        }
         "reinit" => {
             state::REINIT.signal(());
             reply(class, format_args!("ok reinit")).await;
@@ -295,7 +394,7 @@ fn format_telemetry<'a>(buffer: &'a mut [u8], telemetry: &Telemetry) -> &'a [u8]
     format(
         buffer,
         format_args!(
-            "T step={} loop={} imu={} cal={} pitch={:.2} roll={:.2} hdg={:.2} gy={:.2} gx={:.2} gz={:.2} err=0x{:02x} mb={} L={} R={} bat={:.2} tmp={:.1} age={} estop={} vset={:.2} wset={:.2}",
+            "T step={} loop={} imu={} cal={} pitch={:.2} roll={:.2} hdg={:.2} gy={:.2} gx={:.2} gz={:.2} err=0x{:02x} mb={} L={} R={} bat={:.2} tmp={:.1} age={} estop={} vset={:.2} wset={:.2} mnt={} zof={:.2} lvl={:.2} zro={:.2} arm={}",
             telemetry.control_steps,
             telemetry.loop_hz,
             if telemetry.imu_fresh { "ok" } else { "stale" },
@@ -316,6 +415,11 @@ fn format_telemetry<'a>(buffer: &'a mut [u8], telemetry: &Telemetry) -> &'a [u8]
             u8::from(telemetry.estop),
             telemetry.speed_setpoint_mps,
             telemetry.steer_setpoint_rps.to_degrees(),
+            telemetry.mount,
+            telemetry.zero_offset_deg,
+            telemetry.level_deg,
+            telemetry.roll_zero_offset_deg,
+            u8::from(telemetry.armed),
         ),
     )
 }

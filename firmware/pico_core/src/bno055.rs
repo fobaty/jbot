@@ -69,6 +69,18 @@ pub const SYS_TRIGGER_SELF_TEST: u8 = 0x01;
 /// Time the device needs after a reset before it accepts configuration.
 pub const RESET_DELAY_MS: u64 = 650;
 
+/// A generic three-component vector decoded from the device, in m/s^2.
+/// Gravity and linear acceleration are reported at 1/100 m/s^2 per LSB.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Vector {
+    /// X component, m/s^2.
+    pub x: f32,
+    /// Y component, m/s^2.
+    pub y: f32,
+    /// Z component, m/s^2.
+    pub z: f32,
+}
+
 /// Euler angles decoded from the device.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Euler {
@@ -125,6 +137,8 @@ impl Calibration {
 const EULER_LSB_DEG: f32 = 1.0 / 16.0;
 /// Scale applied to every gyroscope word: the device reports 1/16 degree/s.
 const GYRO_LSB_DPS: f32 = 1.0 / 16.0;
+/// Scale applied to gravity and linear acceleration words: 1/100 m/s^2.
+const VECTOR_LSB_MS2: f32 = 1.0 / 100.0;
 
 /// Decode the six `EULER_DATA` bytes (`heading`, `roll`, `pitch`, in order).
 pub fn decode_euler(bytes: &[u8; 6]) -> Euler {
@@ -141,6 +155,16 @@ pub fn decode_gyro(bytes: &[u8; 6]) -> AngularRate {
         x_dps: read_i16(&bytes[0..2]) as f32 * GYRO_LSB_DPS,
         y_dps: read_i16(&bytes[2..4]) as f32 * GYRO_LSB_DPS,
         z_dps: read_i16(&bytes[4..6]) as f32 * GYRO_LSB_DPS,
+    }
+}
+
+/// Decode the six bytes of a three-axis vector register (`GRAVITY_DATA`,
+/// `LINEAR_ACCEL_DATA`), X/Y/Z, little-endian.
+pub fn decode_vector(bytes: &[u8; 6]) -> Vector {
+    Vector {
+        x: read_i16(&bytes[0..2]) as f32 * VECTOR_LSB_MS2,
+        y: read_i16(&bytes[2..4]) as f32 * VECTOR_LSB_MS2,
+        z: read_i16(&bytes[4..6]) as f32 * VECTOR_LSB_MS2,
     }
 }
 
@@ -167,6 +191,15 @@ mod tests {
         assert!((euler.heading_deg - 90.0).abs() < 1e-6);
         assert!((euler.roll_deg + 10.0).abs() < 1e-6);
         assert!((euler.pitch_deg - 20.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn vector_decode_scales_by_one_hundredth_m_s2() {
+        // 9.81 m/s^2 is 981 LSB; -9.81 is -981.
+        let vector = decode_vector(&words([981, 0, -981]));
+        assert!((vector.x - 9.81).abs() < 1e-6);
+        assert_eq!(vector.y, 0.0);
+        assert!((vector.z + 9.81).abs() < 1e-6);
     }
 
     #[test]

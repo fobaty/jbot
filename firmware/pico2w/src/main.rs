@@ -46,6 +46,7 @@ use static_cell::StaticCell;
 
 use jbot_pico_core::control::{balance, to_command, BalanceInput, Gains, WheelTorque};
 use jbot_pico_core::eferu::{Command, Feedback, FeedbackParser};
+use jbot_pico_core::mount::{self, Mount};
 
 use crate::imu::{Bno055, ImuSample};
 use crate::state::Telemetry;
@@ -72,7 +73,16 @@ const IMU_I2C_FREQ: u32 = 400_000;
 const WHEEL_RADIUS_M: f32 = 0.0825;
 
 /// Balance gains. Zero until a bench tuning session produces real values.
-const GAINS: Gains = Gains::SAFE;
+/// BENCH TUNING: iteration 2 — P + light D. Iteration 1 (P only) was
+/// unstable because the level reference was mis-captured mid-motion; do not
+/// merge non-zero gains into main without a rig test and review.
+const GAINS: Gains = Gains {
+    pitch_kp: 1000.0,
+    pitch_kd: 100.0,
+    speed_kp: 0.0,
+    max_pitch_ref_rad: 0.0,
+    yaw_kp: 0.0,
+};
 
 /// Capacity of the buffered UART transmit ring.
 const UART_TX_BUFFER_LEN: usize = 256;
@@ -224,6 +234,10 @@ async fn control_task(
         if let Some(sample) = IMU_SIGNAL.try_take() {
             last_imu = sample;
             last_imu_at = Some(Instant::now());
+            // Publish the mapped attitude on every sample, even while the
+            // e-stop is latched, so the console captures live values.
+            let attitude = attitude_of(&last_imu);
+            state::set_latest_mapped_attitude(attitude.pitch_deg, attitude.roll_deg);
         }
         if let Some(feedback) = FEEDBACK_SIGNAL.try_take() {
             last_feedback = feedback;
@@ -231,6 +245,7 @@ async fn control_task(
         }
 
         let imu_fresh = last_imu_at.is_some_and(|at| at.elapsed() < IMU_MAX_AGE);
+        state::set_imu_fresh(imu_fresh);
         let command = if state::estop() {
             Command::ZERO
         } else {
@@ -281,31 +296,45 @@ async fn control_task(
 /// Torque is produced only when the sample is fresh *and* the gains are
 /// non-zero. Everything else yields a zero command.
 ///
-/// Axis mapping assumes the BNO055 X axis points forward, Y left and Z up, so
-/// pitch is the Euler pitch and the pitch rate is gyro Y. Verify the signs on
-/// the bench before enabling non-zero gains; the module is mounted by hand.
+/// The attitude is derived for the configured mount ([`Mount`]): the normal
+/// mount uses the fused Euler pitch, the flipped mounts derive pitch and
+/// roll from the re-mapped gravity vector. The captured zero offset is then
+/// subtracted, and the balance reference (the `trim`/`level` setting) is
+/// subtracted on top of that.
 fn control_step(
     sample: &ImuSample,
     imu_fresh: bool,
     feedback: &Feedback,
     pitch_trim_rad: f32,
 ) -> Command {
-    if !imu_fresh || !GAINS.is_active() {
+    let attitude = attitude_of(sample);
+    if !imu_fresh || !GAINS.is_active() || !state::armed() {
         return Command::ZERO;
     }
 
-    let (left_mps, right_mps) = feedback.wheel_speed_mps(WHEEL_RADIUS_M);
-    let measured_speed = 0.5 * (left_mps + right_mps);
+    let pitch_zero_rad = attitude.pitch_deg.to_radians() - state::zero_pitch_rad();
+
+    let measured_speed = feedback.forward_speed_mps(WHEEL_RADIUS_M);
 
     let input = BalanceInput {
-        pitch_rad: sample.euler.pitch_deg.to_radians() - pitch_trim_rad,
-        pitch_rate_rad_s: sample.gyro.y_dps.to_radians(),
+        pitch_rad: pitch_zero_rad - pitch_trim_rad,
+        pitch_rate_rad_s: attitude.pitch_rate_dps.to_radians(),
         speed_error_mps: state::speed_setpoint_mps() - measured_speed,
-        yaw_rate_error_rad_s: state::steer_setpoint_rps() - sample.gyro.z_dps.to_radians(),
+        yaw_rate_error_rad_s: state::steer_setpoint_rps() - attitude.yaw_rate_dps.to_radians(),
     };
 
     let torque: WheelTorque = balance(&input, &GAINS);
     to_command(torque)
+}
+
+/// Derive the mount-compensated attitude of one sample.
+fn attitude_of(sample: &ImuSample) -> mount::Attitude {
+    mount::attitude(
+        Mount::from_u32(state::mount()),
+        sample.euler,
+        sample.gyro,
+        sample.gravity_ms2,
+    )
 }
 
 /// Build the telemetry snapshot for this control step.
@@ -316,18 +345,21 @@ fn snapshot(
     feedback: &Feedback,
     feedback_at: Option<Instant>,
 ) -> Telemetry {
+    let attitude = attitude_of(sample);
+    let pitch_zero_deg = attitude.pitch_deg - state::zero_pitch_rad().to_degrees();
+    let roll_zero_deg = attitude.roll_deg - state::zero_roll_rad().to_degrees();
     Telemetry {
         control_steps: steps,
         loop_hz: state::loop_hz(),
         imu_fresh,
         imu_calibrated: sample.imu_calibrated(),
         imu_system_cal: sample.calibration.system,
-        pitch_deg: sample.euler.pitch_deg,
-        roll_deg: sample.euler.roll_deg,
+        pitch_deg: pitch_zero_deg,
+        roll_deg: roll_zero_deg,
         heading_deg: sample.euler.heading_deg,
-        gyro_y_dps: sample.gyro.y_dps,
-        gyro_x_dps: sample.gyro.x_dps,
-        gyro_z_dps: sample.gyro.z_dps,
+        gyro_y_dps: attitude.pitch_rate_dps,
+        gyro_x_dps: attitude.roll_rate_dps,
+        gyro_z_dps: attitude.yaw_rate_dps,
         sys_err: sample.sys_err,
         feedback_present: feedback_at.is_some(),
         speed_left_rpm: feedback.speed_left_rpm,
@@ -338,6 +370,11 @@ fn snapshot(
         estop: state::estop(),
         speed_setpoint_mps: state::speed_setpoint_mps(),
         steer_setpoint_rps: state::steer_setpoint_rps(),
+        armed: state::armed(),
+        mount: state::mount() as u8,
+        zero_offset_deg: state::zero_pitch_rad().to_degrees(),
+        roll_zero_offset_deg: state::zero_roll_rad().to_degrees(),
+        level_deg: state::pitch_trim_rad().to_degrees(),
     }
 }
 

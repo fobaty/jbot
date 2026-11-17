@@ -6,3 +6,6 @@ description = "Hardware-independent logic for the JBOT Pico 2 W firmware"
 publish = false
 
 [workspace]
+
+[dependencies]
+micromath = "2.1.0"

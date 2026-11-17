@@ -232,8 +232,14 @@ answers each command with one `ok`/`err`/`stat` line and, while streaming, sends
 | `stat` | `stat up=... loop=... stream=... trim=... estop=... steps=... imu=... imu_err=... imu_code=... fb=... fb_drop=...` | Counters and settings |
 | `stream` | `ok stream <hz>` | Query the current rate |
 | `stream <hz>` | `ok stream <hz>` | `0` disables the stream, clamped to `0..=200` |
-| `trim` | `ok trim <deg>` | Query the pitch trim |
+| `trim` | `ok trim <deg>` | Query the pitch trim (the balance/level reference) |
 | `trim <deg>` | `ok trim <deg>` | Accepted range `-90..=90` |
+| `zero` | `ok zero pitch=<deg> roll=<deg>` | Capture the current attitude as the zero offsets; the captured pose reads as 0 afterwards |
+| `level` | `ok level <deg>` | Capture the current (zeroed) pitch as the balance reference; equivalent to `trim` with an automatic value |
+| `mount` | `ok mount <n> <name>` | Query the BNO055 mount selector |
+| `mount <n|name>` | `ok mount <n> <name>` | Select the mounting orientation of the BNO055 (`normal`, `flipx`, `flipy`, `rotxp`, `rotxm`, `rotyp`, `rotym`); re-capture `zero` and `level` afterwards. Also disarms the balance law and invalidates the captures |
+| `arm` | `ok armed` | Arm the balance law; refused unless the e-stop is clear, the IMU is fresh, and `zero` and `level` have been captured this session |
+| `disarm` | `ok disarmed` | Disarm the balance law |
 | `speed` | `ok speed <mps>` | Query the speed setpoint |
 | `speed <mps>` | `ok speed <mps>` | Accepted range `-5..=5` |
 | `steer` | `ok steer <deg/s>` | Query the steering setpoint |
@@ -247,15 +253,23 @@ answers each command with one `ok`/`err`/`stat` line and, while streaming, sends
 Rejected input gets `err <reason>`: `err unknown command: <text>`,
 `err stream needs 0..200`, `err trim needs degrees in -90..90`,
 `err speed needs mps in -5..5`, `err steer needs degrees/s in -180..180`,
+`err mount needs normal, flipx, flipy, rotxp, rotxm, rotyp or rotym`,
+`err arm refused: e-stop latched`, `err arm refused: IMU sample is stale`,
+`err arm refused: capture zero first`, `err arm refused: capture level first`,
+`err zero needs a fresh IMU sample`, `err level needs a fresh IMU sample`,
 `err use: stats reset`, `err line too long` (over 64 bytes), or
 `err line is not utf8`.
 
 `stat` fields: `up` is uptime in seconds, `loop` the measured control rate,
 `stream` the telemetry rate, `trim` the pitch trim in degrees, `estop` the
 latch state, `steps` the control ticks since boot, `imu`/`imu_err` the IMU
-sample and error counters, `imu_code` the last IMU error code, and
+sample and error counters, `imu_code` the last IMU error code,
 `fb`/`fb_drop` the valid feedback frames and the bytes discarded while
-resynchronising the parser.
+resynchronising the parser, `zero` the applied pitch zero offset in degrees,
+`zroll` the applied roll zero offset in degrees, `level` the balance reference
+in degrees (same value as `trim`), and `mount` the BNO055 mount selector
+(0 normal, 1 flip-x, 2 flip-y, 3 rot +90° X, 4 rot −90° X,
+5 rot +90° Y, 6 rot −90° Y).
 
 IMU error codes for `imu_code`: `0` none, `1` I2C transfer failure, `2` wrong
 chip id, `3` the chip did not report ready.
@@ -266,7 +280,7 @@ The control task publishes one snapshot per 5 ms tick to a `Signal`; the console
 task decides how often to print it, so the rate is independent of the loop.
 
 ```
-T step=19043 loop=200 imu=ok cal=3 pitch=1.50 roll=-2.25 hdg=87.40 gy=0.06 gx=-0.12 gz=0.03 err=0x00 mb=ok L=0 R=0 bat=41.50 tmp=39.3 age=3 estop=0 vset=0.00 wset=0.00
+T step=19043 loop=200 imu=ok cal=3 pitch=1.50 roll=-2.25 hdg=87.40 gy=0.06 gx=-0.12 gz=0.03 err=0x00 mb=ok L=0 R=0 bat=41.50 tmp=39.3 age=3 estop=0 vset=0.00 wset=0.00 mnt=1 zof=1.75 zro=-0.50 lvl=0.30
 ```
 
 | Field | Meaning |
@@ -275,9 +289,9 @@ T step=19043 loop=200 imu=ok cal=3 pitch=1.50 roll=-2.25 hdg=87.40 gy=0.06 gx=-0
 | `loop` | Measured control rate, hertz |
 | `imu` | `ok` when the sample is younger than 50 ms, otherwise `stale` |
 | `cal` | `CALIB_STAT` system byte, `0..=3` |
-| `pitch`, `gy` | Pitch and pitch rate used by the control law, degrees and °/s |
-| `roll`, `hdg` | Roll and heading from the fused Euler frame, degrees |
-| `gx`, `gz` | Roll and yaw rate from the BNO055, °/s |
+| `pitch`, `gy` | Pitch and pitch rate used by the control law, degrees and °/s (zero offsets applied; mount-compensated) |
+| `roll`, `hdg` | Roll from the fused Euler frame or the gravity vector (zero offset applied), and raw heading from the BNO055, degrees |
+| `gx`, `gz` | Roll and yaw rate in the robot frame (mount-compensated), °/s |
 | `err` | `SYS_ERR` register, hexadecimal; `0x00` is healthy |
 | `mb` | `ok` once a feedback frame has arrived, otherwise `none` |
 | `L`, `R` | Measured wheel speed, rpm |
@@ -285,9 +299,67 @@ T step=19043 loop=200 imu=ok cal=3 pitch=1.50 roll=-2.25 hdg=87.40 gy=0.06 gx=-0
 | `age` | Age of the last feedback frame in milliseconds, `4294967295` when none arrived |
 | `estop` | Firmware emergency stop latch, `0` or `1` |
 | `vset`, `wset` | Speed setpoint in m/s and steering setpoint in °/s |
+| `mnt` | BNO055 mount selector: `0` normal, `1` flip-x (180° about X), `2` flip-y (180° about Y), `3` rot +90° X, `4` rot −90° X, `5` rot +90° Y, `6` rot −90° Y |
+| `zof`, `zro` | Applied pitch and roll zero offsets, degrees |
+| `lvl` | Applied balance (level) reference, degrees; the balance law sees `pitch - zof - lvl` |
+| `arm` | Operator arm latch: `1` once `arm` succeeded this session, `0` at boot and after every e-stop, disarm, mount change, or zero/level capture |
 
 Unknown keys are ignored by the host, so fields can be added without breaking a
 client.
+
+#### Mount compensation and attitude calibration
+
+The BNO055 reports fused Euler angles in its own frame. When the module is
+mounted sideways with the board plane vertical (the current chassis mount),
+the fusion output cannot be used directly, so the firmware
+re-expresses the gravity vector and the angular rates in the robot frame
+(X forward, Y left, Z up) with sign flips selected by `mount`. On the current
+frame the module measures ≈85–90° of Euler roll at the upright stance, which
+identifies it as rotated +90° about the robot Y axis: `mount 5` (`rotyp`)
+reads pitch ≈ 0 standing vertical and pitch > 0 leaning forward. Always
+re-verify on the bench after re-mounting before arming:
+
+| `mnt` | Meaning | Sensor → robot vector map |
+|---|---|---|
+| `0` | normal, aligned with the robot frame | `(x, y, z)` (Euler pitch/roll are used as-is) |
+| `1` | **flip-x**: rotated 180° about the forward axis | `(x, -y, -z)` |
+| `2` | **flip-y**: rotated 180° about the left axis | `(-x, y, -z)` |
+| `3` | **rot +90° X**: rotated +90° about the forward axis | `(x, -z, y)` |
+| `4` | **rot −90° X**: rotated −90° about the forward axis | `(x, z, -y)` |
+| `5` | **rot +90° Y**: rotated +90° about the left axis | `(z, y, -x)` |
+| `6` | **rot −90° Y**: rotated −90° about the left axis | `(-z, y, x)` |
+
+For the flipped mounts the attitude is derived from the re-mapped gravity
+vector with `atan2` (pitch = `atan2(gx, -gz)`, roll = `atan2(gy, -gz)`), which
+is exact for any angle and does not depend on the device's Euler convention;
+worst-case error of the approximation is about 0.1°. Gyro rates are remapped
+with the same sign flips. Heading is not meaningful under a flip and is left
+as reported.
+
+Two captured references sit on top of the raw (mapped) attitude:
+
+1. **Zero (`zero`)** — the pose the operator declares vertical. Capture it
+   with the robot held exactly upright (against a level or plumb). After
+   capture, telemetry `pitch`/`roll` read zero at that pose. Both offsets
+   apply to the control path as well.
+2. **Level (`level`)** — the stance in which the robot must balance. A
+   wheeled biped usually balances with a slight lean, because the centre of
+   mass is offset from the wheel axis. Capture it with the robot held at its
+   balance stance; the balance law then sees `pitch - zof - lvl`.
+   `level` is exactly `trim` with an automatically captured value; the manual
+   `trim` slider remains for fine adjustment.
+
+Calibration order: select `mount`, power-cycle or `reinit`, capture `zero`,
+capture `level`, verify that telemetry reads ≈0 for both, then `arm`.
+
+The balance law is additionally gated by an operator arm latch: at boot, and
+after every e-stop, disarm, mount change, or zero/level capture, the torque
+command is zero regardless of the gains. `arm` is refused unless the e-stop
+is clear, the IMU sample is fresh, and both captures are done this session.
+Zero and level are stored in RAM only and are lost on reboot, so the arming
+sequence must be repeated after every power cycle; persistence to flash is
+tracked as backlog M3-05/M3-42 and is deliberately not faked in this
+revision.
 
 #### Safety and timing
 
