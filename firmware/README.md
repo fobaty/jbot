@@ -6,7 +6,7 @@
 | Code | FW-001 |
 | Version | 0.2 |
 
-| Status | Mainboard bring-up step 1 flashed; USART bench link verified; Pico firmware planned |
+| Status | Mainboard bring-up step 1 flashed; USART link verified both ways; Pico foundation firmware flashed and streaming telemetry |
 | Scope | STM32F103RCT6 hoverboard mainboard (EFeru C) and Raspberry Pi Pico 2 W (Rust) |
 
 This directory holds all robot firmware: the upstream EFeru C on the hoverboard
@@ -29,6 +29,7 @@ never affect `cargo test --workspace`.
 | `stm32f103/eferu-bench.patch` | Bench-only delta: fixes the `unlock` target for the ST-Link clone. |
 | `stm32f103/eferu-balance.patch` | Production torque-node delta: `CTRL_MOD_REQ = TRQ_MODE`, `SERIAL_TIMEOUT` 160 → 20. Not created yet. |
 | `pico2w/` | Rust firmware for the Pico 2 W (section 5). Separate Cargo workspace. |
+| `pico_core/` | `no_std`, I/O-free logic shared with the Pico firmware and unit-tested on the host: EFeru frames, BNO055 decoding, cascade balance law. |
 
 ## 1.1. Hardware in scope
 
@@ -249,13 +250,27 @@ frame only when exactly 8 bytes arrived since the last idle line. The host side 
 the Pico bridge, the Mac console and the wire protocol - lives in
 [`tools/hover/`](../tools/hover/README.md).
 
+Live check on the bench board (Pico 2 W, MicroPython, UART0 GP0/GP1 at
+115200 8N1, 1 s capture): 97 frames, exactly 18 bytes apart, every checksum
+valid. Representative frame:
+
+```
+cd ab 00 00 00 00 00 00 00 00 39 10 5d 01 00 00 a9 ba
+start  cmd1 cmd2  spdR spdL  batV  temp  led   chk
+```
+
+`batV` 4153 means 41.53 V. `temp` is **tenths of a degree** (349 means 34.9 °C)
+because `TEMP_CAL_*_DEG_C` in `config.h` is specified in °C × 10; do not read it
+as whole degrees. `jbot_pico_core::eferu::Feedback::board_temp_celsius` applies
+the scale.
+
 `VLT_MODE` with the stock 1000 rpm scale means commands below about 30 units can
 stall on cogging. The balancing controller uses `TRQ_MODE` instead (section 2.10),
 where the command is a torque request and cogging does not gate the low end.
 
 ### 2.10. Torque-node build (`eferu-balance.patch`)
 
-The production stage 1 build. Same `VARIANT_USART`, two configuration changes:
+The production stage 1 build. Same `VARIANT_USART`, with these configuration changes:
 
 | Setting | Upstream | This profile | Reason |
 |---|---|---|---|
@@ -265,10 +280,18 @@ The production stage 1 build. Same `VARIANT_USART`, two configuration changes:
 | `I_DC_MAX` | 17 A | 12 A | Keep `I_DC_MAX = I_MOT_MAX + 2 A` |
 | `N_MOT_MAX` | 1000 rpm | 400 rpm | About 3.5 m/s with 6.5 in wheels |
 | `ENABLE_ODOMETRY` | off | off (open) | Extends feedback to 22 bytes when enabled |
+| `SPEED_COEFFICIENT` | 16384 (1.0) | 16384 (1.0) | Keep the Pico's unit-mixer inverse valid |
+| `STEER_COEFFICIENT` | 8192 (0.5) | 16384 (1.0) | The Pico maps wheel torque with `cmdL = speed + steer`, `cmdR = speed - steer` |
 
 `TRQ_MODE` exists upstream and is valid only with `CTRL_FOC`. The command scale is
 ±1000 = ±`I_MOT_MAX`; there is no ramp, no interlock, and no arming in the F103 —
 that is all on the Pico.
+
+**Mixer contract.** `jbot_pico_core::eferu::Command::from_wheel_torque` inverts a
+unit mixer. With the upstream `STEER_COEFFICIENT = 0.5` the yaw differential is
+halved, which is a silent authority loss rather than a fault. The production
+profile must set both coefficients to `16384`, or the Pico mapping must be
+changed to match the mixer.
 
 When the serial timeout expires, EFeru falls back to `OPEN_MODE`, i.e. freewheel.
 For a balancing robot that means a fall, and it is accepted: a stale torque
@@ -418,3 +441,110 @@ keeps building for the host. The root `.gitignore` ignores every
 `.cargo/config.toml`, so the embedded target configuration needs an explicit
 exception. `firmware/eferu` stays out of version control: it is recreated from
 the pinned upstream commit plus the patches.
+
+### 5.8. Foundation firmware (implemented)
+
+The first Rust image is in `firmware/pico2w/`. It owns the clock tree
+(150 MHz), UART0, I2C1, USB, GPIO and the hardware watchdog. Five embassy tasks
+run:
+
+| Task | Rate | Work |
+|---|---|---|
+| `imu_task` | 100 Hz | Resets the BNO055, selects `IMUPLUS`, publishes the latest Euler/gyro/calibration sample |
+| `link_rx_task` | event | Reads bytes from UART0 and resynchronises the 18-byte EFeru feedback parser |
+| `control_task` | 200 Hz | Computes the cascade command, sends the 8-byte EFeru frame, toggles GP10, feeds the watchdog |
+| `usb_task` | event | Runs the RP2350 USB stack for the CDC-ACM console |
+| `console_task` | event | Serves the line protocol: commands in, telemetry out at the requested rate |
+
+The balance law and the wire format live in `firmware/pico_core`, a separate
+`no_std` crate with host tests, so control and protocol changes are verified
+without hardware.
+
+> **Safe state.** `Gains::SAFE` is all-zero, and a missing or stale IMU sample
+> also forces zero torque. The firmware therefore sends `Command::ZERO` at
+> 200 Hz while the board is on the bench. The F103 keeps its independent
+> serial timeout as the second line of defence.
+
+Build and flash (the Pico must be in BOOTSEL mode: hold BOOTSEL while plugging
+USB in, or hold it while pressing RUN):
+
+```sh
+cd firmware/pico2w
+cargo build --release
+cargo run --release          # picotool load -u -v -x -t elf
+```
+
+There is no `probe-rs` installation on the bench machine; `picotool` is used
+instead. The release ELF is `target/thumbv8m.main-none-eabihf/release/pico-bridge`.
+Flashing replaces MicroPython, which also removes the temporary
+`tools/hover/hover_bridge.py` console; reflash MicroPython if that console is
+needed again.
+
+Once flashed, the image enumerates as a USB CDC-ACM port, so the telemetry is
+visible without any probe:
+
+```sh
+ls /dev/cu.usbmodem*                 # /dev/cu.usbmodemJBOT_PICO_011
+python3 -m serial.tools.miniterm /dev/cu.usbmodemJBOT_PICO_011 115200
+```
+
+The console is bidirectional. Telemetry lines look like this:
+
+```
+T step=19043 loop=200 imu=ok cal=0 pitch=40.50 gy=0.06 err=0x00 mb=ok L=0 R=0 bat=41.50 tmp=39.3 age=3 estop=0
+```
+
+and the commands are `help`, `ping`, `stat`, `stream <hz>`, `trim <deg>`,
+`reinit`, `estop`, `clear`, `stats reset` and `reboot`. The full protocol,
+including the `stat` fields and the IMU error codes, is in
+`docs/pico-bridge.md` section 8.1.
+
+A quick check without a terminal UI:
+
+```sh
+python3 - <<'PY'
+import serial, time
+port = serial.Serial("/dev/cu.usbmodemJBOT_PICO_011", 115200, timeout=1)
+port.write(b"ping\nstat\n")
+time.sleep(0.4)
+print(port.read(4096).decode("ascii", "replace"))
+PY
+```
+
+`estop` latches a firmware-side emergency stop: the control task keeps sending
+`Command::ZERO` at 200 Hz until `clear`. It is independent of the mainboard's
+own serial timeout and of the host process, so killing the console cannot
+release it.
+
+`defmt` over RTT stays enabled for a future debug probe; the USB console is the
+channel that works today.
+
+Bench run after flashing: the control counter advances by exactly 200 per
+second with no watchdog reset, `imu=ok`, `err=0x00`, and `mb=ok` with `age` of
+0-10 ms. That also proves the resynchronising 18-byte parser against real
+mainboard frames, not just the unit-test vectors. The `stat` reply exposes the
+same evidence as counters (`steps`, `imu`, `imu_err`, `fb`, `fb_drop`), so the
+run can be checked from a script instead of by eye.
+
+| Symptom | Meaning |
+|---|---|
+| `mb=none`, `fb=0`, `fb_drop` rising at ~1600 B/s | The mainboard is not talking: the parser sees the Pico's own 200 Hz × 8 B command stream coupled back, or nothing at all. Check that the F103 is powered and that GP0/GP1 are still on PA3/PA2. |
+| `imu=stale`, `imu_code=1` | I2C failure to the BNO055; check the four wires and the address strap. |
+| `loop` below 195 | The 5 ms tick is missing deadlines; suspect USB or `defmt` cost before the control law. |
+
+The bench console lives in `tools/pico` (see `tools/pico/README.md`):
+`jbot_console.py` is a curses application with telemetry panels, an event log,
+CSV recording and hotkeys for the commands above, and `--no-ui` gives a plain
+text mode for scripts. `jbot_link.py` holds the protocol layer, so the same code
+runs in tests and headless jobs.
+
+Host checks for the shared logic:
+
+```sh
+cd firmware/pico_core
+cargo test
+cargo clippy --all-targets -- -D warnings
+```
+
+Not implemented yet: CRSF/XR1 ingest, arming, the mission link, non-zero
+balance gains, and the production `TRQ_MODE` mainboard patch.

@@ -89,6 +89,11 @@ Notes:
   back-to-back bytes.
 - There is no sequence number. The mainboard applies the latest valid frame and
   relies on its 100 ms timeout to bound staleness.
+- Feedback units: `batVoltage` is volts times 100, so `4150` means `41.50 V`.
+  `boardTemp` is a tenth of a degree Celsius, so `349` means `34.9 °C` — EFeru
+  computes it from `board_temp_deg_c` with `TEMP_CAL_*_DEG_C` expressed ×10.
+  The Rust decoder keeps the raw field as `board_temp_decideg_c` and converts in
+  `board_temp_celsius()`, with a golden test built from a captured bench frame.
 - Optional `ENABLE_ODOMETRY` extends the feedback to 22 bytes with per-wheel
   odometry. Not enabled until odometry is actually consumed (open item).
 
@@ -203,6 +208,93 @@ Arbitration:
 - **Counters exposed everywhere:** CRSF CRC errors, CRSF timeouts, mainboard CRC
   errors, mainboard timeouts, echoed-command mismatches, loop overruns, and the
   maximum observed loop latency.
+
+### 8.1. USB console (implemented)
+
+The Pico enumerates as a USB CDC-ACM device (`0x1209:0x0001`, product
+`JBOT pico bridge`, serial `JBOT-PICO-01`). macOS exposes it as
+`/dev/cu.usbmodem*`; the CDC transport ignores the baud rate:
+
+```sh
+python3 -m serial.tools.miniterm /dev/cu.usbmodemJBOT_PICO_011 115200
+```
+
+Protocol v1 is line-based ASCII: the host sends one command per line, the Pico
+answers each command with one `ok`/`err`/`stat` line and, while streaming, sends
+`T` telemetry lines. `LF` and `CR` both end a line; blank lines are ignored.
+
+#### Commands
+
+| Command | Reply | Notes |
+|---|---|---|
+| `help` / `?` | `ok help: ...` | Command list |
+| `ping` | `ok ping` | Liveness check |
+| `stat` | `stat up=... loop=... stream=... trim=... estop=... steps=... imu=... imu_err=... imu_code=... fb=... fb_drop=...` | Counters and settings |
+| `stream` | `ok stream <hz>` | Query the current rate |
+| `stream <hz>` | `ok stream <hz>` | `0` disables the stream, clamped to `0..=200` |
+| `trim` | `ok trim <deg>` | Query the pitch trim |
+| `trim <deg>` | `ok trim <deg>` | Accepted range `-90..=90` |
+| `reinit` | `ok reinit` | Re-runs the BNO055 start-up sequence |
+| `estop` | `ok estop` | Latches the emergency stop |
+| `clear` | `ok clear` | Clears the latch |
+| `stats reset` | `ok stats reset` | Zeroes the diagnostic counters, keeps the settings |
+| `reboot` | `ok reboot` | Flushes the reply, then resets the chip |
+
+Rejected input gets `err <reason>`: `err unknown command: <text>`,
+`err stream needs 0..200`, `err trim needs degrees in -90..90`,
+`err use: stats reset`, `err line too long` (over 64 bytes), or
+`err line is not utf8`.
+
+`stat` fields: `up` is uptime in seconds, `loop` the measured control rate,
+`stream` the telemetry rate, `trim` the pitch trim in degrees, `estop` the
+latch state, `steps` the control ticks since boot, `imu`/`imu_err` the IMU
+sample and error counters, `imu_code` the last IMU error code, and
+`fb`/`fb_drop` the valid feedback frames and the bytes discarded while
+resynchronising the parser.
+
+IMU error codes for `imu_code`: `0` none, `1` I2C transfer failure, `2` wrong
+chip id, `3` the chip did not report ready.
+
+#### Telemetry
+
+The control task publishes one snapshot per 5 ms tick to a `Signal`; the console
+task decides how often to print it, so the rate is independent of the loop.
+
+```
+T step=19043 loop=200 imu=ok cal=0 pitch=40.50 gy=0.06 err=0x00 mb=ok L=0 R=0 bat=41.50 tmp=39.3 age=3 estop=0
+```
+
+| Field | Meaning |
+|---|---|
+| `step` | Control ticks since boot, 200 per second |
+| `loop` | Measured control rate, hertz |
+| `imu` | `ok` when the sample is younger than 50 ms, otherwise `stale` |
+| `cal` | `CALIB_STAT` system byte, `0..=3` |
+| `pitch`, `gy` | Pitch and pitch rate used by the control law, degrees and °/s |
+| `err` | `SYS_ERR` register, hexadecimal; `0x00` is healthy |
+| `mb` | `ok` once a feedback frame has arrived, otherwise `none` |
+| `L`, `R` | Measured wheel speed, rpm |
+| `bat`, `tmp` | Pack voltage and board temperature; `tmp` is scaled from EFeru decidegrees |
+| `age` | Age of the last feedback frame in milliseconds, `4294967295` when none arrived |
+| `estop` | Firmware emergency stop latch, `0` or `1` |
+
+Unknown keys are ignored by the host, so fields can be added without breaking a
+client.
+
+#### Safety and timing
+
+- Nothing in the console is on the control path. A missing host only means
+  the lines are dropped, and a slow host cannot stall the 200 Hz loop.
+- `estop` is a firmware latch: while it is set the control task sends
+  `Command::ZERO` regardless of the IMU and the gains. It survives a USB
+  reconnect and is cleared only by `clear` or a reset.
+- The mainboard's own ~800 ms serial timeout remains the second line of
+  defence; frames keep flowing at 200 Hz while the latch is set.
+- `stream` accepts up to 200 Hz. Above a few tens of hertz the USB link, not the
+  firmware, becomes the limit.
+
+The bench application in `tools/pico` drives this protocol: telemetry panels,
+event log, CSV recording, and the same commands from a keyboard.
 
 ## 9. Build, flash, debug
 

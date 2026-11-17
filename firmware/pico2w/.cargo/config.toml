@@ -1,0 +1,15 @@
+[build]
+target = "thumbv8m.main-none-eabihf"
+
+[target.thumbv8m.main-none-eabihf]
+# The board must be in BOOTSEL mode: hold BOOTSEL while plugging in USB.
+# `-t elf` is required because cargo passes the binary without a file extension.
+runner = "picotool load -u -v -x -t elf"
+rustflags = [
+    "-C",
+    "link-arg=--nmagic",
+    "-C",
+    "link-arg=-Tlink.x",
+    "-C",
+    "link-arg=-Tdefmt.x",
+]

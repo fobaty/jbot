@@ -25,6 +25,9 @@ perf.data.old
 **/.cargo/config.toml
 **/.cargo/config
 
+# Firmware target settings are part of the build, not a local override.
+!firmware/pico2w/.cargo/config.toml
+
 # Exported dependency / doc artifacts
 /doc/
 /deny.toml.bak
