@@ -77,6 +77,22 @@ pub struct Telemetry {
     pub level_deg: Option<f32>,
     /// Operator arm latch for the balance law.
     pub armed: Option<bool>,
+    /// Applied spin-test torque on the left wheel, EFeru command units.
+    pub test_left_units: Option<f32>,
+    /// Applied spin-test torque on the right wheel, EFeru command units.
+    pub test_right_units: Option<f32>,
+    /// Applied balance-law common-mode torque (pre-mixer), command units.
+    pub torque_common_units: Option<f32>,
+    /// Applied (ramped) pitch reference in degrees, same frame as `pitch`.
+    pub pitch_ref_deg: Option<f32>,
+    /// Total pitch offset demanded by the outer loops, degrees.
+    pub pitch_demand_deg: Option<f32>,
+    /// Learned slope trim, degrees.
+    pub slope_trim_deg: Option<f32>,
+    /// Travel since arming, metres, positive forward.
+    pub position_m: Option<f32>,
+    /// Balance mode: 0 disarmed, 1 transit, 2 hold, 3 recover, 4 fall.
+    pub balance_mode: Option<u8>,
 }
 
 impl Telemetry {
@@ -135,6 +151,12 @@ pub struct Stat {
     pub fb_frames: u32,
     /// Bytes discarded while resynchronising the feedback parser.
     pub fb_discarded: u32,
+    /// Raw bytes received on the mainboard link.
+    pub link_bytes: Option<u32>,
+    /// Whether the control loop currently has fresh wheel-speed feedback.
+    pub link_fresh: Option<bool>,
+    /// Last reason the balance supervisor latched off, if any.
+    pub stop_reason: Option<String>,
     /// Applied pitch zero offset, degrees.
     pub zero_deg: Option<f32>,
     /// Applied roll zero offset, degrees.
@@ -145,6 +167,32 @@ pub struct Stat {
     pub mount: Option<u8>,
     /// Operator arm latch for the balance law.
     pub armed: Option<bool>,
+    /// Commanded home reference, degrees (captured level when unset).
+    pub home_deg: Option<f32>,
+    /// Latched fall events since boot.
+    pub fall_events: Option<u32>,
+    /// Commanded reference rate for the home ramp, degrees per second.
+    pub ref_vmax_deg_s: Option<f32>,
+    /// Effective proportional pitch gain after the power scale, Nm per radian.
+    pub kp_nm_per_rad: Option<f32>,
+    /// Effective derivative pitch gain after the power scale, Nm per (rad/s).
+    pub kd_nm_per_rad_s: Option<f32>,
+    /// Position loop gain, metres offset to metres per second.
+    pub position_gain_per_s: Option<f32>,
+    /// Speed loop gain, acceleration per m/s of speed error.
+    pub velocity_gain_per_s: Option<f32>,
+    /// Slope trim integrator gain.
+    pub trim_gain_rad_per_m_s: Option<f32>,
+    /// Cap on the dynamic pitch demand, degrees.
+    pub demand_limit_deg: Option<f32>,
+    /// Cap on the total pitch demand including the slope trim, degrees.
+    pub trim_limit_deg: Option<f32>,
+    /// Whether the `zero` offset was captured this session.
+    pub zero_captured: Option<bool>,
+    /// Whether the `level` reference was captured this session.
+    pub level_captured: Option<bool>,
+    /// Runtime scale on the angular-output gains (1.0 = compiled tuning).
+    pub pscale: Option<f32>,
     /// Original line, kept for the event log.
     pub raw: String,
 }
@@ -223,6 +271,14 @@ pub fn parse_telemetry(line: &str) -> Option<Telemetry> {
             "zro" => telemetry.roll_zero_offset_deg = Some(parse_f32(value)?),
             "lvl" => telemetry.level_deg = Some(parse_f32(value)?),
             "arm" => telemetry.armed = Some(parse_flag(value)?),
+            "tsl" => telemetry.test_left_units = Some(parse_f32(value)?),
+            "tsr" => telemetry.test_right_units = Some(parse_f32(value)?),
+            "trq" => telemetry.torque_common_units = Some(parse_f32(value)?),
+            "ref" => telemetry.pitch_ref_deg = Some(parse_f32(value)?),
+            "dem" => telemetry.pitch_demand_deg = Some(parse_f32(value)?),
+            "trm" => telemetry.slope_trim_deg = Some(parse_f32(value)?),
+            "x" => telemetry.position_m = Some(parse_f32(value)?),
+            "mode" => telemetry.balance_mode = Some(parse_u8(value)?),
             _ => {}
         }
     }
@@ -317,6 +373,22 @@ pub fn parse_stat(line: &str) -> Option<Stat> {
                     recognised = true;
                 }
             }
+            "rx" => {
+                if let Some(parsed) = parse_u32(value) {
+                    stat.link_bytes = Some(parsed);
+                    recognised = true;
+                }
+            }
+            "fb_ok" => {
+                if let Some(parsed) = parse_flag(value) {
+                    stat.link_fresh = Some(parsed);
+                    recognised = true;
+                }
+            }
+            "stop" => {
+                stat.stop_reason = Some(value.to_owned());
+                recognised = true;
+            }
             "zero" => {
                 if let Some(parsed) = parse_f32(value) {
                     stat.zero_deg = Some(parsed);
@@ -344,6 +416,84 @@ pub fn parse_stat(line: &str) -> Option<Stat> {
             "armed" => {
                 if let Some(parsed) = parse_flag(value) {
                     stat.armed = Some(parsed);
+                    recognised = true;
+                }
+            }
+            "home" => {
+                if let Some(parsed) = parse_f32(value) {
+                    stat.home_deg = Some(parsed);
+                    recognised = true;
+                }
+            }
+            "fall" => {
+                if let Some(parsed) = parse_u32(value) {
+                    stat.fall_events = Some(parsed);
+                    recognised = true;
+                }
+            }
+            "vmax" => {
+                if let Some(parsed) = parse_f32(value) {
+                    stat.ref_vmax_deg_s = Some(parsed);
+                    recognised = true;
+                }
+            }
+            "kpnm" => {
+                if let Some(parsed) = parse_f32(value) {
+                    stat.kp_nm_per_rad = Some(parsed);
+                    recognised = true;
+                }
+            }
+            "kdnm" => {
+                if let Some(parsed) = parse_f32(value) {
+                    stat.kd_nm_per_rad_s = Some(parsed);
+                    recognised = true;
+                }
+            }
+            "kpos" => {
+                if let Some(parsed) = parse_f32(value) {
+                    stat.position_gain_per_s = Some(parsed);
+                    recognised = true;
+                }
+            }
+            "kv" => {
+                if let Some(parsed) = parse_f32(value) {
+                    stat.velocity_gain_per_s = Some(parsed);
+                    recognised = true;
+                }
+            }
+            "ki" => {
+                if let Some(parsed) = parse_f32(value) {
+                    stat.trim_gain_rad_per_m_s = Some(parsed);
+                    recognised = true;
+                }
+            }
+            "pdem" => {
+                if let Some(parsed) = parse_f32(value) {
+                    stat.demand_limit_deg = Some(parsed);
+                    recognised = true;
+                }
+            }
+            "ptrm" => {
+                if let Some(parsed) = parse_f32(value) {
+                    stat.trim_limit_deg = Some(parsed);
+                    recognised = true;
+                }
+            }
+            "zcapt" => {
+                if let Some(parsed) = parse_flag(value) {
+                    stat.zero_captured = Some(parsed);
+                    recognised = true;
+                }
+            }
+            "lcapt" => {
+                if let Some(parsed) = parse_flag(value) {
+                    stat.level_captured = Some(parsed);
+                    recognised = true;
+                }
+            }
+            "pscale" => {
+                if let Some(parsed) = parse_f32(value) {
+                    stat.pscale = Some(parsed);
                     recognised = true;
                 }
             }
@@ -441,7 +591,7 @@ fn parse_feedback_word(value: &str) -> Option<bool> {
 mod tests {
     use super::*;
 
-    const FULL: &str = "T step=19043 loop=200 imu=ok cal=3 pitch=1.50 roll=-2.25 hdg=87.40 gy=0.06 gx=-0.12 gz=0.03 err=0x00 mb=ok L=12 R=-13 bat=41.50 tmp=39.3 age=3 estop=0 vset=0.25 wset=-15.00 mnt=1 zof=1.75 zro=-0.50 lvl=0.30 arm=1";
+    const FULL: &str = "T step=19043 loop=200 imu=ok cal=3 pitch=1.50 roll=-2.25 hdg=87.40 gy=0.06 gx=-0.12 gz=0.03 err=0x00 mb=ok L=12 R=-13 bat=41.50 tmp=39.3 age=3 estop=0 vset=0.25 wset=-15.00 mnt=1 zof=1.75 zro=-0.50 lvl=0.30 arm=1 trq=123 ref=4.50 dem=-1.25 trm=2.75 x=0.412 mode=2";
 
     #[test]
     fn parses_a_full_sample() {
@@ -466,6 +616,12 @@ mod tests {
         assert_eq!(telemetry.roll_zero_offset_deg, Some(-0.50));
         assert_eq!(telemetry.level_deg, Some(0.30));
         assert_eq!(telemetry.armed, Some(true));
+        assert_eq!(telemetry.torque_common_units, Some(123.0));
+        assert_eq!(telemetry.pitch_ref_deg, Some(4.50));
+        assert_eq!(telemetry.pitch_demand_deg, Some(-1.25));
+        assert_eq!(telemetry.slope_trim_deg, Some(2.75));
+        assert_eq!(telemetry.position_m, Some(0.412));
+        assert_eq!(telemetry.balance_mode, Some(2));
     }
 
     #[test]
@@ -518,8 +674,20 @@ mod tests {
     }
 
     #[test]
+    fn parses_spin_test_fields() {
+        let line = "T step=1 pitch=0.5 arm=0 tsl=150 tsr=-150";
+        let telemetry = parse_telemetry(line).expect("sample should parse");
+        assert_eq!(telemetry.test_left_units, Some(150.0));
+        assert_eq!(telemetry.test_right_units, Some(-150.0));
+        // Older firmware without the fields parses fine.
+        let legacy = parse_telemetry("T step=1 pitch=0.5").expect("legacy sample");
+        assert_eq!(legacy.test_left_units, None);
+        assert_eq!(legacy.test_right_units, None);
+    }
+
+    #[test]
     fn parses_stat_reply() {
-        let line = "stat up=12.5 loop=200 stream=20 trim=0.50 estop=0 steps=2500 imu=2500 imu_err=2 imu_code=1 fb=100 fb_drop=7 zero=1.75 zroll=-0.50 level=0.30 mount=1 armed=1";
+        let line = "stat up=12.5 loop=200 stream=20 trim=0.50 estop=0 steps=2500 imu=2500 imu_err=2 imu_code=1 fb=100 fb_drop=7 rx=1800 fb_ok=1 stop=pose_error zero=1.75 zroll=-0.50 level=0.30 mount=1 armed=1 kpnm=28.6 kdnm=7.2 kpos=0.40 kv=1.80 ki=0.010 pdem=8.0 ptrm=20.0 zcapt=1 lcapt=1 home=0.00 fall=2 vmax=10.00 pscale=0.50";
         let stat = parse_stat(line).expect("stat should parse");
         assert!((stat.uptime_s - 12.5).abs() < 1e-6);
         assert_eq!(stat.loop_hz, 200);
@@ -527,12 +695,33 @@ mod tests {
         assert!((stat.trim_deg - 0.5).abs() < 1e-6);
         assert_eq!(stat.imu_errors, 2);
         assert_eq!(stat.fb_discarded, 7);
+        assert_eq!(stat.link_bytes, Some(1800));
+        assert_eq!(stat.link_fresh, Some(true));
+        assert_eq!(stat.stop_reason.as_deref(), Some("pose_error"));
         assert_eq!(stat.zero_deg, Some(1.75));
         assert_eq!(stat.zroll_deg, Some(-0.50));
         assert_eq!(stat.level_deg, Some(0.30));
         assert_eq!(stat.mount, Some(1));
         assert_eq!(stat.armed, Some(true));
+        assert_eq!(stat.kp_nm_per_rad, Some(28.6));
+        assert_eq!(stat.kd_nm_per_rad_s, Some(7.2));
+        assert_eq!(stat.position_gain_per_s, Some(0.40));
+        assert_eq!(stat.velocity_gain_per_s, Some(1.80));
+        assert_eq!(stat.trim_gain_rad_per_m_s, Some(0.010));
+        assert_eq!(stat.demand_limit_deg, Some(8.0));
+        assert_eq!(stat.trim_limit_deg, Some(20.0));
+        assert_eq!(stat.zero_captured, Some(true));
+        assert_eq!(stat.level_captured, Some(true));
+        assert_eq!(stat.fall_events, Some(2));
+        assert_eq!(stat.ref_vmax_deg_s, Some(10.00));
+        assert_eq!(stat.home_deg, Some(0.0));
+        assert_eq!(stat.pscale, Some(0.50));
         assert_eq!(stat.raw, line);
+        // Firmware from before the link fields still parses.
+        let legacy = parse_stat("stat up=1.0 fb=2").expect("legacy stat");
+        assert_eq!(legacy.link_bytes, None);
+        assert_eq!(legacy.link_fresh, None);
+        assert_eq!(legacy.stop_reason, None);
     }
 
     #[test]

@@ -442,7 +442,7 @@ prototype uses one wheel per leg; dual wheels per leg are deferred.
 
 | ID | Requirement | Priority |
 |---|---|---|
-| INT-01 | Primary link for stages 1–2 — UART: Pico UART0 (GP0/GP1) to the mainboard USART2 (PA2 TX, PA3 RX, not 5 V tolerant, left 4-pin cable), carrying the EFeru torque command and feedback; Pico UART1 (GP4/GP5) to the XR1 receiver at 420 kbaud CRSF; Pico PIO UART (GP6/GP7) to the mission computer. The mainboard's USART3 (PB10/PB11) is free for the stage 2 hip driver. CAN FD is reserved for a future controller generation and is not present on the donor mainboard. | P1 |
+| INT-01 | Primary link for stages 1–2 — UART: Pico UART0 (GP16/GP17) to the mainboard USART2 (PA2 TX, PA3 RX, not 5 V tolerant, left 4-pin cable), carrying the EFeru torque command and feedback; Pico UART1 (GP4/GP5) to the XR1 receiver at 420 kbaud CRSF; Pico PIO UART (GP6/GP7) to the mission computer. The mainboard's USART3 (PB10/PB11) is free for the stage 2 hip driver. CAN FD is reserved for a future controller generation and is not present on the donor mainboard. | P1 |
 | INT-02 | Framed protocol (mission-computer link): 9-byte header, payload up to 53 bytes, CRC-16, at most 64 bytes before COBS. The Pico–mainboard link keeps the stock EFeru 8-byte command and 18-byte feedback frames and is not framed with COBS. | P1 |
 | INT-03 | CAN FD (reserved, not fitted on the donor board): 120 Ω termination at both ends, stub length less than 0.3 m | P3 |
 | INT-04 | UART: 8N1 with COBS and CRC-16 on the mission-computer link; the ExpressLRS receiver link runs at 420 kbaud CRSF; the Pico–mainboard link runs at 115200 with the EFeru XOR checksum; the mission computer link runs at 460800, raised to 921600 only after measuring the error rate | P1 |

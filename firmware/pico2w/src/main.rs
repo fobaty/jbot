@@ -3,9 +3,7 @@
 //! This is the foundation stage of the Tier 1 controller described in
 //! `docs/pico-bridge.md`: it brings up the clock tree, the UART link to the
 //! STM32F103 torque node, the I2C link to the BNO055, the 200 Hz control tick,
-//! and a USB console for bench work. The balance law exists but runs with
-//! [`Gains::SAFE`], so every command frame carries zero torque until the robot
-//! is tuned and the radio is fitted.
+//! and a USB console for bench work.
 //!
 //! Tasks:
 //!
@@ -16,9 +14,22 @@
 //!   hardware watchdog.
 //! * [`console::usb_task`] and [`console::console_task`] serve the USB console.
 //!
-//! Safety: if the IMU sample is stale or missing, if the gains are zero, or if
-//! the emergency stop is latched, the task sends [`Command::ZERO`]. The
-//! mainboard independently stops on its own serial timeout.
+//! The balance law is the cascade from `jbot_pico_core::control`: position to
+//! speed to acceleration to a pitch demand, an inner pitch PD that produces
+//! the common-mode torque, and a yaw loop that may only use the remaining
+//! torque headroom. Its gains are derived from the identified plant once per
+//! boot, so there is no magic gain table in this file.
+//!
+//! Safety: if the IMU sample is stale, or the emergency stop is latched, the
+//! task sends [`Command::ZERO`]. The mainboard independently stops on its own
+//! serial timeout. Arming is refused when the torque link is blind, when the
+//! pose is outside the lift budget of the torque available, or when the body
+//! is already on the ground; while armed, the same limits plus a travel limit
+//! latch the law off. The bench spin test applies a limited, slew-limited,
+//! self-expiring wheel torque and is honoured only while the balance law is
+//! disarmed. The balance path itself is smoothed with a short low-pass filter
+//! on the pitch rate and a slew-limited torque command; the e-stop bypasses
+//! both and zeroes the command immediately.
 
 #![no_std]
 #![no_main]
@@ -44,9 +55,14 @@ use embassy_time::{Duration, Instant, Ticker, Timer};
 use embedded_io_async::{Read, Write};
 use static_cell::StaticCell;
 
-use jbot_pico_core::control::{balance, to_command, BalanceInput, Gains, WheelTorque};
+use jbot_pico_core::control::{
+    to_command, BalanceController, BalanceInput, SafetyState, WheelTorque,
+};
 use jbot_pico_core::eferu::{Command, Feedback, FeedbackParser};
+use jbot_pico_core::filters::{LowPass, SlewLimiter};
 use jbot_pico_core::mount::{self, Mount};
+use jbot_pico_core::reference::PitchReference;
+use jbot_pico_core::spin::SpinTest;
 
 use crate::imu::{Bno055, ImuSample};
 use crate::state::Telemetry;
@@ -59,6 +75,13 @@ bind_interrupts!(struct Irqs {
 
 /// Control loop period: 5 ms, that is 200 Hz.
 const CONTROL_PERIOD: Duration = Duration::from_micros(5_000);
+/// Control loop period in seconds, for the rate limiters.
+const CONTROL_PERIOD_S: f32 = 0.005;
+/// Cut-off of the first-order low-pass filter on the pitch rate used by the
+/// derivative term.
+const D_FILTER_CUTOFF_HZ: f32 = 12.0;
+/// Maximum rate of change of the applied wheel torque, command units per second.
+const TORQUE_SLEW_PER_S: f32 = 3_000.0;
 /// IMU sampling period: 10 ms, that is 100 Hz.
 const IMU_PERIOD: Duration = Duration::from_millis(10);
 /// An IMU sample older than this is not used for control.
@@ -71,18 +94,20 @@ const LINK_BAUD: u32 = 115_200;
 const IMU_I2C_FREQ: u32 = 400_000;
 /// Donor wheel radius, from `config/robot.toml`.
 const WHEEL_RADIUS_M: f32 = 0.0825;
-
-/// Balance gains. Zero until a bench tuning session produces real values.
-/// BENCH TUNING: iteration 2 — P + light D. Iteration 1 (P only) was
-/// unstable because the level reference was mis-captured mid-motion; do not
-/// merge non-zero gains into main without a rig test and review.
-const GAINS: Gains = Gains {
-    pitch_kp: 1000.0,
-    pitch_kd: 100.0,
-    speed_kp: 0.0,
-    max_pitch_ref_rad: 0.0,
-    yaw_kp: 0.0,
-};
+/// Absolute pitch above which the telemetry flags `MODE_RECOVER`. No control
+/// behaviour changes; the flag exists so the operator sees that the robot is
+/// well outside ordinary balance.
+const RECOVER_LIMIT_RAD: f32 = core::f32::consts::PI / 12.0;
+/// Wheel-speed feedback older than this freezes the position loop, and arming
+/// is refused while it is older. The EFeru feedback frame arrives every
+/// 100 ms, so the window has to be comfortably wider than one frame.
+const FEEDBACK_MAX_AGE: Duration = Duration::from_millis(300);
+/// Nominal pack voltage of the donor battery, volts.
+const PACK_NOMINAL_V: f32 = 36.0;
+/// Pose error below which arming anchors the reference to the measured pose,
+/// radians (5 degrees). A larger error starts at the target so the law lifts
+/// the body instead of slowly chasing it.
+const ARM_ANCHOR_RAD: f32 = 5.0 * core::f32::consts::PI / 180.0;
 
 /// Capacity of the buffered UART transmit ring.
 const UART_TX_BUFFER_LEN: usize = 256;
@@ -110,8 +135,10 @@ async fn main(spawner: Spawner) {
     let uart = BufferedUart::new(
         p.UART0,
         Irqs,
-        p.PIN_0,
-        p.PIN_1,
+        // Pico TX -> STM32 PA3 (USART2 RX), Pico RX <- STM32 PA2 (USART2
+        // TX). The wiring was reworked; do not share pins with the console.
+        p.PIN_16,
+        p.PIN_17,
         UART_TX_BUFFER.init([0u8; UART_TX_BUFFER_LEN]),
         UART_RX_BUFFER.init([0u8; UART_RX_BUFFER_LEN]),
         uart_config,
@@ -192,6 +219,7 @@ async fn link_rx_task(mut rx: BufferedUartRx<'static, UART0>) {
         match rx.read(&mut buffer).await {
             Ok(0) => {}
             Ok(len) => {
+                state::LINK_BYTES.fetch_add(len as u32, Ordering::Relaxed);
                 for &byte in &buffer[..len] {
                     if let Some(feedback) = parser.push(byte) {
                         state::count(&state::FB_FRAMES);
@@ -217,12 +245,23 @@ async fn control_task(
 ) {
     watchdog.start(WATCHDOG_PERIOD);
 
+    let base_tuning = state::tuning();
     let mut ticker = Ticker::every(CONTROL_PERIOD);
     let mut last_imu = ImuSample::default();
     let mut last_imu_at: Option<Instant> = None;
     let mut last_feedback = Feedback::default();
     let mut last_feedback_at: Option<Instant> = None;
+    let mut spin = SpinTest::new();
+    let mut rate_lp = LowPass::new(D_FILTER_CUTOFF_HZ, CONTROL_PERIOD_S);
+    let mut torque_slew_left = SlewLimiter::new(TORQUE_SLEW_PER_S);
+    let mut torque_slew_right = SlewLimiter::new(TORQUE_SLEW_PER_S);
+    let mut balance = BalanceController::new();
+    let mut reference = PitchReference::new();
+    let mut was_armed = false;
     let mut steps: u32 = 0;
+    // Travel since arming, metres, from the wheel-speed feedback.
+    let mut position_m = 0.0_f32;
+    let mut feedback_gap_logged = false;
 
     // Loop-rate measurement over a fixed window of control steps.
     let mut window_at = Instant::now();
@@ -230,6 +269,11 @@ async fn control_task(
 
     loop {
         ticker.next().await;
+
+        // Bench power scale, applied per tick so a console change takes
+        // effect on the very next step. Only the angular-output gains move;
+        // the fall guards see the floor, not the scaled gains.
+        let tuning = base_tuning.scaled_by(state::pscale());
 
         if let Some(sample) = IMU_SIGNAL.try_take() {
             last_imu = sample;
@@ -246,15 +290,214 @@ async fn control_task(
 
         let imu_fresh = last_imu_at.is_some_and(|at| at.elapsed() < IMU_MAX_AGE);
         state::set_imu_fresh(imu_fresh);
-        let command = if state::estop() {
-            Command::ZERO
+        let feedback_fresh = last_feedback_at.is_some_and(|at| at.elapsed() < FEEDBACK_MAX_AGE);
+        state::set_link_fresh(feedback_fresh);
+        let measured_speed = if feedback_fresh {
+            last_feedback.forward_speed_mps(WHEEL_RADIUS_M)
         } else {
-            control_step(
-                &last_imu,
-                imu_fresh,
-                &last_feedback,
-                state::pitch_trim_rad(),
-            )
+            0.0
+        };
+
+        // The reference target follows the captured `level` by default; an
+        // explicit `home` command overrides it. Latest write wins, like every
+        // other setpoint.
+        let target_rad = state::home_target_rad().unwrap_or_else(state::pitch_trim_rad);
+        reference.set_target(target_rad);
+        reference.set_v_max(state::ref_v_max_rad_s());
+
+        // Per-tick flags; assigned on every branch of the command selection.
+        let mut fell = false;
+        let mut pitch_zero_rad: Option<f32> = None;
+        let ref_moving: bool;
+        let mut report: BalanceReport;
+
+        // The bench spin test is a direct torque path that bypasses the
+        // balance law; it is honoured only when the balance law is disarmed
+        // and the e-stop is clear.
+        let now_ms = Instant::now().as_millis();
+        if let Some(pair) = state::SPIN_REQUEST.try_take() {
+            spin.request(pair.left, pair.right, now_ms);
+        }
+        let estop = state::estop();
+        let armed = state::armed();
+        let spin_pair = spin.step(CONTROL_PERIOD_S, now_ms, armed, estop);
+        state::set_spin_applied(spin_pair.left, spin_pair.right);
+
+        let command = if estop {
+            reset_smoothing(
+                &mut rate_lp,
+                &mut torque_slew_left,
+                &mut torque_slew_right,
+                &mut balance,
+                &mut reference,
+            );
+            position_m = 0.0;
+            state::set_balance_applied(0.0);
+            ref_moving = false;
+            report = BalanceReport::idle();
+            Command::ZERO
+        } else if armed {
+            let attitude = attitude_of(&last_imu);
+            let pitch_zero = attitude.pitch_deg.to_radians() - state::zero_pitch_rad();
+            pitch_zero_rad = Some(pitch_zero);
+
+            // Arming is refused when the torque link is blind, when the body
+            // is already on the ground, or when the pose is outside the lift
+            // budget. The decision itself is a pure, tested function; it
+            // ignores travel while arming because arming resets the origin.
+            let safety = SafetyState {
+                pitch_rad: pitch_zero,
+                reference_rad: target_rad,
+                position_m,
+                speed_mps: measured_speed,
+                feedback_fresh,
+            };
+            let refusal = if was_armed {
+                None
+            } else {
+                safety.arm_refusal(&tuning)
+            };
+
+            if let Some(reason) = refusal {
+                fell = true;
+                state::set_armed(false);
+                state::set_stop(Some(reason));
+                state::count(&state::FALL_EVENTS);
+                defmt::warn!(
+                    "balance refused: reason={} pitch={} err={} fb={}",
+                    reason.as_str(),
+                    pitch_zero,
+                    safety.pose_error_rad(),
+                    feedback_fresh
+                );
+                reset_smoothing(
+                    &mut rate_lp,
+                    &mut torque_slew_left,
+                    &mut torque_slew_right,
+                    &mut balance,
+                    &mut reference,
+                );
+                position_m = 0.0;
+                state::set_balance_applied(0.0);
+                ref_moving = false;
+                report = BalanceReport::idle();
+                Command::ZERO
+            } else if !imu_fresh {
+                // No attitude sample: no torque. This is not latched, because
+                // the mainboard stops on its own serial timeout and a single
+                // sensor gap should not end the run.
+                state::set_balance_applied(0.0);
+                ref_moving = reference.velocity() != 0.0;
+                report = BalanceReport::idle();
+                Command::ZERO
+            } else {
+                if !was_armed {
+                    // Arming soft-start. The reference is anchored to the
+                    // measured pose only when the pose is already close to the
+                    // target: anchoring a large error would cancel the control
+                    // error and the machine would fall instead of being
+                    // lifted.
+                    if safety.pose_error_rad().abs() < ARM_ANCHOR_RAD {
+                        reference.reset(pitch_zero);
+                    } else {
+                        reference.reset(target_rad);
+                    }
+                    position_m = 0.0;
+                    balance.reset(0.0);
+                }
+                let step = reference.update(CONTROL_PERIOD_S);
+                let applied_ref_rad = step.ref_rad;
+                ref_moving = step.moving;
+                let filtered_rate = rate_lp.update(attitude.pitch_rate_dps.to_radians());
+
+                if feedback_fresh {
+                    position_m += measured_speed * CONTROL_PERIOD_S;
+                    feedback_gap_logged = false;
+                } else if !feedback_gap_logged {
+                    // Freeze the position loop and keep balancing on pitch: a
+                    // link gap must not drop the machine.
+                    defmt::warn!("feedback stale, position loop frozen");
+                    feedback_gap_logged = true;
+                }
+
+                let input = BalanceInput {
+                    pitch_rad: pitch_zero,
+                    pitch_rate_rad_s: filtered_rate,
+                    pitch_ref_rad: applied_ref_rad,
+                    position_m,
+                    speed_mps: measured_speed,
+                    yaw_rate_error_rad_s: state::steer_setpoint_rps()
+                        - attitude.yaw_rate_dps.to_radians(),
+                    battery_scale: battery_scale(last_feedback.battery_voltage_v()),
+                };
+                let torque = balance.update(&input, &tuning, CONTROL_PERIOD_S);
+
+                // Pose and range guards. A control error outside the lift
+                // budget has to stop the attempt instead of feeding it, and a
+                // runaway is aborted before it hurts anything.
+                let guard = SafetyState {
+                    reference_rad: applied_ref_rad,
+                    position_m,
+                    ..safety
+                };
+                if let Some(reason) = guard.fall_cause(&tuning) {
+                    fell = true;
+                    state::set_armed(false);
+                    state::set_stop(Some(reason));
+                    state::count(&state::FALL_EVENTS);
+                    defmt::warn!(
+                        "balance fall: reason={} err={} pitch={} x={} v={}",
+                        reason.as_str(),
+                        guard.pose_error_rad(),
+                        pitch_zero,
+                        position_m,
+                        measured_speed
+                    );
+                    reset_smoothing(
+                        &mut rate_lp,
+                        &mut torque_slew_left,
+                        &mut torque_slew_right,
+                        &mut balance,
+                        &mut reference,
+                    );
+                    position_m = 0.0;
+                    state::set_balance_applied(0.0);
+                    report = BalanceReport::idle();
+                    Command::ZERO
+                } else {
+                    let left = torque_slew_left.update(torque.left, CONTROL_PERIOD_S);
+                    let right = torque_slew_right.update(torque.right, CONTROL_PERIOD_S);
+                    state::set_balance_applied(0.5 * (left + right));
+                    report = BalanceReport {
+                        ref_deg: applied_ref_rad.to_degrees(),
+                        demand_deg: balance.demand_rad().to_degrees(),
+                        trim_deg: balance.trim_rad().to_degrees(),
+                        position_m,
+                        mode: state::MODE_DISARMED,
+                    };
+                    to_command(WheelTorque { left, right })
+                }
+            }
+        } else {
+            reset_smoothing(
+                &mut rate_lp,
+                &mut torque_slew_left,
+                &mut torque_slew_right,
+                &mut balance,
+                &mut reference,
+            );
+            position_m = 0.0;
+            state::set_balance_applied(0.0);
+            ref_moving = false;
+            report = BalanceReport::idle();
+            if spin_pair.left != 0.0 || spin_pair.right != 0.0 {
+                to_command(WheelTorque {
+                    left: spin_pair.left,
+                    right: spin_pair.right,
+                })
+            } else {
+                Command::ZERO
+            }
         };
 
         // The mainboard expects exactly eight bytes between two idle gaps.
@@ -275,6 +518,19 @@ async fn control_task(
             window_steps = 0;
         }
 
+        was_armed = state::armed();
+        report.mode = if fell {
+            state::MODE_FALL
+        } else if was_armed {
+            match pitch_zero_rad {
+                Some(pitch) if pitch.abs() > RECOVER_LIMIT_RAD => state::MODE_RECOVER,
+                _ if ref_moving => state::MODE_TRANSIT,
+                _ => state::MODE_HOLD,
+            }
+        } else {
+            state::MODE_DISARMED
+        };
+
         // The console decides how often to print; it always sees the latest.
         let telemetry = snapshot(
             steps,
@@ -282,6 +538,7 @@ async fn control_task(
             imu_fresh,
             &last_feedback,
             last_feedback_at,
+            &report,
         );
         state::TELEMETRY.signal(telemetry);
 
@@ -291,40 +548,57 @@ async fn control_task(
     }
 }
 
-/// Compute one command frame from the latest sample and feedback.
-///
-/// Torque is produced only when the sample is fresh *and* the gains are
-/// non-zero. Everything else yields a zero command.
-///
-/// The attitude is derived for the configured mount ([`Mount`]): the normal
-/// mount uses the fused Euler pitch, the flipped mounts derive pitch and
-/// roll from the re-mapped gravity vector. The captured zero offset is then
-/// subtracted, and the balance reference (the `trim`/`level` setting) is
-/// subtracted on top of that.
-fn control_step(
-    sample: &ImuSample,
-    imu_fresh: bool,
-    feedback: &Feedback,
-    pitch_trim_rad: f32,
-) -> Command {
-    let attitude = attitude_of(sample);
-    if !imu_fresh || !GAINS.is_active() || !state::armed() {
-        return Command::ZERO;
+/// Balance outputs carried from the control step into the telemetry snapshot.
+#[derive(Clone, Copy, Default)]
+struct BalanceReport {
+    /// Applied (ramped) pitch reference, degrees in the zeroed frame.
+    ref_deg: f32,
+    /// Total pitch offset demanded by the outer loops, degrees.
+    demand_deg: f32,
+    /// Learned slope trim, degrees.
+    trim_deg: f32,
+    /// Travel since arming, metres.
+    position_m: f32,
+    /// Balance mode code, filled in after the command selection.
+    mode: u8,
+}
+
+impl BalanceReport {
+    /// All-zero report for the paths that produce no balance torque.
+    fn idle() -> Self {
+        Self::default()
     }
+}
 
-    let pitch_zero_rad = attitude.pitch_deg.to_radians() - state::zero_pitch_rad();
+/// Clear every smoothing stage so the balance law starts from zero on the
+/// next arm instead of resuming a stale filter, limiter, integrator or
+/// reference state.
+fn reset_smoothing(
+    rate_lp: &mut LowPass,
+    torque_slew_left: &mut SlewLimiter,
+    torque_slew_right: &mut SlewLimiter,
+    balance: &mut BalanceController,
+    reference: &mut PitchReference,
+) {
+    rate_lp.reset();
+    torque_slew_left.reset();
+    torque_slew_right.reset();
+    balance.reset(0.0);
+    reference.reset(0.0);
+}
 
-    let measured_speed = feedback.forward_speed_mps(WHEEL_RADIUS_M);
-
-    let input = BalanceInput {
-        pitch_rad: pitch_zero_rad - pitch_trim_rad,
-        pitch_rate_rad_s: attitude.pitch_rate_dps.to_radians(),
-        speed_error_mps: state::speed_setpoint_mps() - measured_speed,
-        yaw_rate_error_rad_s: state::steer_setpoint_rps() - attitude.yaw_rate_dps.to_radians(),
-    };
-
-    let torque: WheelTorque = balance(&input, &GAINS);
-    to_command(torque)
+/// Torque scaling from the pack voltage.
+///
+/// The drive can deliver less torque at a lower pack voltage, so a sagging pack
+/// gets a proportionally smaller torque budget. The law then saturates earlier
+/// instead of asking for torque the pack cannot supply. A missing or
+/// implausible reading leaves the scale neutral.
+fn battery_scale(pack_v: f32) -> f32 {
+    if pack_v > 10.0 {
+        (pack_v / PACK_NOMINAL_V).clamp(0.5, 1.2)
+    } else {
+        1.0
+    }
 }
 
 /// Derive the mount-compensated attitude of one sample.
@@ -344,6 +618,7 @@ fn snapshot(
     imu_fresh: bool,
     feedback: &Feedback,
     feedback_at: Option<Instant>,
+    report: &BalanceReport,
 ) -> Telemetry {
     let attitude = attitude_of(sample);
     let pitch_zero_deg = attitude.pitch_deg - state::zero_pitch_rad().to_degrees();
@@ -375,6 +650,14 @@ fn snapshot(
         zero_offset_deg: state::zero_pitch_rad().to_degrees(),
         roll_zero_offset_deg: state::zero_roll_rad().to_degrees(),
         level_deg: state::pitch_trim_rad().to_degrees(),
+        spin_left_units: state::spin_applied().left,
+        spin_right_units: state::spin_applied().right,
+        balance_torque_common_units: state::balance_applied(),
+        pitch_ref_deg: report.ref_deg,
+        pitch_demand_deg: report.demand_deg,
+        slope_trim_deg: report.trim_deg,
+        position_m: report.position_m,
+        balance_mode: report.mode,
     }
 }
 

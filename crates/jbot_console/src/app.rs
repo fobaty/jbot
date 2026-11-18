@@ -8,9 +8,11 @@ use eframe::egui::{
 };
 
 use crate::attitude;
+use crate::autocal::StillnessTracker;
 use crate::axiscal::{self, Lean, Measurements, MOUNT_COUNT, MOUNT_NAMES};
 use crate::link::{available_ports, looks_like_pico, LinkEvent, LinkHandle};
 use crate::protocol::{Message, Stat, Telemetry, MAX_STREAM_HZ};
+use crate::record::{self, EventLog, SessionRecorder};
 use crate::theme;
 
 /// Everything the UI can send to the Pico. Kept in one place so the safety
@@ -115,6 +117,60 @@ enum CaptureKind {
     Lean(usize),
 }
 
+/// State of the auto-calibration wizard: the operator holds the robot in
+/// the approximate pose (upright for `zero`, the balance stance for
+/// `level`) and the console captures the reference itself once the robot
+/// has been completely still for a full window.
+#[derive(Clone)]
+enum AutoCal {
+    /// Not running.
+    Idle,
+    /// Waiting for the operator to hold the robot UPRIGHT and completely still.
+    WaitingUpright {
+        /// Stillness detector for the upright pose.
+        still: StillnessTracker,
+        /// When this phase started.
+        started: Instant,
+    },
+    /// `zero` was sent; the reply is pending.
+    AwaitingZero {
+        /// When the command was sent.
+        started: Instant,
+    },
+    /// Waiting for the operator to hold the BALANCE STANCE and completely still.
+    WaitingStance {
+        /// Stillness detector for the balance stance.
+        still: StillnessTracker,
+        /// When this phase started.
+        started: Instant,
+    },
+    /// `level` was sent; the reply is pending.
+    AwaitingLevel {
+        /// When the command was sent.
+        started: Instant,
+    },
+    /// Both captures finished; references are live.
+    Done,
+    /// The wizard aborted; the operator can retry.
+    Failed {
+        /// Human-readable reason.
+        reason: String,
+    },
+}
+
+impl AutoCal {
+    /// True while the wizard owns the calibration flow.
+    fn running(&self) -> bool {
+        matches!(
+            self,
+            Self::WaitingUpright { .. }
+                | Self::AwaitingZero { .. }
+                | Self::WaitingStance { .. }
+                | Self::AwaitingLevel { .. }
+        )
+    }
+}
+
 /// Desktop console.
 pub struct ConsoleApp {
     link: Option<LinkHandle>,
@@ -126,18 +182,39 @@ pub struct ConsoleApp {
     demo_started: Instant,
     last_demo_at: Instant,
     demo_estop: bool,
+    demo_test_expire: Option<Instant>,
 
     telemetry: Option<Telemetry>,
     telemetry_at: Option<Instant>,
     stat: Option<Stat>,
     last_step: Option<u32>,
     garbage_lines: u32,
+    /// Ring buffer of raw inbound lines for the debug view.
+    raw_lines: VecDeque<String>,
+    /// Raw command input box for the debug panel.
+    raw_input: String,
+    /// Power scale slider; 1.0 is the compiled tuning.
+    pscale: f32,
+    /// Home bias slider, degrees.
+    home_bias_deg: f32,
+    /// Ramp rate slider, degrees per second.
+    vmax_deg_s: f32,
+    /// Whether the console polls `stat` automatically.
+    auto_poll_stat: bool,
+    /// Next time the automatic stat poll fires; armed while connected.
+    stat_poll_at: Option<Instant>,
+    /// Set by the automatic poll so the paired `stat` TX/RX lines stay out
+    /// of the event log (the values still land in the debug panel).
+    stat_log_quiet: bool,
 
     stream_hz: u32,
     speed_setpoint: f32,
     steer_setpoint_deg: f32,
     applied_speed: f32,
     applied_steer_deg: f32,
+    test_setpoint: i32,
+    applied_test_left: f32,
+    applied_test_right: f32,
     trim_deg: f32,
     mount: u8,
     zero_offset_deg: Option<f32>,
@@ -148,9 +225,13 @@ pub struct ConsoleApp {
     axis_cal: AxisCal,
     axis_cal_data: Measurements,
     axis_cal_saved_mount: u8,
+    autocal: AutoCal,
+    autocal_saved_stream: u32,
 
     events: VecDeque<LogEntry>,
     started: Instant,
+    recorder: Option<SessionRecorder>,
+    event_log: Option<EventLog>,
 }
 
 impl ConsoleApp {
@@ -176,18 +257,30 @@ impl ConsoleApp {
             demo_started: started,
             last_demo_at: started,
             demo_estop: false,
+            demo_test_expire: None,
             telemetry: None,
             telemetry_at: None,
             stat: None,
             last_step: None,
             garbage_lines: 0,
+            raw_lines: VecDeque::new(),
+            raw_input: String::new(),
+            pscale: 1.0,
+            home_bias_deg: 0.0,
+            vmax_deg_s: 10.0,
+            auto_poll_stat: true,
+            stat_poll_at: None,
+            stat_log_quiet: false,
             stream_hz: startup.stream_hz.clamp(1, MAX_STREAM_HZ),
             speed_setpoint: 0.0,
             steer_setpoint_deg: 0.0,
             applied_speed: 0.0,
             applied_steer_deg: 0.0,
+            test_setpoint: 0,
+            applied_test_left: 0.0,
+            applied_test_right: 0.0,
             trim_deg: 0.0,
-            mount: 0,
+            mount: 1,
             zero_offset_deg: None,
             roll_zero_offset_deg: None,
             level_deg: None,
@@ -195,10 +288,24 @@ impl ConsoleApp {
             confirm_reboot: false,
             axis_cal: AxisCal::Idle,
             axis_cal_data: Measurements::default(),
-            axis_cal_saved_mount: 0,
+            axis_cal_saved_mount: 1,
+            autocal: AutoCal::Idle,
+            autocal_saved_stream: 0,
             events: VecDeque::new(),
             started,
+            recorder: None,
+            event_log: None,
         };
+
+        if let Ok(event_log) =
+            EventLog::open(&std::env::current_dir().unwrap_or_else(|_| ".".into()))
+        {
+            app.event_log = Some(event_log);
+            let path = app.event_log.as_ref().map(|log| log.path().to_path_buf());
+            if let Some(path) = path {
+                app.log(Level::Info, format!("event log: {}", path.display()));
+            }
+        }
 
         if app.demo {
             app.log(
@@ -231,6 +338,21 @@ impl ConsoleApp {
                 .is_some_and(|telemetry| telemetry.estop)
     }
 
+    /// Keep the diagnostics panel alive: poll `stat` every two seconds while
+    /// connected. Read-only query, no actuator involved.
+    fn poll_stat(&mut self) {
+        if !self.auto_poll_stat || !self.connected || self.demo {
+            return;
+        }
+        let now = Instant::now();
+        let due = self.stat_poll_at.is_none_or(|at| now >= at);
+        if due {
+            self.stat_log_quiet = true;
+            self.send("stat");
+            self.stat_poll_at = Some(now + Duration::from_secs(2));
+        }
+    }
+
     fn poll_link(&mut self) {
         let events = self
             .link
@@ -246,24 +368,57 @@ impl ConsoleApp {
         match event {
             LinkEvent::Connected { port } => {
                 self.connected = true;
+                self.stat_poll_at = Some(Instant::now());
                 self.speed_setpoint = 0.0;
                 self.steer_setpoint_deg = 0.0;
                 self.applied_speed = 0.0;
                 self.applied_steer_deg = 0.0;
+                self.test_setpoint = 0;
+                self.applied_test_left = 0.0;
+                self.applied_test_right = 0.0;
+                if let Some(recorder) = &mut self.recorder {
+                    recorder.record_action("sys", &format!("connected {port}"));
+                }
                 self.log(Level::Info, format!("connected: {port}"));
             }
             LinkEvent::Disconnected { reason } => {
                 self.connected = false;
+                self.stat_poll_at = None;
+                if let Some(recorder) = &mut self.recorder {
+                    recorder.record_action("sys", &format!("disconnected {reason}"));
+                }
                 self.log(Level::Warn, format!("disconnected: {reason}"));
             }
-            LinkEvent::Message(message) => self.handle_message(message),
-            LinkEvent::Notice(text) => self.log(Level::Warn, text),
+            LinkEvent::Message { raw, message } => {
+                self.raw_lines.push_back(raw);
+                while self.raw_lines.len() > 200 {
+                    self.raw_lines.pop_front();
+                }
+                self.handle_message(*message)
+            }
+            LinkEvent::Notice(text) => {
+                if let Some(recorder) = &mut self.recorder {
+                    recorder.record_action("sys", &text);
+                }
+                self.log(Level::Warn, text);
+            }
         }
     }
 
     fn handle_message(&mut self, message: Message) {
         match message {
             Message::Telemetry(telemetry) => {
+                let record_error = self
+                    .recorder
+                    .as_mut()
+                    .map(|recorder| recorder.record_telemetry(&telemetry));
+                if let Some(Err(error)) = record_error {
+                    self.log(
+                        Level::Error,
+                        format!("recording failed: {error}; stopping recorder"),
+                    );
+                    self.recorder = None;
+                }
                 if let Some(previous) = self.last_step {
                     if telemetry.step < previous && previous.wrapping_sub(telemetry.step) > 1_000 {
                         self.log(
@@ -279,6 +434,12 @@ impl ConsoleApp {
                 if telemetry.has_setpoints {
                     self.applied_speed = telemetry.speed_setpoint_mps;
                     self.applied_steer_deg = telemetry.steer_setpoint_deg_s();
+                }
+                if let Some(left) = telemetry.test_left_units {
+                    self.applied_test_left = left;
+                }
+                if let Some(right) = telemetry.test_right_units {
+                    self.applied_test_right = right;
                 }
                 if let Some(mount) = telemetry.mount {
                     self.mount = mount;
@@ -300,19 +461,35 @@ impl ConsoleApp {
                 self.telemetry_at = Some(Instant::now());
             }
             Message::Stat(stat) => {
-                self.log(
-                    Level::Rx,
-                    format!(
-                        "stat up={:.1}s loop={}Hz stream={}Hz imu_err={} fb={} drop={} estop={}",
-                        stat.uptime_s,
-                        stat.loop_hz,
-                        stat.stream_hz,
-                        stat.imu_errors,
-                        stat.fb_frames,
-                        stat.fb_discarded,
-                        u8::from(stat.estop),
-                    ),
-                );
+                if let Some(recorder) = &mut self.recorder {
+                    recorder.record_action("rx", &stat.raw);
+                }
+                let quiet = std::mem::take(&mut self.stat_log_quiet);
+                let rx = stat
+                    .link_bytes
+                    .map_or_else(|| "?".to_owned(), |bytes| bytes.to_string());
+                let fb_ok = stat
+                    .link_fresh
+                    .map_or("?", |fresh| if fresh { "1" } else { "0" });
+                let stop = stat.stop_reason.as_deref().unwrap_or("none");
+                if !quiet {
+                    self.log(
+                        Level::Rx,
+                        format!(
+                            "stat up={:.1}s loop={}Hz stream={}Hz imu_err={} fb={} rx={} drop={} fb_ok={} stop={} estop={}",
+                            stat.uptime_s,
+                            stat.loop_hz,
+                            stat.stream_hz,
+                            stat.imu_errors,
+                            stat.fb_frames,
+                            rx,
+                            stat.fb_discarded,
+                            fb_ok,
+                            stop,
+                            u8::from(stat.estop),
+                        ),
+                    );
+                }
                 if let Some(zero) = stat.zero_deg {
                     self.zero_offset_deg = Some(zero);
                 }
@@ -332,12 +509,47 @@ impl ConsoleApp {
                 self.stat = Some(stat);
             }
             Message::Ok(text) => {
+                if let Some(recorder) = &mut self.recorder {
+                    recorder.record_action("rx", &text);
+                }
+                match &mut self.autocal {
+                    AutoCal::AwaitingZero { .. } if text.starts_with("ok zero") => {
+                        self.autocal = AutoCal::WaitingStance {
+                            still: StillnessTracker::new(),
+                            started: Instant::now(),
+                        };
+                        self.log(
+                            Level::Info,
+                            "auto-calibration: zero captured; now hold the BALANCE STANCE, dead still",
+                        );
+                    }
+                    AutoCal::AwaitingLevel { .. } if text.starts_with("ok level") => {
+                        self.autocal_done();
+                    }
+                    _ => {}
+                }
                 self.apply_ok_reply(&text);
                 self.log(Level::Rx, text);
             }
-            Message::Err(text) => self.log(Level::Error, text),
-            Message::Banner(text) => self.log(Level::Info, format!("firmware: {text}")),
+            Message::Err(text) => {
+                if let Some(recorder) = &mut self.recorder {
+                    recorder.record_action("rx", &text);
+                }
+                if self.autocal_running() {
+                    self.autocal_fail(&format!("firmware refused: {text}"));
+                }
+                self.log(Level::Error, text);
+            }
+            Message::Banner(text) => {
+                if let Some(recorder) = &mut self.recorder {
+                    recorder.record_action("rx", &format!("banner {text}"));
+                }
+                self.log(Level::Info, format!("firmware: {text}"));
+            }
             Message::Garbage(text) => {
+                if let Some(recorder) = &mut self.recorder {
+                    recorder.record_action("rx", &format!("garbage {text}"));
+                }
                 self.garbage_lines = self.garbage_lines.saturating_add(1);
                 if self.garbage_lines <= 5 || self.garbage_lines.is_multiple_of(50) {
                     self.log(
@@ -396,6 +608,18 @@ impl ConsoleApp {
             if let Ok(value) = rest.trim().parse::<u32>() {
                 self.stream_hz = value;
             }
+        } else if let Some(rest) = text.strip_prefix("ok pscale ") {
+            if let Ok(value) = rest.trim().parse::<f32>() {
+                self.pscale = value;
+            }
+        } else if let Some(rest) = text.strip_prefix("ok vmax ") {
+            if let Ok(value) = rest.trim().parse::<f32>() {
+                self.vmax_deg_s = value;
+            }
+        } else if let Some(rest) = text.strip_prefix("ok home ") {
+            if let Ok(value) = rest.trim().parse::<f32>() {
+                self.home_bias_deg = value;
+            }
         }
     }
 
@@ -404,6 +628,14 @@ impl ConsoleApp {
             return;
         }
         let now = Instant::now();
+        if let Some(expire) = self.demo_test_expire {
+            if now >= expire {
+                self.applied_test_left = 0.0;
+                self.applied_test_right = 0.0;
+                self.demo_test_expire = None;
+                self.log(Level::Info, "demo: spin test auto-stop (5 s)");
+            }
+        }
         if now.duration_since(self.last_demo_at) < Duration::from_millis(20) {
             return;
         }
@@ -448,8 +680,57 @@ impl ConsoleApp {
             roll_zero_offset_deg: Some(self.roll_zero_offset_deg.unwrap_or(-0.6)),
             level_deg: Some(self.level_deg.unwrap_or(self.trim_deg)),
             armed: Some(false),
+            test_left_units: Some(self.applied_test_left),
+            test_right_units: Some(self.applied_test_right),
+            torque_common_units: Some((pitch * 60.0).clamp(-1000.0, 1000.0)),
+            pitch_ref_deg: Some(0.0),
+            pitch_demand_deg: Some(pitch * 0.5),
+            slope_trim_deg: Some(0.5 * (t * 0.07).sin()),
+            position_m: Some(0.2 * (t * 0.1).sin()),
+            balance_mode: Some(0),
         });
         self.telemetry_at = Some(now);
+    }
+
+    /// Synthetic `stat` for demo mode: every field populated so the
+    /// diagnostics panel has something to show without the robot.
+    fn demo_stat(&self) -> Stat {
+        let t = self.demo_started.elapsed().as_secs_f32();
+        Stat {
+            uptime_s: t,
+            loop_hz: 200,
+            stream_hz: self.stream_hz,
+            trim_deg: self.trim_deg,
+            estop: self.demo_estop,
+            steps: (t * 200.0) as u32,
+            imu_samples: (t * 200.0) as u32,
+            imu_errors: 0,
+            imu_code: 0,
+            fb_frames: (t * 100.0) as u32,
+            fb_discarded: 0,
+            link_bytes: Some((t * 1800.0) as u32),
+            link_fresh: Some(true),
+            stop_reason: Some("none".to_owned()),
+            zero_deg: Some(self.zero_offset_deg.unwrap_or(1.8)),
+            zroll_deg: Some(self.roll_zero_offset_deg.unwrap_or(-0.6)),
+            level_deg: Some(self.level_deg.unwrap_or(self.trim_deg)),
+            mount: Some(self.mount),
+            armed: Some(false),
+            home_deg: Some(self.home_bias_deg),
+            fall_events: Some(0),
+            ref_vmax_deg_s: Some(self.vmax_deg_s),
+            kp_nm_per_rad: Some(28.6 * self.pscale),
+            kd_nm_per_rad_s: Some(7.2 * self.pscale),
+            position_gain_per_s: Some(0.4),
+            velocity_gain_per_s: Some(1.8),
+            trim_gain_rad_per_m_s: Some(0.010),
+            demand_limit_deg: Some(8.0),
+            trim_limit_deg: Some(20.0),
+            zero_captured: Some(true),
+            level_captured: Some(true),
+            pscale: Some(self.pscale),
+            raw: "demo stat".to_owned(),
+        }
     }
 
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
@@ -469,6 +750,7 @@ impl ConsoleApp {
                 input.key_pressed(egui::Key::L),
             )
         });
+        let wizard_busy = self.autocal.running();
 
         if keys.0 {
             self.nudge_speed(0.1);
@@ -491,10 +773,10 @@ impl ConsoleApp {
         if keys.6 {
             self.clear_estop();
         }
-        if keys.7 {
+        if keys.7 && !wizard_busy {
             self.calibrate_zero();
         }
-        if keys.8 {
+        if keys.8 && !wizard_busy {
             self.calibrate_level();
         }
     }
@@ -518,6 +800,164 @@ impl ConsoleApp {
     /// True while the guided mount wizard owns the sweep.
     fn axis_cal_running(&self) -> bool {
         self.axis_cal.running()
+    }
+
+    /// True while the auto-calibration wizard owns the calibration flow.
+    fn autocal_running(&self) -> bool {
+        self.autocal.running()
+    }
+
+    /// Start the auto-calibration wizard: capture `zero` at the upright
+    /// pose, then `level` at the balance stance, both triggered by measured
+    /// stillness instead of a button press.
+    fn autocal_start(&mut self) {
+        if !self.demo && !self.connected {
+            self.log(
+                Level::Error,
+                "auto-calibration needs a live link to the firmware (or demo mode)",
+            );
+            return;
+        }
+        if self.estop_latched() {
+            self.log(Level::Warn, "e-stop latched: clear it before calibrating");
+            return;
+        }
+        self.autocal_saved_stream = self.stream_hz;
+        if self.stream_hz != 50 {
+            self.send("stream 50");
+        }
+        self.autocal = AutoCal::WaitingUpright {
+            still: StillnessTracker::new(),
+            started: Instant::now(),
+        };
+        self.log(
+            Level::Info,
+            "auto-calibration: hold the robot UPRIGHT and dead still; capturing zero when it is still",
+        );
+    }
+
+    /// Abort the wizard and restore the stream rate.
+    fn autocal_cancel(&mut self) {
+        if !self.autocal.running() {
+            return;
+        }
+        let stream = self.autocal_saved_stream;
+        if self.stream_hz != stream {
+            self.send(format!("stream {stream}"));
+        }
+        self.autocal = AutoCal::Idle;
+        self.log(Level::Info, "auto-calibration cancelled");
+    }
+
+    /// Fail the wizard with a reason and restore the stream rate.
+    fn autocal_fail(&mut self, reason: &str) {
+        let stream = self.autocal_saved_stream;
+        if self.stream_hz != stream {
+            self.send(format!("stream {stream}"));
+        }
+        self.autocal = AutoCal::Failed {
+            reason: reason.to_owned(),
+        };
+        self.log(Level::Error, format!("auto-calibration failed: {reason}"));
+    }
+
+    /// Complete the wizard and restore the stream rate.
+    fn autocal_done(&mut self) {
+        let stream = self.autocal_saved_stream;
+        if self.stream_hz != stream {
+            self.send(format!("stream {stream}"));
+        }
+        self.autocal = AutoCal::Done;
+        self.log(
+            Level::Info,
+            "auto-calibration done: zero and level captured while still",
+        );
+    }
+
+    /// Advance the wizard from the latest telemetry.
+    fn update_autocal(&mut self) {
+        const PHASE_TIMEOUT: Duration = Duration::from_secs(30);
+        const REPLY_TIMEOUT: Duration = Duration::from_secs(4);
+
+        if self.estop_latched() && self.autocal.running() {
+            self.autocal_fail("e-stop latched");
+            return;
+        }
+
+        match &mut self.autocal {
+            AutoCal::WaitingUpright { still, started } => {
+                if started.elapsed() > PHASE_TIMEOUT {
+                    self.autocal_fail(
+                        "the robot never became still at the upright pose; hold it motionless and retry",
+                    );
+                    return;
+                }
+                let quiet = self.demo
+                    || self
+                        .telemetry
+                        .as_ref()
+                        .map(|t| still.update(t.gyro_y_dps, t.gyro_x_dps, t.gyro_z_dps))
+                        .unwrap_or(false);
+                if quiet {
+                    self.send("zero");
+                    self.autocal = AutoCal::AwaitingZero {
+                        started: Instant::now(),
+                    };
+                    self.log(
+                        Level::Info,
+                        "auto-calibration: zero sent; now hold the BALANCE STANCE, dead still",
+                    );
+                }
+            }
+            AutoCal::AwaitingZero { started } => {
+                if self.demo {
+                    self.zero_offset_deg = Some(1.8);
+                    self.autocal = AutoCal::WaitingStance {
+                        still: StillnessTracker::new(),
+                        started: Instant::now(),
+                    };
+                    return;
+                }
+                if started.elapsed() > REPLY_TIMEOUT {
+                    self.autocal_fail("no reply to `zero`");
+                }
+            }
+            AutoCal::WaitingStance { still, started } => {
+                if started.elapsed() > PHASE_TIMEOUT {
+                    self.autocal_fail(
+                        "the robot never became still at the balance stance; hold it motionless and retry",
+                    );
+                    return;
+                }
+                let quiet = self.demo
+                    || self
+                        .telemetry
+                        .as_ref()
+                        .map(|t| still.update(t.gyro_y_dps, t.gyro_x_dps, t.gyro_z_dps))
+                        .unwrap_or(false);
+                if quiet {
+                    self.send("level");
+                    self.autocal = AutoCal::AwaitingLevel {
+                        started: Instant::now(),
+                    };
+                    self.log(
+                        Level::Info,
+                        "auto-calibration: level sent; references are captured",
+                    );
+                }
+            }
+            AutoCal::AwaitingLevel { started } => {
+                if self.demo {
+                    self.level_deg = Some(0.3);
+                    self.autocal_done();
+                    return;
+                }
+                if started.elapsed() > REPLY_TIMEOUT {
+                    self.autocal_fail("no reply to `level`");
+                }
+            }
+            AutoCal::Idle | AutoCal::Done | AutoCal::Failed { .. } => {}
+        }
     }
 
     fn axis_cal_sample(&mut self, pitch_deg: f32, roll_deg: f32) {
@@ -693,13 +1133,49 @@ impl ConsoleApp {
         self.send(format!("steer {:.1}", self.applied_steer_deg));
     }
 
+    /// Send a bench spin-test request. `0` stops the test. Torque is in
+    /// EFeru command units; the firmware clamps to ±300, slews the wheels up
+    /// smoothly and auto-stops the request after five seconds.
+    fn apply_test(&mut self, units: i32) {
+        let clamped = units.clamp(-300, 300);
+        if clamped != 0 && self.estop_latched() {
+            self.log(Level::Warn, "e-stop latched: clear it before the spin test");
+            return;
+        }
+        if clamped != 0 && self.armed {
+            self.log(
+                Level::Warn,
+                "balance law armed: disarm it before the spin test",
+            );
+            return;
+        }
+        self.test_setpoint = clamped;
+        if clamped == 0 {
+            self.applied_test_left = 0.0;
+            self.applied_test_right = 0.0;
+            self.demo_test_expire = None;
+        } else if self.demo {
+            self.applied_test_left = clamped as f32;
+            self.applied_test_right = clamped as f32;
+            // The firmware drops every accepted request after five seconds;
+            // the demo mirrors that so the panel behaves the same.
+            self.demo_test_expire = Some(Instant::now() + Duration::from_secs(5));
+        }
+        self.send(format!("test {clamped}"));
+    }
+
     fn zero(&mut self) {
         self.speed_setpoint = 0.0;
         self.steer_setpoint_deg = 0.0;
         self.applied_speed = 0.0;
         self.applied_steer_deg = 0.0;
+        self.test_setpoint = 0;
+        self.applied_test_left = 0.0;
+        self.applied_test_right = 0.0;
+        self.demo_test_expire = None;
         self.send("speed 0");
         self.send("steer 0");
+        self.send("test 0");
         self.log(Level::Info, "soft stop: setpoints zeroed");
     }
 
@@ -709,7 +1185,12 @@ impl ConsoleApp {
         self.steer_setpoint_deg = 0.0;
         self.applied_speed = 0.0;
         self.applied_steer_deg = 0.0;
+        self.test_setpoint = 0;
+        self.applied_test_left = 0.0;
+        self.applied_test_right = 0.0;
+        self.demo_test_expire = None;
         self.send("estop");
+        self.send("test 0");
         self.send("speed 0");
         self.send("steer 0");
         self.log(Level::Error, "EMERGENCY STOP requested");
@@ -723,15 +1204,41 @@ impl ConsoleApp {
 
     fn send(&mut self, line: impl Into<String>) {
         let line = line.into();
+        let quiet = line == "stat" && std::mem::take(&mut self.stat_log_quiet);
         if self.demo {
-            self.log(Level::Tx, format!("demo -> {line}"));
+            if !quiet {
+                self.log(Level::Tx, format!("demo -> {line}"));
+            }
+            if line.trim_start() == "stat" {
+                self.stat = Some(self.demo_stat());
+            }
+            if let Some(recorder) = &mut self.recorder {
+                recorder.record_action("tx", &line);
+            }
             return;
         }
         let sent = self.link.as_ref().map(|link| link.send(line.clone()));
         match sent {
-            Some(true) => self.log(Level::Tx, line),
-            Some(false) => self.log(Level::Warn, format!("command dropped: {line}")),
-            None => self.log(Level::Warn, format!("link down: {line}")),
+            Some(true) => {
+                if let Some(recorder) = &mut self.recorder {
+                    recorder.record_action("tx", &line);
+                }
+                if !quiet {
+                    self.log(Level::Tx, line);
+                }
+            }
+            Some(false) => {
+                if let Some(recorder) = &mut self.recorder {
+                    recorder.record_action("tx-drop", &line);
+                }
+                self.log(Level::Warn, format!("command dropped: {line}"));
+            }
+            None => {
+                if let Some(recorder) = &mut self.recorder {
+                    recorder.record_action("tx-down", &line);
+                }
+                self.log(Level::Warn, format!("link down: {line}"));
+            }
         }
     }
 
@@ -767,6 +1274,9 @@ impl ConsoleApp {
                     Level::Info,
                     "link closed: firmware e-stop latched and setpoints zeroed",
                 );
+                if let Some(recorder) = &mut self.recorder {
+                    recorder.record_action("sys", "link closed by the console");
+                }
             }
         }
     }
@@ -786,10 +1296,62 @@ impl ConsoleApp {
             self.applied_speed = 0.0;
             self.applied_steer_deg = 0.0;
             self.log(Level::Info, "demo mode enabled");
+            if let Some(recorder) = &mut self.recorder {
+                recorder.record_action("ui", "demo mode enabled");
+            }
         } else {
             self.telemetry = None;
             self.telemetry_at = None;
             self.log(Level::Info, "demo mode disabled");
+            if let Some(recorder) = &mut self.recorder {
+                recorder.record_action("ui", "demo mode disabled");
+            }
+        }
+    }
+
+    fn toggle_recording(&mut self) {
+        if let Some(recorder) = self.recorder.take() {
+            let telemetry_path = recorder.telemetry_path().to_path_buf();
+            let actions_path = recorder.actions_path().to_path_buf();
+            let telemetry_rows = recorder.telemetry_rows();
+            let action_rows = recorder.action_rows();
+            let mut recorder = recorder;
+            recorder.flush();
+            self.log(
+                Level::Info,
+                format!(
+                    "recording stopped: {telemetry_rows} telemetry rows -> {}, {action_rows} action rows -> {}",
+                    telemetry_path.display(),
+                    actions_path.display(),
+                ),
+            );
+            return;
+        }
+        let dir = match std::env::current_dir() {
+            Ok(dir) => dir,
+            Err(error) => {
+                self.log(
+                    Level::Error,
+                    format!("cannot determine the working directory: {error}"),
+                );
+                return;
+            }
+        };
+        match record::start(&dir) {
+            Ok(recorder) => {
+                self.log(
+                    Level::Info,
+                    format!(
+                        "recording -> {} and {}",
+                        recorder.telemetry_path().display(),
+                        recorder.actions_path().display(),
+                    ),
+                );
+                self.recorder = Some(recorder);
+            }
+            Err(error) => {
+                self.log(Level::Error, format!("cannot start the recording: {error}"));
+            }
         }
     }
 
@@ -812,10 +1374,14 @@ impl ConsoleApp {
     }
 
     fn log(&mut self, level: Level, text: impl Into<String>) {
+        let text = text.into();
+        if let Some(event_log) = &mut self.event_log {
+            event_log.record(level.tag(), &text);
+        }
         self.events.push_back(LogEntry {
             at: Instant::now(),
             level,
-            text: text.into(),
+            text,
         });
         while self.events.len() > 500 {
             self.events.pop_front();
@@ -916,7 +1482,11 @@ impl ConsoleApp {
                     .show(ui, |ui| {
                         self.link_controls(ui);
                         self.drive_controls(ui);
+                        self.motor_test_controls(ui);
+                        self.balance_controls(ui);
                         self.calibration_controls(ui);
+                        self.home_controls(ui);
+                        self.diagnostics_controls(ui);
                         self.system_controls(ui);
                     });
             });
@@ -1029,9 +1599,79 @@ impl ConsoleApp {
         );
     }
 
+    fn motor_test_controls(&mut self, ui: &mut egui::Ui) {
+        section(ui, "MOTOR TEST (bench)");
+        let latched = self.estop_latched();
+        let locked = latched || self.armed;
+        ui.label(
+            RichText::new("Bench use only: hold the robot or keep the wheels clear.")
+                .size(10.0)
+                .color(theme::AMBER),
+        );
+        ui.add_enabled_ui(!locked, |ui| {
+            ui.add(
+                egui::Slider::new(&mut self.test_setpoint, -300..=300)
+                    .text("Torque")
+                    .step_by(10.0),
+            );
+            ui.horizontal(|ui| {
+                for preset in [-150, -75, 75, 150] {
+                    if ui.button(format!("{preset:+}")).clicked() {
+                        self.apply_test(preset);
+                    }
+                }
+            });
+            if ui.button("Apply torque").clicked() {
+                self.apply_test(self.test_setpoint);
+            }
+        });
+        let stop = egui::Button::new(RichText::new("STOP (0)").strong().color(Color32::WHITE))
+            .fill(theme::RED)
+            .min_size(egui::vec2(ui.available_width(), 32.0));
+        if ui.add(stop).clicked() {
+            self.test_setpoint = 0;
+            self.apply_test(0);
+        }
+        ui.label(
+            RichText::new(format!(
+                "applied: L {:+.0} · R {:+.0} units",
+                self.applied_test_left, self.applied_test_right
+            ))
+            .monospace()
+            .size(11.0)
+            .color(theme::MUTED),
+        );
+        if self.applied_test_left != 0.0 || self.applied_test_right != 0.0 {
+            ui.label(
+                RichText::new("MOTOR TEST ACTIVE — auto-stops 5 s after the last command")
+                    .color(theme::AMBER)
+                    .strong(),
+            );
+        }
+        if latched {
+            ui.label(
+                RichText::new("E-stop latched: spin test locked")
+                    .color(theme::RED)
+                    .strong(),
+            );
+        } else if self.armed {
+            ui.label(
+                RichText::new("Balance law armed: spin test locked (disarm first)")
+                    .color(theme::AMBER)
+                    .strong(),
+            );
+        }
+        ui.label(
+            RichText::new("±300 units max, ramped start. ±1000 units = full motor current.")
+                .size(10.0)
+                .color(theme::MUTED),
+        );
+    }
+
     fn calibration_controls(&mut self, ui: &mut egui::Ui) {
         section(ui, "CALIBRATION");
-        let busy = self.axis_cal_running();
+        self.autocal_ui(ui);
+        let busy = self.axis_cal_running() || self.autocal_running();
         ui.add_enabled_ui(!busy, |ui| {
             ui.horizontal(|ui| {
                 ui.label("Mount");
@@ -1174,6 +1814,31 @@ impl ConsoleApp {
                 }
             });
         }
+        let recording = self.recorder.is_some();
+        let record_label = match &self.recorder {
+            Some(recorder) => format!(
+                "STOP recording ({} telem / {} actions)",
+                recorder.telemetry_rows(),
+                recorder.action_rows()
+            ),
+            None => "Record session → CSV".to_owned(),
+        };
+        let record_button = egui::Button::new(RichText::new(record_label).strong())
+            .min_size(egui::vec2(ui.available_width(), 30.0));
+        if ui.add(record_button).clicked() {
+            self.toggle_recording();
+        }
+        ui.label(
+            RichText::new(
+                "Writes jbot-telemetry-*.csv (attitude, rates, rpm, torque) and jbot-actions-*.csv (every command sent, every reply, connect events) to the working directory.",
+            )
+            .size(10.0)
+            .color(theme::MUTED),
+        );
+        if recording {
+            ui.label(RichText::new("RECORDING ACTIVE").color(theme::RED).strong());
+        }
+        ui.add_space(8.0);
         ui.label(
             RichText::new(
                 "On quit the console latches e-stop, zeros speed and steering, then closes the port.",
@@ -1188,6 +1853,316 @@ impl ConsoleApp {
             )
             .size(10.0)
             .color(theme::MUTED),
+        );
+    }
+
+    fn balance_controls(&mut self, ui: &mut egui::Ui) {
+        section(ui, "BALANCE");
+        let telemetry = self.telemetry.clone();
+        let stat = self.stat.clone();
+        ui.horizontal_wrapped(|ui| {
+            if let Some(telemetry) = &telemetry {
+                if let Some(mode) = telemetry.balance_mode {
+                    let color = match mode {
+                        2 => theme::GREEN,
+                        3 => theme::AMBER,
+                        4 => theme::RED,
+                        _ => theme::MUTED,
+                    };
+                    chip(ui, "MODE", balance_mode_name(Some(mode)).to_owned(), color);
+                }
+            }
+            if let Some(stat) = &stat {
+                if let Some(stop) = &stat.stop_reason {
+                    let color = if stop == "none" {
+                        theme::GREEN
+                    } else {
+                        theme::RED
+                    };
+                    chip(ui, "STOP", stop.clone(), color);
+                }
+                if let Some(fall) = stat.fall_events {
+                    if fall > 0 {
+                        chip(ui, "FALL", fall.to_string(), theme::RED);
+                    }
+                }
+            }
+        });
+
+        if let Some(t) = &telemetry {
+            ui.label(
+                RichText::new(format!(
+                    "pitch {:+.2}° · ref {} · dem {} · trim {} · x {}",
+                    t.pitch_deg,
+                    opt_signed(t.pitch_ref_deg, 2),
+                    opt_signed(t.pitch_demand_deg, 2),
+                    opt_signed(t.slope_trim_deg, 2),
+                    opt_signed(t.position_m, 3),
+                ))
+                .monospace()
+                .size(11.0)
+                .color(theme::TEXT),
+            );
+            let trq = t.torque_common_units.unwrap_or(0.0);
+            let trq_color = if trq.abs() > 800.0 {
+                theme::RED
+            } else if trq.abs() > 500.0 {
+                theme::AMBER
+            } else {
+                theme::ACCENT
+            };
+            ui.label(
+                RichText::new(format!("balance torque {trq:+.0} / ±1000 units"))
+                    .monospace()
+                    .size(10.0)
+                    .color(theme::MUTED),
+            );
+            centered_bar(ui, trq, 1000.0, trq_color);
+            if let (Some(left), Some(right)) = (t.test_left_units, t.test_right_units) {
+                ui.label(
+                    RichText::new(format!("spin test L {left:+.0} · R {right:+.0} units"))
+                        .monospace()
+                        .size(10.0)
+                        .color(theme::MUTED),
+                );
+            }
+        } else {
+            ui.label(RichText::new("--").color(theme::MUTED));
+        }
+
+        if let Some(stat) = &stat {
+            ui.label(
+                RichText::new(format!(
+                    "effective: kp {} · kd {} · kpos {} · kv {} · ki {}",
+                    opt_f32(stat.kp_nm_per_rad, 1),
+                    opt_f32(stat.kd_nm_per_rad_s, 1),
+                    opt_f32(stat.position_gain_per_s, 2),
+                    opt_f32(stat.velocity_gain_per_s, 2),
+                    opt_f32(stat.trim_gain_rad_per_m_s, 3),
+                ))
+                .monospace()
+                .size(10.0)
+                .color(theme::MUTED),
+            );
+            ui.label(
+                RichText::new(format!(
+                    "zero captured {} · level captured {} · mount {} ({})",
+                    stat.zero_captured.map_or("?".to_owned(), |v| if v {
+                        "yes".to_owned()
+                    } else {
+                        "NO".to_owned()
+                    }),
+                    stat.level_captured.map_or("?".to_owned(), |v| if v {
+                        "yes".to_owned()
+                    } else {
+                        "NO".to_owned()
+                    }),
+                    stat.mount.map_or("?".to_owned(), |m| m.to_string()),
+                    stat.mount.map_or("unknown", mount_name),
+                ))
+                .monospace()
+                .size(10.0)
+                .color(theme::TEXT),
+            );
+        } else {
+            ui.label(
+                RichText::new("press Stat or enable auto-poll for the law internals")
+                    .size(10.0)
+                    .color(theme::MUTED),
+            );
+        }
+    }
+
+    fn home_controls(&mut self, ui: &mut egui::Ui) {
+        section(ui, "HOME & RAMP");
+        ui.add(
+            egui::Slider::new(&mut self.home_bias_deg, -5.0..=5.0)
+                .text("Home bias")
+                .suffix(" °")
+                .step_by(0.1),
+        );
+        ui.horizontal(|ui| {
+            if ui.button("Apply home").clicked() {
+                self.send(format!("home {:.2}", self.home_bias_deg));
+            }
+            if ui.button("Home = level").clicked() {
+                self.home_bias_deg = 0.0;
+                self.send("home 0");
+            }
+            if let Some(home) = self.stat.as_ref().and_then(|stat| stat.home_deg) {
+                ui.label(
+                    RichText::new(format!("home {:+.2}°", home))
+                        .monospace()
+                        .size(11.0)
+                        .color(theme::TEXT),
+                );
+            }
+        });
+        ui.label(
+            RichText::new(
+                "posture bias from the captured level; the reference ramps there smoothly",
+            )
+            .size(10.0)
+            .color(theme::MUTED),
+        );
+        ui.add(
+            egui::Slider::new(&mut self.vmax_deg_s, 0.0..=15.0)
+                .text("Ramp rate")
+                .suffix(" °/s")
+                .step_by(0.5),
+        );
+        ui.horizontal(|ui| {
+            if ui.button("Apply vmax").clicked() {
+                self.send(format!("vmax {:.2}", self.vmax_deg_s));
+            }
+            if let Some(vmax) = self.stat.as_ref().and_then(|stat| stat.ref_vmax_deg_s) {
+                ui.label(
+                    RichText::new(format!("vmax {:.1} °/s", vmax))
+                        .monospace()
+                        .size(11.0)
+                        .color(theme::TEXT),
+                );
+            }
+        });
+
+        ui.add_space(6.0);
+        ui.add(
+            egui::Slider::new(&mut self.pscale, 0.0..=2.0)
+                .text("Power scale")
+                .step_by(0.05),
+        );
+        ui.horizontal(|ui| {
+            if ui.button("Apply pscale").clicked() {
+                self.send(format!("pscale {:.2}", self.pscale));
+            }
+            if ui.button("Reset 1.0").clicked() {
+                self.pscale = 1.0;
+                self.send("pscale 1");
+            }
+            if let Some(pscale) = self.stat.as_ref().and_then(|stat| stat.pscale) {
+                ui.label(
+                    RichText::new(format!("pscale {:.2}", pscale))
+                        .monospace()
+                        .size(11.0)
+                        .color(theme::AMBER),
+                );
+            }
+        });
+        ui.label(
+            RichText::new(
+                "bench scale on pitch kp/kd (and yaw): 1.0 = compiled tuning, 0 = law inert. Unscaled: fall guards, torque budget, trim. Runtime-only; resets to 1.0 at boot. Arm with 0.2–0.3 while holding the robot, then raise in steps.",
+            )
+            .size(10.0)
+            .color(theme::AMBER),
+        );
+    }
+
+    fn diagnostics_controls(&mut self, ui: &mut egui::Ui) {
+        section(ui, "DIAGNOSTICS");
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut self.auto_poll_stat, "Auto-poll stat (2 s)");
+            if ui.button("Poll now").clicked() {
+                self.send("stat");
+            }
+        });
+
+        let telemetry = self.telemetry.clone();
+        let stat = self.stat.clone();
+        egui::CollapsingHeader::new("All values")
+            .default_open(false)
+            .show(ui, |ui| {
+                let rows = debug_rows(telemetry.as_ref(), stat.as_ref());
+                egui::Grid::new("all_values_grid")
+                    .num_columns(2)
+                    .spacing([10.0, 2.0])
+                    .show(ui, |ui| {
+                        for (label, value) in rows {
+                            ui.label(RichText::new(label).size(10.0).color(theme::MUTED));
+                            ui.label(
+                                RichText::new(value)
+                                    .monospace()
+                                    .size(10.0)
+                                    .color(theme::TEXT),
+                            );
+                            ui.end_row();
+                        }
+                    });
+            });
+
+        egui::CollapsingHeader::new("Raw lines (last 200)")
+            .default_open(false)
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    if ui.button("Copy raw lines").clicked() {
+                        let text = self
+                            .raw_lines
+                            .iter()
+                            .cloned()
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        ui.ctx().copy_text(text);
+                    }
+                    if ui.button("Copy debug snapshot").clicked() {
+                        let rows = debug_rows(self.telemetry.as_ref(), self.stat.as_ref());
+                        let text = rows
+                            .into_iter()
+                            .map(|(label, value)| format!("{label}={value}"))
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        ui.ctx().copy_text(text);
+                    }
+                });
+                Frame::new()
+                    .fill(theme::CARD)
+                    .stroke(Stroke::new(1.0, theme::BORDER))
+                    .corner_radius(egui::CornerRadius::same(6))
+                    .inner_margin(Margin::same(6))
+                    .show(ui, |ui| {
+                        ScrollArea::vertical()
+                            .max_height(140.0)
+                            .stick_to_bottom(true)
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| {
+                                if self.raw_lines.is_empty() {
+                                    ui.label(
+                                        RichText::new("no raw lines yet")
+                                            .monospace()
+                                            .size(9.0)
+                                            .color(theme::MUTED),
+                                    );
+                                }
+                                for line in &self.raw_lines {
+                                    ui.label(
+                                        RichText::new(line)
+                                            .monospace()
+                                            .size(9.0)
+                                            .color(theme::TEXT),
+                                    );
+                                }
+                            });
+                    });
+            });
+
+        ui.horizontal(|ui| {
+            let response = ui.add(
+                egui::TextEdit::singleline(&mut self.raw_input)
+                    .hint_text("raw command, e.g. stat")
+                    .desired_width(ui.available_width() - 62.0),
+            );
+            let send = ui.button("Send").clicked()
+                || (response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
+            if send {
+                let line = self.raw_input.trim().to_owned();
+                if !line.is_empty() {
+                    self.send(line);
+                    self.raw_input.clear();
+                }
+            }
+        });
+        ui.label(
+            RichText::new("one firmware line per send; the exact bytes the console itself uses")
+                .size(9.0)
+                .color(theme::MUTED),
         );
     }
 
@@ -1464,6 +2439,29 @@ impl ConsoleApp {
                         theme::MUTED
                     },
                 );
+                chip(
+                    ui,
+                    "ESTOP",
+                    if telemetry.estop {
+                        "LATCHED".to_owned()
+                    } else {
+                        "ok".to_owned()
+                    },
+                    if telemetry.estop {
+                        theme::RED
+                    } else {
+                        theme::GREEN
+                    },
+                );
+                if let Some(mode) = telemetry.balance_mode {
+                    let color = match mode {
+                        2 => theme::GREEN,
+                        3 | 1 => theme::AMBER,
+                        4 => theme::RED,
+                        _ => theme::MUTED,
+                    };
+                    chip(ui, "MODE", balance_mode_name(Some(mode)).to_owned(), color);
+                }
             } else {
                 ui.label(
                     RichText::new("waiting for telemetry")
@@ -1478,6 +2476,19 @@ impl ConsoleApp {
                     format!("{:.1} s", stat.uptime_s),
                     theme::MUTED,
                 );
+                if let Some(stop) = &stat.stop_reason {
+                    let color = if stop == "none" {
+                        theme::GREEN
+                    } else {
+                        theme::RED
+                    };
+                    chip(ui, "STOP", stop.clone(), color);
+                }
+                if let Some(fall) = stat.fall_events {
+                    if fall > 0 {
+                        chip(ui, "FALL", fall.to_string(), theme::RED);
+                    }
+                }
             }
         });
     }
@@ -1603,7 +2614,98 @@ impl ConsoleApp {
 }
 
 impl ConsoleApp {
-    /// Render the guided mount (axis) calibration wizard.
+    /// Render the SET HOME (auto-calibration) wizard.
+    fn autocal_ui(&mut self, ui: &mut egui::Ui) {
+        ui.label(
+            RichText::new(
+                "SET HOME — hold the pose, the console captures it once the robot is still.",
+            )
+            .size(10.0)
+            .color(theme::MUTED),
+        );
+        match &self.autocal {
+            AutoCal::Idle => {
+                let button = egui::Button::new(
+                    RichText::new("SET HOME")
+                        .strong()
+                        .size(14.0)
+                        .color(Color32::WHITE),
+                )
+                .fill(theme::ACCENT)
+                .min_size(egui::vec2(ui.available_width(), 34.0));
+                if ui.add(button).clicked() {
+                    self.autocal_start();
+                }
+            }
+            AutoCal::Done => {
+                ui.label(
+                    RichText::new("home set — references captured")
+                        .color(theme::GREEN)
+                        .strong(),
+                );
+                let button = egui::Button::new(RichText::new("Re-capture home").strong())
+                    .fill(theme::ACCENT)
+                    .min_size(egui::vec2(ui.available_width(), 30.0));
+                if ui.add(button).clicked() {
+                    self.autocal_start();
+                }
+            }
+            AutoCal::Failed { reason } => {
+                ui.label(
+                    RichText::new(format!("auto-calibration failed: {reason}")).color(theme::AMBER),
+                );
+                let button = egui::Button::new(RichText::new("Try again").strong())
+                    .fill(theme::ACCENT)
+                    .min_size(egui::vec2(ui.available_width(), 30.0));
+                if ui.add(button).clicked() {
+                    self.autocal_start();
+                }
+            }
+            AutoCal::WaitingUpright { still, .. } => {
+                ui.label(
+                    RichText::new("1/2  Hold the robot UPRIGHT and dead still.")
+                        .color(theme::ACCENT)
+                        .strong(),
+                );
+                ui.add(
+                    egui::ProgressBar::new(still.progress()).desired_width(ui.available_width()),
+                );
+                if ui.button("Cancel").clicked() {
+                    self.autocal_cancel();
+                }
+            }
+            AutoCal::AwaitingZero { .. } => {
+                ui.label(
+                    RichText::new("1/2  Capturing zero...")
+                        .color(theme::ACCENT)
+                        .strong(),
+                );
+                ui.add(egui::ProgressBar::new(1.0).desired_width(ui.available_width()));
+            }
+            AutoCal::WaitingStance { still, .. } => {
+                ui.label(
+                    RichText::new("2/2  Hold the BALANCE STANCE and dead still.")
+                        .color(theme::ACCENT)
+                        .strong(),
+                );
+                ui.add(
+                    egui::ProgressBar::new(still.progress()).desired_width(ui.available_width()),
+                );
+                if ui.button("Cancel").clicked() {
+                    self.autocal_cancel();
+                }
+            }
+            AutoCal::AwaitingLevel { .. } => {
+                ui.label(
+                    RichText::new("2/2  Capturing level...")
+                        .color(theme::ACCENT)
+                        .strong(),
+                );
+                ui.add(egui::ProgressBar::new(1.0).desired_width(ui.available_width()));
+            }
+        }
+    }
+
     fn axis_cal_ui(&mut self, ui: &mut egui::Ui) {
         egui::CollapsingHeader::new("Guided axis calibration")
             .default_open(false)
@@ -1772,7 +2874,9 @@ impl eframe::App for ConsoleApp {
         self.poll_link();
         self.update_demo();
         self.update_axis_cal();
+        self.update_autocal();
         self.handle_shortcuts(ui.ctx());
+        self.poll_stat();
         self.top_bar(ui);
         self.bottom_bar(ui);
         self.controls_panel(ui);
@@ -1854,6 +2958,200 @@ fn chip(ui: &mut egui::Ui, label: &str, value: String, color: Color32) {
                 ui.label(RichText::new(value).size(11.0).monospace().color(color));
             });
         });
+}
+
+/// Balance mode byte from the firmware, as a word.
+fn balance_mode_name(mode: Option<u8>) -> &'static str {
+    match mode {
+        Some(0) => "disarmed",
+        Some(1) => "transit",
+        Some(2) => "hold",
+        Some(3) => "recover",
+        Some(4) => "fall",
+        _ => "?",
+    }
+}
+
+/// Format an optional number with fixed precision, `--` when absent.
+fn opt_f32(value: Option<f32>, precision: usize) -> String {
+    value.map_or_else(|| "--".to_owned(), |v| format!("{:.*}", precision, v))
+}
+
+/// Same as [`opt_f32`] but always signed.
+fn opt_signed(value: Option<f32>, precision: usize) -> String {
+    value.map_or_else(|| "--".to_owned(), |v| format!("{:+.*}", precision, v))
+}
+
+/// Horizontal zero-centred bar for a signed value; the fill grows from the
+/// centre in the sign direction.
+fn centered_bar(ui: &mut egui::Ui, value: f32, max: f32, color: Color32) {
+    let width = ui.available_width();
+    let (rect, _response) = ui.allocate_exact_size(Vec2::new(width, 16.0), egui::Sense::hover());
+    let painter = ui.painter();
+    painter.rect_filled(rect, egui::CornerRadius::same(4), theme::CARD);
+    painter.rect_stroke(
+        rect,
+        egui::CornerRadius::same(4),
+        Stroke::new(1.0, theme::BORDER),
+        egui::StrokeKind::Inside,
+    );
+    let centre = rect.center().x;
+    let half = width * 0.5 - 3.0;
+    painter.line_segment(
+        [
+            egui::pos2(centre, rect.top() + 2.0),
+            egui::pos2(centre, rect.bottom() - 2.0),
+        ],
+        Stroke::new(1.0, theme::MUTED),
+    );
+    let fraction = (value / max).clamp(-1.0, 1.0);
+    let end = centre + fraction * half;
+    let fill = if fraction >= 0.0 {
+        egui::Rect::from_min_max(
+            egui::pos2(centre, rect.top() + 3.0),
+            egui::pos2(end, rect.bottom() - 3.0),
+        )
+    } else {
+        egui::Rect::from_min_max(
+            egui::pos2(end, rect.top() + 3.0),
+            egui::pos2(centre, rect.bottom() - 3.0),
+        )
+    };
+    if fraction.abs() > 0.005 {
+        painter.rect_filled(fill, egui::CornerRadius::same(3), color);
+    }
+}
+
+/// Every diagnostic value the console knows about, as label/value rows.
+/// Shared by the on-screen table and the clipboard snapshot.
+fn debug_rows(telemetry: Option<&Telemetry>, stat: Option<&Stat>) -> Vec<(&'static str, String)> {
+    fn yes_no(value: Option<bool>) -> String {
+        value.map_or_else(
+            || "--".to_owned(),
+            |v| if v { "yes".to_owned() } else { "no".to_owned() },
+        )
+    }
+    let mut rows: Vec<(&'static str, String)> = Vec::with_capacity(56);
+    let mut row = |label: &'static str, value: String| rows.push((label, value));
+
+    match telemetry {
+        Some(t) => {
+            row("tele.step", t.step.to_string());
+            row("tele.loop_hz", t.loop_hz.to_string());
+            row("tele.imu_fresh", yes_no(Some(t.imu_fresh)));
+            row("tele.cal", format!("{}/3", t.cal));
+            row("tele.sys_err", format!("0x{:02x}", t.sys_err));
+            row("tele.pitch_deg", format!("{:+.2}", t.pitch_deg));
+            row("tele.roll_deg", format!("{:+.2}", t.roll_deg));
+            row("tele.heading_deg", format!("{:+.2}", t.heading_deg));
+            row("tele.gyro_x_dps", format!("{:+.2}", t.gyro_x_dps));
+            row("tele.gyro_y_dps", format!("{:+.2}", t.gyro_y_dps));
+            row("tele.gyro_z_dps", format!("{:+.2}", t.gyro_z_dps));
+            row("tele.speed_left_rpm", t.speed_left_rpm.to_string());
+            row("tele.speed_right_rpm", t.speed_right_rpm.to_string());
+            row("tele.battery_v", format!("{:.2}", t.battery_v));
+            row("tele.board_temp_c", format!("{:.1}", t.board_temp_c));
+            row("tele.feedback_age_ms", t.feedback_age_ms.to_string());
+            row(
+                "tele.estop",
+                if t.estop {
+                    "LATCHED".to_owned()
+                } else {
+                    "clear".to_owned()
+                },
+            );
+            row("tele.vset_mps", format!("{:+.3}", t.speed_setpoint_mps));
+            row(
+                "tele.wset_deg_s",
+                format!("{:+.2}", t.steer_setpoint_deg_s()),
+            );
+            row(
+                "tele.mount",
+                t.mount
+                    .map_or_else(|| "--".to_owned(), |m| format!("{} {}", m, mount_name(m))),
+            );
+            row("tele.zero_deg", opt_signed(t.zero_offset_deg, 2));
+            row("tele.roll_zero_deg", opt_signed(t.roll_zero_offset_deg, 2));
+            row("tele.level_deg", opt_signed(t.level_deg, 2));
+            row("tele.armed", yes_no(t.armed));
+            row("tele.test_l_units", opt_signed(t.test_left_units, 0));
+            row("tele.test_r_units", opt_signed(t.test_right_units, 0));
+            row("tele.trq_units", opt_signed(t.torque_common_units, 0));
+            row("tele.ref_deg", opt_signed(t.pitch_ref_deg, 2));
+            row("tele.dem_deg", opt_signed(t.pitch_demand_deg, 2));
+            row("tele.trim_deg", opt_signed(t.slope_trim_deg, 2));
+            row("tele.x_m", opt_signed(t.position_m, 3));
+            row(
+                "tele.mode",
+                t.balance_mode.map_or_else(
+                    || "--".to_owned(),
+                    |m| format!("{} {}", m, balance_mode_name(Some(m))),
+                ),
+            );
+        }
+        None => row("tele.*", "no telemetry".to_owned()),
+    }
+
+    match stat {
+        Some(s) => {
+            row("stat.uptime_s", format!("{:.1}", s.uptime_s));
+            row("stat.loop_hz", s.loop_hz.to_string());
+            row("stat.stream_hz", s.stream_hz.to_string());
+            row("stat.trim_deg", format!("{:+.2}", s.trim_deg));
+            row(
+                "stat.estop",
+                if s.estop {
+                    "LATCHED".to_owned()
+                } else {
+                    "clear".to_owned()
+                },
+            );
+            row("stat.steps", s.steps.to_string());
+            row("stat.imu_samples", s.imu_samples.to_string());
+            row("stat.imu_errors", s.imu_errors.to_string());
+            row("stat.imu_code", s.imu_code.to_string());
+            row("stat.fb_frames", s.fb_frames.to_string());
+            row("stat.fb_discarded", s.fb_discarded.to_string());
+            row("stat.rx_bytes", opt_f32_u32(s.link_bytes));
+            row("stat.fb_ok", yes_no(s.link_fresh));
+            row(
+                "stat.stop_reason",
+                s.stop_reason.clone().unwrap_or_else(|| "--".to_owned()),
+            );
+            row("stat.zero_deg", opt_signed(s.zero_deg, 2));
+            row("stat.zroll_deg", opt_signed(s.zroll_deg, 2));
+            row("stat.level_deg", opt_signed(s.level_deg, 2));
+            row(
+                "stat.mount",
+                s.mount
+                    .map_or_else(|| "--".to_owned(), |m| format!("{} {}", m, mount_name(m))),
+            );
+            row("stat.armed", yes_no(s.armed));
+            row("stat.home_deg", opt_signed(s.home_deg, 2));
+            row(
+                "stat.fall_events",
+                s.fall_events
+                    .map_or_else(|| "--".to_owned(), |v| v.to_string()),
+            );
+            row("stat.vmax_deg_s", opt_f32(s.ref_vmax_deg_s, 2));
+            row("stat.kp_nm_per_rad", opt_f32(s.kp_nm_per_rad, 2));
+            row("stat.kd_nm_per_rad_s", opt_f32(s.kd_nm_per_rad_s, 2));
+            row("stat.kpos_per_s", opt_f32(s.position_gain_per_s, 3));
+            row("stat.kv_per_s", opt_f32(s.velocity_gain_per_s, 3));
+            row("stat.ki_rad_per_m_s", opt_f32(s.trim_gain_rad_per_m_s, 4));
+            row("stat.dem_limit_deg", opt_f32(s.demand_limit_deg, 1));
+            row("stat.trim_limit_deg", opt_f32(s.trim_limit_deg, 1));
+            row("stat.zcapt", yes_no(s.zero_captured));
+            row("stat.lcapt", yes_no(s.level_captured));
+            row("stat.pscale", opt_f32(s.pscale, 2));
+        }
+        None => row("stat.*", "press Stat or enable auto-poll".to_owned()),
+    }
+
+    fn opt_f32_u32(value: Option<u32>) -> String {
+        value.map_or_else(|| "--".to_owned(), |v| v.to_string())
+    }
+    rows
 }
 
 fn format_stamp(at: Instant, started: Instant) -> String {

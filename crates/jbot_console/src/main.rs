@@ -8,9 +8,11 @@
 
 mod app;
 mod attitude;
+mod autocal;
 mod axiscal;
 mod link;
 mod protocol;
+mod record;
 mod theme;
 
 use eframe::egui;

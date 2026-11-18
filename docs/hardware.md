@@ -97,10 +97,13 @@ wire stays live when the board is on and must never touch logic.
 
 | Device | Interface | Pins | Cable | Notes |
 |---|---|---|---|---|
-| Pico 2 W, torque link | Pico UART0 ↔ USART2 | GP0 TX → PA3 RX, GP1 RX ← PA2 TX | left | 115200 8N1, EFeru `TRQ_MODE` frames |
+| Pico 2 W, torque link | Pico UART0 ↔ USART2 | GP16 TX → PA3 RX, GP17 RX ← PA2 TX | left | 115200 8N1, EFeru `TRQ_MODE` frames |
 | Hip driver, stage 2 | USART3 | PB11 RX, PB10 TX | right | Free at stage 1; enabled when the hips exist |
 | Debug | SWD | PA13, PA14 | — | ST-Link, PlatformIO upload |
 | Charger sense | GPIO/ADC | PA12 | — | Read by the patched firmware and forwarded to the Pico, or wired to a Pico GPIO (open item) |
+
+The torque link originally ran on GP0/GP1 and was reworked to GP16/GP17 in
+November 2026; GP0/GP1 are spare. The pin map in §3.2 is the current wiring.
 
 The stock firmware must be rebuilt with `CTRL_MOD_REQ = TRQ_MODE` and the serial
 timeout shortened from 160 to 20 ticks (100 ms). No pin remap is needed: the
@@ -129,8 +132,8 @@ second firmware stack, and the mission computer already provides connectivity.
 
 | GPIO | Function | Direction | Peer | Notes |
 |---|---|---|---|---|
-| GP0 | UART0 TX | out | STM32 PA3 (USART2 RX) | Torque command frames |
-| GP1 | UART0 RX | in | STM32 PA2 (USART2 TX) | Feedback frames |
+| GP16 | UART0 TX | out | STM32 PA3 (USART2 RX) | Torque command frames |
+| GP17 | UART0 RX | in | STM32 PA2 (USART2 TX) | Feedback frames |
 | GP2 | I2C1 SDA | bidir | BNO055 SDA | 400 kHz, external pull-ups on the module |
 | GP3 | I2C1 SCL | out | BNO055 SCL | 400 kHz |
 | GP4 | UART1 TX | out | XR1 RX | CRSF 420 kbaud |
@@ -142,7 +145,8 @@ second firmware stack, and the mission computer already provides connectivity.
 | USB | CDC ACM | bidir | Host | Debug console and flashing |
 | SWD | SWDIO/SWCLK | bidir | Probe | `probe-rs`, `defmt` RTT |
 
-Reserved and unassigned: GP8, GP9, GP12-GP22, GP26-GP28 (ADC). Keep GP23-GP25
+Reserved and unassigned: GP0, GP1, GP8, GP9, GP12-GP15, GP18-GP22, GP26-GP28
+(ADC). GP16/GP17 carry the mainboard torque link. Keep GP23-GP25
 and the on-board regulator pins free. Do not use GP26-GP29 for the radio or the
 IMU harness if a future analog sense is added.
 

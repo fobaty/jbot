@@ -9,6 +9,28 @@ use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
 
+use jbot_pico_core::control::{StopReason, Tuning, MAX_PSCALE};
+use jbot_pico_core::mount::Mount;
+use jbot_pico_core::plant::PlantParams;
+use jbot_pico_core::spin::SpinPair;
+
+/// Proportional pitch gain as a multiple of the stability floor `A1 / A2`.
+/// Four is the design point: enough loop gain for a stiff stance without
+/// demanding torque the donor drive cannot deliver.
+pub const PITCH_MARGIN: f32 = 4.0;
+/// Closed-loop pitch damping ratio. Above 1.0 feels stiff but stays calm with
+/// the mainboard transport delay in the loop.
+pub const PITCH_DAMPING: f32 = 1.6;
+
+/// Balance tuning derived from the identified plant.
+///
+/// This is the single source of truth for the control gains: nothing else in
+/// the firmware carries a gain table. Replacing [`PlantParams::NOMINAL`] with
+/// a bench-identified plant changes the whole law coherently.
+pub fn tuning() -> Tuning {
+    Tuning::from_plant(&PlantParams::NOMINAL, PITCH_MARGIN, PITCH_DAMPING)
+}
+
 /// Nominal control loop rate, in hertz.
 pub const CONTROL_HZ: u32 = 200;
 /// Highest accepted telemetry rate, in hertz.
@@ -71,12 +93,41 @@ pub struct Telemetry {
     pub level_deg: f32,
     /// Operator-controlled arm latch; torque is produced only when true.
     pub armed: bool,
+    /// Applied spin-test wheel torques, in EFeru command units.
+    pub spin_left_units: f32,
+    /// Applied spin-test wheel torques, in EFeru command units.
+    pub spin_right_units: f32,
+    /// Applied balance-law common-mode torque (pre-mixer), command units.
+    pub balance_torque_common_units: f32,
+    /// Applied (ramped) pitch reference in degrees, zeroed-offset frame.
+    pub pitch_ref_deg: f32,
+    /// Total pitch offset demanded by the outer loops, degrees.
+    pub pitch_demand_deg: f32,
+    /// Learned slope trim, degrees.
+    pub slope_trim_deg: f32,
+    /// Travel since arming, metres, positive forward.
+    pub position_m: f32,
+    /// Balance mode: 0 disarmed, 1 transit, 2 hold, 3 recover, 4 fall.
+    pub balance_mode: u8,
 }
+
+/// Balance mode values carried by [`Telemetry::balance_mode`].
+pub const MODE_DISARMED: u8 = 0;
+/// Armed and ramping towards the home reference.
+pub const MODE_TRANSIT: u8 = 1;
+/// Armed and parked on the home reference.
+pub const MODE_HOLD: u8 = 2;
+/// Armed and |pitch| above the recover threshold.
+pub const MODE_RECOVER: u8 = 3;
+/// Armed and |pitch| passed the fail threshold; the law was latched off this tick.
+pub const MODE_FALL: u8 = 4;
 
 /// Latest snapshot, refreshed on every control step.
 pub static TELEMETRY: Signal<CriticalSectionRawMutex, Telemetry> = Signal::new();
 /// Ask the IMU task to re-run the BNO055 start-up sequence.
 pub static REINIT: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+/// Latest spin-test request, overwritten like every other command setpoint.
+pub static SPIN_REQUEST: Signal<CriticalSectionRawMutex, SpinPair> = Signal::new();
 
 /// Telemetry rate in hertz; zero disables the stream.
 static STREAM_HZ: AtomicU32 = AtomicU32::new(DEFAULT_STREAM_HZ);
@@ -90,9 +141,10 @@ static STEER_SETPOINT_BITS: AtomicU32 = AtomicU32::new(0);
 static ESTOP: AtomicBool = AtomicBool::new(false);
 /// Measured control loop rate, hertz.
 static LOOP_HZ: AtomicU32 = AtomicU32::new(0);
-/// BNO055 mount selector: 0 normal, 1 flip-x, 2 flip-y, 3..6 90-degree
-/// rotations.
-static MOUNT: AtomicU32 = AtomicU32::new(0);
+/// BNO055 mount selector: the bench chassis carries the module rotated
+/// 180 degrees about the robot X axis, so flip-x is the default. It remains
+/// selectable over USB; any change still requires re-capturing `zero`/`level`.
+static MOUNT: AtomicU32 = AtomicU32::new(Mount::Normal.as_u32());
 /// Whether the latest IMU sample used by the control loop is fresh.
 static IMU_FRESH: AtomicBool = AtomicBool::new(false);
 /// Operator-controlled arm latch for the balance law. Cleared at boot, by
@@ -112,6 +164,24 @@ static ZERO_ROLL_BITS: AtomicU32 = AtomicU32::new(0);
 static LATEST_MAPPED_PITCH_BITS: AtomicU32 = AtomicU32::new(0);
 /// Latest mapped (pre-zero) roll in degrees, stored as `f32` bits.
 static LATEST_MAPPED_ROLL_BITS: AtomicU32 = AtomicU32::new(0);
+/// Applied spin-test left torque, in command units, stored as `f32` bits.
+static SPIN_APPLIED_LEFT_BITS: AtomicU32 = AtomicU32::new(0);
+/// Applied spin-test right torque, in command units, stored as `f32` bits.
+static SPIN_APPLIED_RIGHT_BITS: AtomicU32 = AtomicU32::new(0);
+/// Applied balance-law common-mode torque, stored as `f32` bits.
+static BAL_TORQUE_COMMON_BITS: AtomicU32 = AtomicU32::new(0);
+/// Explicitly commanded home reference, radians, stored as `f32` bits.
+static HOME_TARGET_BITS: AtomicU32 = AtomicU32::new(0);
+/// Whether [`HOME_TARGET_BITS`] holds a commanded value.
+static HOME_TARGET_SET: AtomicBool = AtomicBool::new(false);
+/// Commanded reference rate, radians per second, stored as `f32` bits.
+/// Defaults to `reference::DEFAULT_V_MAX_RAD_S` (10 deg/s).
+static REF_VMAX_BITS: AtomicU32 =
+    AtomicU32::new(jbot_pico_core::reference::DEFAULT_V_MAX_RAD_S.to_bits());
+/// Runtime scale on the angular-output gains ([`Tuning::scaled_by`]),
+/// stored as `f32` bits. Runtime-only: resets to 1.0 at boot so a bench
+/// session cannot leak a weakened law into the next power-up.
+static PSCALE_BITS: AtomicU32 = AtomicU32::new(1.0f32.to_bits());
 
 /// IMU samples delivered to the control task.
 pub static IMU_SAMPLES: AtomicU32 = AtomicU32::new(0);
@@ -123,8 +193,47 @@ pub static IMU_LAST_ERROR: AtomicU32 = AtomicU32::new(0);
 pub static FB_FRAMES: AtomicU32 = AtomicU32::new(0);
 /// Control ticks since boot.
 pub static CONTROL_STEPS: AtomicU32 = AtomicU32::new(0);
+/// Times the balance law was latched off by the fall detector.
+pub static FALL_EVENTS: AtomicU32 = AtomicU32::new(0);
 /// Bytes discarded while resynchronising the feedback parser.
 pub static FB_DISCARDED: AtomicU32 = AtomicU32::new(0);
+/// Raw bytes received from the mainboard link, including bytes that never
+/// become a frame. Distinguishes a dead wire from a framing mismatch.
+pub static LINK_BYTES: AtomicU32 = AtomicU32::new(0);
+
+/// Last reason the balance supervisor latched off, stored as a
+/// [`StopReason::code`]; zero means none since the last arm or clear.
+static STOP_REASON: AtomicU32 = AtomicU32::new(0);
+/// Whether the control loop currently has fresh wheel-speed feedback.
+static LINK_FRESH: AtomicBool = AtomicBool::new(false);
+
+/// Record the supervisor decision that latched the law off.
+pub fn set_stop(reason: Option<StopReason>) {
+    STOP_REASON.store(
+        reason.map_or(0, |reason| u32::from(reason.code())),
+        Ordering::Relaxed,
+    );
+}
+
+/// Last recorded stop reason, if any.
+pub fn stop_reason() -> Option<StopReason> {
+    StopReason::from_code(STOP_REASON.load(Ordering::Relaxed) as u8)
+}
+
+/// Label of the last recorded stop reason, or `none`.
+pub fn stop_reason_label() -> &'static str {
+    stop_reason().map_or("none", StopReason::as_str)
+}
+
+/// Publish whether the control loop has fresh wheel-speed feedback.
+pub fn set_link_fresh(fresh: bool) {
+    LINK_FRESH.store(fresh, Ordering::Relaxed);
+}
+
+/// Freshness of the mainboard feedback as seen by the control loop.
+pub fn link_fresh() -> bool {
+    LINK_FRESH.load(Ordering::Relaxed)
+}
 
 /// Increment a counter.
 pub fn count(counter: &AtomicU32) {
@@ -159,6 +268,58 @@ pub fn set_pitch_trim_rad(rad: f32) {
     PITCH_TRIM_BITS.store(rad.to_bits(), Ordering::Relaxed);
 }
 
+/// Command the home reference to `rad`. Applies from the next control tick;
+/// the reference generator ramps there smoothly.
+pub fn set_home_target_rad(rad: f32) {
+    HOME_TARGET_BITS.store(rad.to_bits(), Ordering::Relaxed);
+    HOME_TARGET_SET.store(true, Ordering::Relaxed);
+}
+
+/// Drop the commanded home target; the reference falls back to the captured
+/// `level` trim.
+pub fn clear_home_target() {
+    HOME_TARGET_SET.store(false, Ordering::Relaxed);
+}
+
+/// Commanded home reference, radians, or `None` when unset.
+pub fn home_target_rad() -> Option<f32> {
+    if HOME_TARGET_SET.load(Ordering::Relaxed) {
+        Some(f32::from_bits(HOME_TARGET_BITS.load(Ordering::Relaxed)))
+    } else {
+        None
+    }
+}
+
+/// Commanded reference rate, radians per second.
+pub fn ref_v_max_rad_s() -> f32 {
+    f32::from_bits(REF_VMAX_BITS.load(Ordering::Relaxed))
+}
+
+/// Runtime scale on the angular-output gains; 1.0 is the compiled tuning.
+pub fn pscale() -> f32 {
+    f32::from_bits(PSCALE_BITS.load(Ordering::Relaxed))
+}
+
+/// Set the runtime scale on the angular-output gains, clamped to
+/// 0..=[`MAX_PSCALE`]. Non-finite input resets to the neutral 1.0.
+/// Returns the value that was stored.
+pub fn set_pscale(value: f32) -> f32 {
+    let clamped = if value.is_finite() {
+        value.clamp(0.0, MAX_PSCALE)
+    } else {
+        1.0
+    };
+    PSCALE_BITS.store(clamped.to_bits(), Ordering::Relaxed);
+    clamped
+}
+
+/// Set the commanded reference rate, radians per second. Clamping is the
+/// caller's responsibility; [`crate::console`] enforces the `0..=60 deg/s`
+/// range and `PitchReference::set_v_max` clamps the rest.
+pub fn set_ref_v_max_rad_s(rad_s: f32) {
+    REF_VMAX_BITS.store(rad_s.to_bits(), Ordering::Relaxed);
+}
+
 /// Forward/backward speed setpoint in meters per second.
 pub fn speed_setpoint_mps() -> f32 {
     f32::from_bits(SPEED_SETPOINT_BITS.load(Ordering::Relaxed))
@@ -185,11 +346,13 @@ pub fn estop() -> bool {
 }
 
 /// Set or clear the emergency stop latch. Latching the stop also disarms
-/// the balance law; clearing the stop never re-arms it.
+/// the balance law and drops any pending spin-test request; clearing the
+/// stop never re-arms anything.
 pub fn set_estop(active: bool) {
     ESTOP.store(active, Ordering::Relaxed);
     if active {
         ARMED.store(false, Ordering::Relaxed);
+        clear_spin_request();
     }
 }
 
@@ -231,6 +394,11 @@ pub fn armed() -> bool {
 /// Arm or disarm the balance law.
 pub fn set_armed(armed: bool) {
     ARMED.store(armed, Ordering::Relaxed);
+    if armed {
+        // A fresh attempt supersedes the last latch reason; the supervisor
+        // records a new one in the same control tick if it refuses.
+        set_stop(None);
+    }
 }
 
 /// True once the zero offset has been captured this session.
@@ -279,6 +447,40 @@ pub fn set_latest_mapped_attitude(pitch_deg: f32, roll_deg: f32) {
     LATEST_MAPPED_ROLL_BITS.store(roll_deg.to_bits(), Ordering::Relaxed);
 }
 
+/// Request a spin test; the latest request wins.
+pub fn request_spin(pair: SpinPair) {
+    SPIN_REQUEST.signal(pair);
+}
+
+/// Drop any pending spin-test request (e-stop or arm invalidates it).
+pub fn clear_spin_request() {
+    SPIN_REQUEST.reset();
+}
+
+/// Publish the spin-test torques applied on this tick.
+pub fn set_spin_applied(left: f32, right: f32) {
+    SPIN_APPLIED_LEFT_BITS.store(left.to_bits(), Ordering::Relaxed);
+    SPIN_APPLIED_RIGHT_BITS.store(right.to_bits(), Ordering::Relaxed);
+}
+
+/// Spin-test torques applied on the latest control tick.
+pub fn spin_applied() -> SpinPair {
+    SpinPair {
+        left: f32::from_bits(SPIN_APPLIED_LEFT_BITS.load(Ordering::Relaxed)),
+        right: f32::from_bits(SPIN_APPLIED_RIGHT_BITS.load(Ordering::Relaxed)),
+    }
+}
+
+/// Publish the balance-law common-mode torque applied on this tick.
+pub fn set_balance_applied(common_units: f32) {
+    BAL_TORQUE_COMMON_BITS.store(common_units.to_bits(), Ordering::Relaxed);
+}
+
+/// Balance-law common-mode torque applied on the latest control tick.
+pub fn balance_applied() -> f32 {
+    f32::from_bits(BAL_TORQUE_COMMON_BITS.load(Ordering::Relaxed))
+}
+
 /// Latest mapped attitude (pre-zero) in degrees.
 pub fn latest_mapped_attitude() -> (f32, f32) {
     (
@@ -294,4 +496,7 @@ pub fn reset_counters() {
     IMU_LAST_ERROR.store(0, Ordering::Relaxed);
     FB_FRAMES.store(0, Ordering::Relaxed);
     FB_DISCARDED.store(0, Ordering::Relaxed);
+    LINK_BYTES.store(0, Ordering::Relaxed);
+    STOP_REASON.store(0, Ordering::Relaxed);
+    FALL_EVENTS.store(0, Ordering::Relaxed);
 }

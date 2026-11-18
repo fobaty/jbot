@@ -545,7 +545,7 @@ hip bus and is not wired today.
 |---|---|---|---|---|---|
 | Radio | Pico UART1 | GP5 RX ← XR1 TX, GP4 TX → XR1 RX | XR1 receiver | 420 kbaud, CRSF | Setpoints, arm state, telemetry reply |
 | IMU | Pico I2C1 | GP2 SDA, GP3 SCL | BNO055 | 400 kHz | Attitude at 100 Hz |
-| Mainboard | Pico UART0 ↔ STM32 USART2 | GP0 TX → PA3 RX, GP1 RX ← PA2 TX, left cable | STM32F103RCT6 | 115200, 8N1 | Torque commands in, feedback out |
+| Mainboard | Pico UART0 ↔ STM32 USART2 | GP16 TX → PA3 RX, GP17 RX ← PA2 TX, left cable | STM32F103RCT6 | 115200, 8N1 | Torque commands in, feedback out |
 | Mission computer | Pico PIO UART ↔ RPi UART | GP6 TX → GPIO15 RX, GP7 RX ← GPIO14 TX | Raspberry Pi 5 | 460800, 8N1, COBS + CRC-16 | Setpoints, telemetry, parameters |
 | Hip driver (stage 2) | STM32 USART3 | PB10 TX, PB11 RX, right cable | Hip driver | 115200, 8N1 | Height and position setpoints |
 | Pico debug | USB CDC + SWD | USB, SWDIO/SWCLK | Host or probe | — | Text console, flashing, `defmt` RTT |

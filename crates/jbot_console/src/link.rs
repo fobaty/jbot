@@ -46,8 +46,15 @@ pub enum LinkEvent {
         /// Human-readable reason.
         reason: String,
     },
-    /// One parsed protocol line.
-    Message(Message),
+    /// One parsed protocol line, kept together with the raw text so the UI
+    /// can show an exact debug log. The message is boxed to keep the enum
+    /// small; telemetry is the largest variant by far.
+    Message {
+        /// Raw line, trimmed of the trailing newline.
+        raw: String,
+        /// Classified line.
+        message: Box<Message>,
+    },
     /// Transport-level notice.
     Notice(String),
 }
@@ -314,7 +321,14 @@ impl LineBuffer {
                     let text = String::from_utf8_lossy(&self.bytes).trim().to_owned();
                     self.bytes.clear();
                     if let Some(message) = protocol::classify(&text) {
-                        send_event(events, dropped, LinkEvent::Message(message));
+                        send_event(
+                            events,
+                            dropped,
+                            LinkEvent::Message {
+                                raw: text,
+                                message: Box::new(message),
+                            },
+                        );
                     }
                 }
                 continue;
@@ -361,10 +375,13 @@ mod tests {
 
         let events = drain(&rx);
         assert!(matches!(
-            events[0],
-            LinkEvent::Message(Message::Telemetry(_))
+            &events[0],
+            LinkEvent::Message { message, .. } if matches!(message.as_ref(), Message::Telemetry(_))
         ));
-        assert!(matches!(events[1], LinkEvent::Message(Message::Ok(_))));
+        assert!(matches!(
+            &events[1],
+            LinkEvent::Message { message, .. } if matches!(message.as_ref(), Message::Ok(_))
+        ));
         assert_eq!(events.len(), 2);
     }
 
@@ -380,7 +397,10 @@ mod tests {
 
         let events = drain(&rx);
         assert!(matches!(events[0], LinkEvent::Notice(_)));
-        assert!(matches!(events[1], LinkEvent::Message(Message::Ok(_))));
+        assert!(matches!(
+            &events[1],
+            LinkEvent::Message { message, .. } if matches!(message.as_ref(), Message::Ok(_))
+        ));
     }
 
     #[test]

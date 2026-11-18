@@ -10,4 +10,8 @@
 pub mod bno055;
 pub mod control;
 pub mod eferu;
+pub mod filters;
 pub mod mount;
+pub mod plant;
+pub mod reference;
+pub mod spin;

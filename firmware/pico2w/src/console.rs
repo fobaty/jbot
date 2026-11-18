@@ -7,7 +7,8 @@
 //! Protocol (v1), one ASCII line per message:
 //!
 //! * Host → Pico: `help`, `ping`, `stat`, `stream <hz>`, `trim <deg>`,
-//!   `reinit`, `estop`, `clear`, `stats reset`, `reboot`.
+//!   `reinit`, `estop`, `clear`, `stats reset`, `reboot`,
+//!   `test <units> [units]`, `home <deg>`, `vmax <deg/s>`, `pscale <0..2>`.
 //! * Pico → host: `T key=value ...` telemetry, `ok ...` accepted, `err ...`
 //!   rejected, plus a banner on connect.
 //!
@@ -26,6 +27,7 @@ use static_cell::StaticCell;
 
 use crate::state::{self, Telemetry};
 use jbot_pico_core::mount::Mount;
+use jbot_pico_core::spin::{SpinPair, SPIN_TORQUE_LIMIT};
 
 /// USB vendor id used for development boards without an assigned id.
 const VID: u16 = 0x1209;
@@ -36,13 +38,22 @@ const PACKET_SIZE: u16 = 64;
 /// Longest accepted command line, including the terminating newline.
 const MAX_LINE: usize = 64;
 /// Reply buffer; longer replies are truncated rather than dropped.
-const REPLY_BUFFER: usize = 384;
+// Sized for the longest reply (`stat` is ~400 B) with headroom so a new field
+// cannot silently truncate the line on the wire.
+const REPLY_BUFFER: usize = 512;
 /// Banner sent every time the host configures the interface.
 const BANNER: &[u8] = b"JBOT pico bridge 0.1 ready\n";
 /// Poll interval while the telemetry stream is disabled.
 const IDLE_POLL: Duration = Duration::from_millis(200);
 /// Time allowed for the final USB packets to leave before a requested reboot.
 const REBOOT_FLUSH: Duration = Duration::from_millis(50);
+/// Largest accepted `home` bias away from the captured level, degrees.
+///
+/// A standing two-wheel machine cannot hold a large commanded pitch: the pitch
+/// loop has to trade body angle against holding torque, so a large bias walks
+/// the base. Five degrees is enough for a deliberate lean and stays well inside
+/// the eight degree dynamic demand limit.
+const HOME_LIMIT_DEG: f32 = 5.0;
 
 /// USB device running on the RP2350 peripheral.
 pub type Usb = UsbDevice<'static, Driver<'static, USB>>;
@@ -158,7 +169,7 @@ async fn handle_command(class: &mut Console, line: &[u8]) -> Action {
             reply(
                 class,
                 format_args!(
-                    "ok help: ping | stat | stream <hz> | speed <mps> | steer <deg/s> | trim <deg> | zero | level | mount <name> | arm | disarm | reinit | estop | clear | stats reset | reboot"
+                    "ok help: ping | stat | stream <hz> | speed <mps> | steer <deg/s> | trim <deg> | zero | level | mount <name> | home [deg] | vmax [deg/s] | pscale [0..2] | arm | disarm | test <units> [units] | reinit | estop | clear | stats reset | reboot"
                 ),
             )
             .await;
@@ -168,10 +179,14 @@ async fn handle_command(class: &mut Console, line: &[u8]) -> Action {
         }
         "stat" => {
             let uptime_s = Instant::now().as_millis() as f32 / 1_000.0;
+            // Report the *effective* law: gains after the bench power scale,
+            // so what the console prints is what the loop runs.
+            let pscale = state::pscale();
+            let tuning = state::tuning().scaled_by(pscale);
             reply(
                 class,
                 format_args!(
-                    "stat up={:.1} loop={} stream={} trim={:.2} estop={} steps={} imu={} imu_err={} imu_code={} fb={} fb_drop={} zero={:.2} zroll={:.2} level={:.2} mount={} kp={:.1} kd={:.1} armed={} zcapt={} lcapt={}",
+                    "stat up={:.1} loop={} stream={} trim={:.2} estop={} steps={} imu={} imu_err={} imu_code={} fb={} fb_drop={} rx={} fb_ok={} stop={} zero={:.2} zroll={:.2} level={:.2} mount={} kpnm={:.1} kdnm={:.1} kpos={:.2} kv={:.2} ki={:.3} pdem={:.1} ptrm={:.1} armed={} zcapt={} lcapt={} home={:.2} fall={} vmax={:.2} pscale={:.2}",
                     uptime_s,
                     state::loop_hz(),
                     state::stream_hz(),
@@ -183,15 +198,30 @@ async fn handle_command(class: &mut Console, line: &[u8]) -> Action {
                     state::read(&state::IMU_LAST_ERROR),
                     state::read(&state::FB_FRAMES),
                     state::read(&state::FB_DISCARDED),
+                    state::read(&state::LINK_BYTES),
+                    u8::from(state::link_fresh()),
+                    state::stop_reason_label(),
                     state::zero_pitch_rad().to_degrees(),
                     state::zero_roll_rad().to_degrees(),
                     state::pitch_trim_rad().to_degrees(),
                     state::mount(),
-                    crate::GAINS.pitch_kp,
-                    crate::GAINS.pitch_kd,
+                    tuning.pitch_kp_nm_per_rad,
+                    tuning.pitch_kd_nm_per_rad_s,
+                    tuning.position_gain_per_s,
+                    tuning.velocity_gain_per_s,
+                    tuning.trim_gain_rad_per_m_s,
+                    tuning.pitch_demand_limit_rad.to_degrees(),
+                    tuning.pitch_trim_limit_rad.to_degrees(),
                     u8::from(state::armed()),
                     u8::from(state::zero_captured()),
                     u8::from(state::level_captured()),
+                    state::home_target_rad().map_or_else(
+                        || state::pitch_trim_rad().to_degrees(),
+                        f32::to_degrees,
+                    ),
+                    state::read(&state::FALL_EVENTS),
+                    state::ref_v_max_rad_s().to_degrees(),
+                    pscale,
                 ),
             )
             .await;
@@ -272,6 +302,53 @@ async fn handle_command(class: &mut Console, line: &[u8]) -> Action {
                 }
             },
         },
+        "test" => {
+            if state::estop() {
+                reply(class, format_args!("err test refused: e-stop latched")).await;
+            } else if state::armed() {
+                reply(
+                    class,
+                    format_args!("err test refused: disarm the balance law first"),
+                )
+                .await;
+            } else {
+                let second = parts.next();
+                match (argument, second) {
+                    (None, _) => {
+                        let applied = state::spin_applied();
+                        reply(
+                            class,
+                            format_args!("ok test l={:.0} r={:.0}", applied.left, applied.right),
+                        )
+                        .await;
+                    }
+                    (Some(left), right) => {
+                        let right = right.unwrap_or(left);
+                        match (parse_f32(left), parse_f32(right)) {
+                            (Some(l), Some(r))
+                                if l.is_finite()
+                                    && r.is_finite()
+                                    && l.abs() <= SPIN_TORQUE_LIMIT
+                                    && r.abs() <= SPIN_TORQUE_LIMIT =>
+                            {
+                                state::request_spin(SpinPair { left: l, right: r });
+                                reply(class, format_args!("ok test l={:.0} r={:.0}", l, r)).await;
+                            }
+                            _ => {
+                                reply(
+                                    class,
+                                    format_args!(
+                                        "err test needs units in -{:.0}..{:.0}",
+                                        SPIN_TORQUE_LIMIT, SPIN_TORQUE_LIMIT
+                                    ),
+                                )
+                                .await;
+                            }
+                        }
+                    }
+                }
+            }
+        }
         "zero" => {
             if !state::imu_fresh() {
                 reply(class, format_args!("err zero needs a fresh IMU sample")).await;
@@ -281,6 +358,9 @@ async fn handle_command(class: &mut Console, line: &[u8]) -> Action {
                 state::set_zero_roll_rad(roll.to_radians());
                 state::set_zero_captured(true);
                 state::set_armed(false);
+                // The home reference follows the captured calibration; drop
+                // any explicit override.
+                state::clear_home_target();
                 reply(
                     class,
                     format_args!("ok zero pitch={:.2} roll={:.2}", pitch, roll),
@@ -297,7 +377,95 @@ async fn handle_command(class: &mut Console, line: &[u8]) -> Action {
                 state::set_pitch_trim_rad(level.to_radians());
                 state::set_level_captured(true);
                 state::set_armed(false);
+                // The home reference follows the captured level; drop any
+                // explicit override.
+                state::clear_home_target();
                 reply(class, format_args!("ok level {:.2}", level)).await;
+            }
+        }
+        "home" => {
+            // Set the home reference: a small pitch bias away from the
+            // captured level. The balance law ramps there smoothly from the
+            // armed pose. The limit is deliberately tight, because a standing
+            // machine cannot hold a large commanded pitch while stationary;
+            // the vertical equilibrium (captured level) is the default when no
+            // angle is given.
+            match argument {
+                None => {
+                    let target = state::pitch_trim_rad();
+                    state::set_home_target_rad(target);
+                    reply(class, format_args!("ok home {:.2}", target.to_degrees())).await;
+                }
+                Some(value) => match parse_f32(value) {
+                    Some(deg)
+                        if deg.is_finite() && (-HOME_LIMIT_DEG..=HOME_LIMIT_DEG).contains(&deg) =>
+                    {
+                        state::set_home_target_rad(deg.to_radians());
+                        reply(class, format_args!("ok home {:.2}", deg)).await;
+                    }
+                    _ => {
+                        reply(
+                            class,
+                            format_args!("err home needs degrees in -{HOME_LIMIT_DEG:.0}..{HOME_LIMIT_DEG:.0}"),
+                        )
+                        .await;
+                    }
+                },
+            }
+        }
+        "vmax" => {
+            // Commanded reference rate for the home ramp, in degrees per
+            // second. Zero freezes the ramp in place (the law holds the
+            // current reference); the cap is enforced by the reference
+            // generator itself.
+            match argument {
+                None => {
+                    reply(
+                        class,
+                        format_args!("ok vmax {:.2}", state::ref_v_max_rad_s().to_degrees()),
+                    )
+                    .await;
+                }
+                Some(value) => match parse_f32(value) {
+                    Some(deg_s) if deg_s.is_finite() && (0.0..=60.0).contains(&deg_s) => {
+                        state::set_ref_v_max_rad_s(deg_s.to_radians());
+                        reply(class, format_args!("ok vmax {:.2}", deg_s)).await;
+                    }
+                    _ => {
+                        reply(class, format_args!("err vmax needs degrees/s in 0..60")).await;
+                    }
+                },
+            }
+        }
+        "pscale" => {
+            // Bench power scale for the balance law: a runtime multiplier on
+            // the angular-output gains (pitch kp/kd and the yaw differential).
+            // Runtime-only and resets to 1.0 at boot, so a bench session
+            // cannot leak a weakened law into the next power-up. The fall
+            // guards and the torque budget do not scale with this value.
+            match argument {
+                None => {
+                    reply(class, format_args!("ok pscale {:.2}", state::pscale())).await;
+                }
+                Some(value) => match parse_f32(value) {
+                    Some(scale)
+                        if scale.is_finite()
+                            && (0.0..=jbot_pico_core::control::MAX_PSCALE).contains(&scale) =>
+                    {
+                        let applied = state::set_pscale(scale);
+                        reply(class, format_args!("ok pscale {:.2}", applied)).await;
+                    }
+                    _ => {
+                        reply(
+                            class,
+                            format_args!(
+                                "err pscale needs 0..={:.1} (1.0 = compiled tuning, 0 = law inert)",
+                                jbot_pico_core::control::MAX_PSCALE
+                            ),
+                        )
+                        .await;
+                    }
+                },
             }
         }
         "mount" => {
@@ -319,6 +487,7 @@ async fn handle_command(class: &mut Console, line: &[u8]) -> Action {
                         state::set_zero_captured(false);
                         state::set_level_captured(false);
                         state::set_armed(false);
+                        state::clear_home_target();
                         reply(
                             class,
                             format_args!(
@@ -344,16 +513,24 @@ async fn handle_command(class: &mut Console, line: &[u8]) -> Action {
                 reply(class, format_args!("err arm refused: e-stop latched")).await;
             } else if !state::imu_fresh() {
                 reply(class, format_args!("err arm refused: IMU sample is stale")).await;
+            } else if !state::link_fresh() {
+                reply(
+                    class,
+                    format_args!("err arm refused: no mainboard feedback (fb=0, check the link)"),
+                )
+                .await;
             } else if !state::zero_captured() {
                 reply(class, format_args!("err arm refused: capture zero first")).await;
             } else if !state::level_captured() {
                 reply(class, format_args!("err arm refused: capture level first")).await;
             } else {
+                state::clear_spin_request();
                 state::set_armed(true);
                 reply(class, format_args!("ok armed")).await;
             }
         }
         "disarm" => {
+            state::clear_spin_request();
             state::set_armed(false);
             reply(class, format_args!("ok disarmed")).await;
         }
@@ -367,6 +544,7 @@ async fn handle_command(class: &mut Console, line: &[u8]) -> Action {
         }
         "clear" => {
             state::set_estop(false);
+            state::set_stop(None);
             reply(class, format_args!("ok clear")).await;
         }
         "stats" => {
@@ -394,7 +572,7 @@ fn format_telemetry<'a>(buffer: &'a mut [u8], telemetry: &Telemetry) -> &'a [u8]
     format(
         buffer,
         format_args!(
-            "T step={} loop={} imu={} cal={} pitch={:.2} roll={:.2} hdg={:.2} gy={:.2} gx={:.2} gz={:.2} err=0x{:02x} mb={} L={} R={} bat={:.2} tmp={:.1} age={} estop={} vset={:.2} wset={:.2} mnt={} zof={:.2} lvl={:.2} zro={:.2} arm={}",
+            "T step={} loop={} imu={} cal={} pitch={:.2} roll={:.2} hdg={:.2} gy={:.2} gx={:.2} gz={:.2} err=0x{:02x} mb={} L={} R={} bat={:.2} tmp={:.1} age={} estop={} vset={:.2} wset={:.2} mnt={} zof={:.2} lvl={:.2} zro={:.2} arm={} tsl={:.0} tsr={:.0} trq={:.0} ref={:.2} dem={:.2} trm={:.2} x={:.3} mode={}",
             telemetry.control_steps,
             telemetry.loop_hz,
             if telemetry.imu_fresh { "ok" } else { "stale" },
@@ -420,6 +598,14 @@ fn format_telemetry<'a>(buffer: &'a mut [u8], telemetry: &Telemetry) -> &'a [u8]
             telemetry.level_deg,
             telemetry.roll_zero_offset_deg,
             u8::from(telemetry.armed),
+            telemetry.spin_left_units,
+            telemetry.spin_right_units,
+            telemetry.balance_torque_common_units,
+            telemetry.pitch_ref_deg,
+            telemetry.pitch_demand_deg,
+            telemetry.slope_trim_deg,
+            telemetry.position_m,
+            telemetry.balance_mode,
         ),
     )
 }

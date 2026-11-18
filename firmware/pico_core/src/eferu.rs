@@ -209,16 +209,15 @@ impl Feedback {
 
     /// Common-mode forward speed in m/s.
     ///
-    /// The hoverboard mounts its hub motors mirrored, so the hall-sensor
-    /// readings for the two wheels have opposite signs during common-mode
-    /// motion, and the mainboard computes forward speed as `(L - R) / 2`.
-    /// The sign follows that convention; whether it matches physical
-    /// "forward" depends on motor wiring and must be confirmed on the bench
-    /// before enabling the outer speed loop (the sign only matters when
-    /// `speed_kp != 0`; the balance loop does not depend on it).
+    /// Bench-verified on this unit (`VARIANT_USART`, no `INVERT_L_DIRECTION` /
+    /// `INVERT_R_DIRECTION`, identical hub wiring): a straight forward roll
+    /// reads `speedL ≈ speedR` (both positive), so linear speed is the mean
+    /// of the two readings. The mirrored-hub assumption `(L - R) / 2` reads
+    /// ~0 here and would stall the position loop and the range guard; the
+    /// balance loop itself does not depend on this sign.
     pub fn forward_speed_mps(self, wheel_radius_m: f32) -> f32 {
         let scale = core::f32::consts::TAU * wheel_radius_m / 60.0;
-        0.5 * (f32::from(self.speed_left_rpm) - f32::from(self.speed_right_rpm)) * scale
+        0.5 * (f32::from(self.speed_left_rpm) + f32::from(self.speed_right_rpm)) * scale
     }
 }
 
@@ -315,16 +314,23 @@ mod tests {
     }
 
     #[test]
-    fn forward_speed_matches_hoverboard_convention() {
-        // Mirrored hub motors report opposite signs for the same physical
-        // motion; the hoverboard computes forward speed as (L - R) / 2.
+    fn forward_speed_matches_bench_wiring() {
+        // Bench-verified: a straight forward roll reads same-sign hall
+        // speeds on this unit, so forward speed is the mean of the two.
         let feedback = Feedback {
-            speed_left_rpm: -250,
+            speed_left_rpm: 250,
             speed_right_rpm: 250,
             ..Feedback::default()
         };
         let scale = core::f32::consts::TAU * 0.0825 / 60.0;
-        assert!((feedback.forward_speed_mps(0.0825) - (-250.0 * scale)).abs() < 1e-6);
+        assert!((feedback.forward_speed_mps(0.0825) - (250.0 * scale)).abs() < 1e-6);
+        // A counter-rolling pair (pivot in place) reads zero linear speed.
+        let pivot = Feedback {
+            speed_left_rpm: 250,
+            speed_right_rpm: -250,
+            ..Feedback::default()
+        };
+        assert_eq!(pivot.forward_speed_mps(0.0825), 0.0);
 
         let idle = Feedback::default();
         assert_eq!(idle.forward_speed_mps(0.0825), 0.0);

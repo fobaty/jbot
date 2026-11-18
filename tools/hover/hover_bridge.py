@@ -22,7 +22,7 @@
 # the firmware itself stops after ~0.8 s without frames. A blocking or dead host
 # therefore never leaves the motors spinning.
 #
-# Wiring: GP0 (TX) -> PA3, GP1 (RX) <- PA2, GND -> GND on the LEFT cable.
+# Wiring: GP16 (TX) -> PA3, GP17 (RX) <- PA2, GND -> GND on the LEFT cable.
 # Never connect the 15 V pin, USART2 is not 5 V tolerant.
 
 import select

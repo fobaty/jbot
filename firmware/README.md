@@ -250,7 +250,7 @@ frame only when exactly 8 bytes arrived since the last idle line. The host side 
 the Pico bridge, the Mac console and the wire protocol - lives in
 [`tools/hover/`](../tools/hover/README.md).
 
-Live check on the bench board (Pico 2 W, MicroPython, UART0 GP0/GP1 at
+Live check on the bench board (Pico 2 W, MicroPython, UART0 GP16/GP17 at
 115200 8N1, 1 s capture): 97 frames, exactly 18 bytes apart, every checksum
 valid. Representative frame:
 
@@ -531,7 +531,7 @@ run can be checked from a script instead of by eye.
 
 | Symptom | Meaning |
 |---|---|
-| `mb=none`, `fb=0`, `fb_drop` rising at ~1600 B/s | The mainboard is not talking: the parser sees the Pico's own 200 Hz × 8 B command stream coupled back, or nothing at all. Check that the F103 is powered and that GP0/GP1 are still on PA3/PA2. |
+| `mb=none`, `fb=0`, `fb_drop` rising at ~1600 B/s | The mainboard is not talking: the parser sees the Pico's own 200 Hz × 8 B command stream coupled back, or nothing at all. Check that the F103 is powered and that GP16/GP17 are still on PA3/PA2. |
 | `imu=stale`, `imu_code=1` | I2C failure to the BNO055; check the four wires and the address strap. |
 | `loop` below 195 | The 5 ms tick is missing deadlines; suspect USB or `defmt` cost before the control law. |
 

@@ -23,7 +23,7 @@ that decides what the robot does:
 - CRSF ingest from the XR1 receiver, channel mapping, failsafe, and the arm
   switch. The radio is the **only** source of arming authority.
 - BNO055 sampling and attitude propagation.
-- The 200 Hz balance loop: pitch PD, speed loop, yaw loop.
+- The 200 Hz balance loop: pitch PI, speed loop, yaw loop.
 - Limits: tilt cutoff, torque and rate clamps, battery thresholds, charge
   interlock.
 - The safety state machine, the watchdog, and the blackbox ring buffer.
@@ -54,8 +54,8 @@ EMI budget.
 
 | Function | Pins | Peripheral | Peer | Rate |
 |---|---|---|---|---|
-| Torque command | GP0 TX → STM32 PA3 | UART0 TX | Mainboard USART2 | 115200 8N1 |
-| Mainboard feedback | GP1 RX ← STM32 PA2 | UART0 RX | Mainboard USART2 | 115200 8N1 |
+| Torque command | GP16 TX → STM32 PA3 | UART0 TX | Mainboard USART2 | 115200 8N1 |
+| Mainboard feedback | GP17 RX ← STM32 PA2 | UART0 RX | Mainboard USART2 | 115200 8N1 |
 | IMU | GP2 SDA, GP3 SCL | I2C1 | BNO055 | 400 kHz |
 | Radio | GP4 TX → XR1 RX, GP5 RX ← XR1 TX | UART1 | XR1 receiver | 420 kbaud CRSF |
 | Mission computer | GP6 TX → RPi GPIO15, GP7 RX ← RPi GPIO14 | PIO UART | Raspberry Pi 5 | 460800 8N1 |
@@ -229,21 +229,28 @@ answers each command with one `ok`/`err`/`stat` line and, while streaming, sends
 |---|---|---|
 | `help` / `?` | `ok help: ...` | Command list |
 | `ping` | `ok ping` | Liveness check |
-| `stat` | `stat up=... loop=... stream=... trim=... estop=... steps=... imu=... imu_err=... imu_code=... fb=... fb_drop=...` | Counters and settings |
+| `stat` | `stat up=... loop=... stream=... trim=... estop=... steps=... imu=... imu_err=... imu_code=... fb=... fb_drop=... rx=... fb_ok=... stop=... zero=... zroll=... level=... mount=... kpnm=... kdnm=... kpos=... kv=... ki=... pdem=... ptrm=... armed=... zcapt=... lcapt=... home=... fall=... vmax=... pscale=...` | Counters, settings, and the SI gains derived from the plant (gains shown are the effective law, i.e. after `pscale`) |
+| `pscale [0..2]` | `ok pscale <value>` / `err pscale needs ...` | Query/set the bench power scale: a runtime multiplier on the angular-output gains (`kpnm`/`kdnm` and the yaw differential). `1.0` = compiled tuning, `0` = law inert. The fall guards, the torque budget and the trim do not scale. Runtime-only; resets to `1.0` at boot |
 | `stream` | `ok stream <hz>` | Query the current rate |
 | `stream <hz>` | `ok stream <hz>` | `0` disables the stream, clamped to `0..=200` |
 | `trim` | `ok trim <deg>` | Query the pitch trim (the balance/level reference) |
 | `trim <deg>` | `ok trim <deg>` | Accepted range `-90..=90` |
 | `zero` | `ok zero pitch=<deg> roll=<deg>` | Capture the current attitude as the zero offsets; the captured pose reads as 0 afterwards |
-| `level` | `ok level <deg>` | Capture the current (zeroed) pitch as the balance reference; equivalent to `trim` with an automatic value |
+| `level` | `ok level <deg>` | Capture the current (zeroed) pitch as the balance reference; equivalent to `trim` with an automatic value. Also clears any explicit `home` override |
+| `home` | `ok home <deg>` | Set the home reference to the captured `level` equilibrium; the balance law ramps to it from the current pose. The transition is acceleration-limited (10 deg/s max rate, 20 deg/s^2 max acceleration) |
+| `home <deg>` | `ok home <deg>` | Set an explicit home bias, `-5..=5`. A standing machine cannot hold a larger commanded pitch: the inner loop trades angle against holding torque and the base walks. Overrides the captured `level` until `zero`, `level`, or `mount` is re-captured |
+| `vmax` | `ok vmax <deg/s>` | Query the commanded reference rate for the home ramp |
+| `vmax <deg/s>` | `ok vmax <deg/s>` | Set the reference rate, `0..=60`; `0` freezes the ramp. Start at 10 and raise in steps on the bench |
 | `mount` | `ok mount <n> <name>` | Query the BNO055 mount selector |
 | `mount <n|name>` | `ok mount <n> <name>` | Select the mounting orientation of the BNO055 (`normal`, `flipx`, `flipy`, `rotxp`, `rotxm`, `rotyp`, `rotym`); re-capture `zero` and `level` afterwards. Also disarms the balance law and invalidates the captures |
-| `arm` | `ok armed` | Arm the balance law; refused unless the e-stop is clear, the IMU is fresh, and `zero` and `level` have been captured this session |
+| `arm` | `ok armed` | Arm the balance law; refused unless the e-stop is clear, the IMU is fresh, `zero` and `level` have been captured this session, mainboard feedback is fresh (< 300 ms), the pose error is inside the lift budget, and the body is not on the ground (\|pitch\| ≤ 45 deg) |
 | `disarm` | `ok disarmed` | Disarm the balance law |
 | `speed` | `ok speed <mps>` | Query the speed setpoint |
 | `speed <mps>` | `ok speed <mps>` | Accepted range `-5..=5` |
 | `steer` | `ok steer <deg/s>` | Query the steering setpoint |
 | `steer <deg/s>` | `ok steer <deg/s>` | Accepted range `-180..=180` |
+| `test` | `ok test l=<units> r=<units>` | Query the applied spin-test torque |
+| `test <units> [units]` | `ok test l=<units> r=<units>` | Bench spin test: direct wheel-torque request, ±300 units clamp, one argument drives both wheels. Applied only while the balance law is disarmed and the e-stop is clear; the applied torque ramps at 600 units/s and the request expires 5 s after it was accepted. Bench wiring convention for the flashed `VARIANT_USART` build (no `INVERT_*`): same-sign requests roll both wheels the same way; the wire command negates the right wheel |
 | `reinit` | `ok reinit` | Re-runs the BNO055 start-up sequence |
 | `estop` | `ok estop` | Latches the emergency stop |
 | `clear` | `ok clear` | Clears the latch |
@@ -255,9 +262,15 @@ Rejected input gets `err <reason>`: `err unknown command: <text>`,
 `err speed needs mps in -5..5`, `err steer needs degrees/s in -180..180`,
 `err mount needs normal, flipx, flipy, rotxp, rotxm, rotyp or rotym`,
 `err arm refused: e-stop latched`, `err arm refused: IMU sample is stale`,
+`err arm refused: no mainboard feedback (fb=0, check the link)`,
 `err arm refused: capture zero first`, `err arm refused: capture level first`,
+`err home needs degrees in -5..5`,
+`err pscale needs 0..=2.0 (1.0 = compiled tuning, 0 = law inert)`,
 `err zero needs a fresh IMU sample`, `err level needs a fresh IMU sample`,
-`err use: stats reset`, `err line too long` (over 64 bytes), or
+`err use: stats reset`, `err test needs units in -300..300`,
+`err test refused: e-stop latched`,
+`err test refused: disarm the balance law first`,
+`err line too long` (over 64 bytes), or
 `err line is not utf8`.
 
 `stat` fields: `up` is uptime in seconds, `loop` the measured control rate,
@@ -265,11 +278,30 @@ Rejected input gets `err <reason>`: `err unknown command: <text>`,
 latch state, `steps` the control ticks since boot, `imu`/`imu_err` the IMU
 sample and error counters, `imu_code` the last IMU error code,
 `fb`/`fb_drop` the valid feedback frames and the bytes discarded while
-resynchronising the parser, `zero` the applied pitch zero offset in degrees,
+resynchronising the parser, `rx` the raw bytes received on the link (so a
+silent wire and a framing mismatch can be told apart: `rx=0` means nothing
+arrives, `rx` growing with `fb=0` means the bytes are not valid frames), `fb_ok`
+whether the control loop currently sees fresh wheel-speed feedback, `stop` the
+last supervisor latch reason (`none`, `stale_feedback`, `lying`, `pose_error`,
+`range`, `speed`; cleared by a new `arm` or by `clear`), `zero`
+the applied pitch zero offset in degrees,
 `zroll` the applied roll zero offset in degrees, `level` the balance reference
-in degrees (same value as `trim`), and `mount` the BNO055 mount selector
+in degrees (same value as `trim`), `mount` the BNO055 mount selector
 (0 normal, 1 flip-x, 2 flip-y, 3 rot +90° X, 4 rot −90° X,
-5 rot +90° Y, 6 rot −90° Y).
+5 rot +90° Y, 6 rot −90° Y), `home` the commanded home reference in degrees
+(the captured `level` when no explicit `home` was commanded), `fall` the
+number of times the balance law has latched itself off (pose outside the lift
+budget, body on the ground, runaway travel, or runaway speed) — requires an
+explicit `arm` after the robot is placed back in a recoverable pose — and
+`vmax` the commanded reference rate in degrees per second. `kpnm`/`kdnm` are
+the inner pitch gains in Nm/rad and Nm/(rad/s), `kpos`/`kv` the position and
+speed loop gains in 1/s, `ki` the trim integrator gain in rad/(m·s), `pdem`
+the dynamic pitch demand limit in degrees and `ptrm` the trim limit in
+degrees. `kpnm`/`kdnm` are the *effective* values after `pscale`; `pscale`
+reports the runtime bench scale (`1.0` right after boot). All gains are
+derived once per boot from
+`jbot_pico_core::plant::PlantParams::NOMINAL`, so a plant change moves the
+whole law coherently.
 
 IMU error codes for `imu_code`: `0` none, `1` I2C transfer failure, `2` wrong
 chip id, `3` the chip did not report ready.
@@ -280,7 +312,7 @@ The control task publishes one snapshot per 5 ms tick to a `Signal`; the console
 task decides how often to print it, so the rate is independent of the loop.
 
 ```
-T step=19043 loop=200 imu=ok cal=3 pitch=1.50 roll=-2.25 hdg=87.40 gy=0.06 gx=-0.12 gz=0.03 err=0x00 mb=ok L=0 R=0 bat=41.50 tmp=39.3 age=3 estop=0 vset=0.00 wset=0.00 mnt=1 zof=1.75 zro=-0.50 lvl=0.30
+T step=19043 loop=200 imu=ok cal=3 pitch=1.50 roll=-2.25 hdg=87.40 gy=0.06 gx=-0.12 gz=0.03 err=0x00 mb=ok L=0 R=0 bat=41.50 tmp=39.3 age=3 estop=0 vset=0.00 wset=0.00 mnt=1 zof=1.75 zro=-0.50 lvl=0.30 arm=1 tsl=0 tsr=0 trq=0 ref=0.28 dem=0.00 trm=0.00 x=0.000 mode=2
 ```
 
 | Field | Meaning |
@@ -299,10 +331,17 @@ T step=19043 loop=200 imu=ok cal=3 pitch=1.50 roll=-2.25 hdg=87.40 gy=0.06 gx=-0
 | `age` | Age of the last feedback frame in milliseconds, `4294967295` when none arrived |
 | `estop` | Firmware emergency stop latch, `0` or `1` |
 | `vset`, `wset` | Speed setpoint in m/s and steering setpoint in °/s |
-| `mnt` | BNO055 mount selector: `0` normal, `1` flip-x (180° about X), `2` flip-y (180° about Y), `3` rot +90° X, `4` rot −90° X, `5` rot +90° Y, `6` rot −90° Y |
+| `mnt` | BNO055 mount selector: `0` normal, `1` flip-x (180° about X), `2` flip-y (180° about Y), `3` rot +90° X, `4` rot −90° X, `5` rot +90° Y, `6` rot −90° Y. Default is `1` (flip-x), matching the bench chassis |
 | `zof`, `zro` | Applied pitch and roll zero offsets, degrees |
-| `lvl` | Applied balance (level) reference, degrees; the balance law sees `pitch - zof - lvl` |
+| `lvl` | Applied balance (level) reference, degrees |
 | `arm` | Operator arm latch: `1` once `arm` succeeded this session, `0` at boot and after every e-stop, disarm, mount change, or zero/level capture |
+| `tsl`, `tsr` | Applied spin-test torque on the left and right wheel, EFeru command units |
+| `trq` | Applied balance-law common-mode torque before the mixer, EFeru command units |
+| `ref` | Applied (ramped) pitch reference in degrees, same frame as `pitch` |
+| `dem` | Total pitch offset demanded by the outer loops (position, speed, and slope trim), degrees. `0` on level ground at rest |
+| `trm` | Learned slope trim, degrees. Grows slowly on an incline; this is the auto-correction that makes a slope holdable |
+| `x` | Travel since arming, metres, positive forward, integrated from the wheel-speed feedback. Reset on arming and after every latch |
+| `mode` | Balance mode: `0` disarmed, `1` transit (armed, ramping to home), `2` hold (armed, settled on home), `3` recover (armed, \|pitch\| above 15 deg), `4` fall (armed and the law latched off this tick: pose outside the lift budget, body on the ground, travel past 3 m, or speed past 3 m/s) |
 
 Unknown keys are ignored by the host, so fields can be added without breaking a
 client.
@@ -368,6 +407,12 @@ revision.
 - `estop` is a firmware latch: while it is set the control task sends
   `Command::ZERO` regardless of the IMU and the gains. It survives a USB
   reconnect and is cleared only by `clear` or a reset.
+- The `test` spin test applies a direct wheel torque that bypasses the balance
+  law. It is clamped to ±300 command units, the applied torque slews at
+  600 units/s, and every accepted request expires after 5 s. It is refused
+  while the e-stop is latched or the balance law is armed; arming ramps any
+  in-flight request to zero. Use it only with the robot held or the wheels
+  supported.
 - The mainboard's own ~800 ms serial timeout remains the second line of
   defence; frames keep flowing at 200 Hz while the latch is set.
 - `stream` accepts up to 200 Hz. Above a few tens of hertz the USB link, not the
@@ -377,6 +422,52 @@ The bench application in `tools/pico` drives this protocol: telemetry panels,
 event log, CSV recording, and the same commands from a keyboard. The native
 `jbot-console` (`crates/jbot_console`) speaks the same protocol and adds the
 attitude horizon and compass view.
+
+### 8.2. Home reference, balance cascade, and fall latch (bench pending)
+
+The pitch reference is no longer a constant captured value. An acceleration-limited
+ramp (`jbot_pico_core::reference::PitchReference`, 10 deg/s maximum rate,
+20 deg/s^2 maximum acceleration, target clamped to ±30 deg) owns the reference:
+
+- Arming anchors the reference to the measured pitch only when the pose error is
+  below 5 deg, so the first correction ramps in from zero error. A larger pose error
+  starts the reference at the target instead — anchoring it would cancel the control
+  error and the robot would fall rather than be lifted;
+- The target is the captured `level` by default; `home [deg]` commands a bias of up
+  to ±5 deg; `zero`/`level`/`mount` re-capture clears the override;
+- When the target is reached the ramp stops and the law holds the pose.
+
+The law itself is a cascade, not a single PD on the reference
+(`jbot_pico_core::control`, gains derived from `PlantParams::NOMINAL`):
+
+- position → speed reference (0.4 m/s cap) → acceleration reference (1.0 m/s^2 cap)
+  → pitch demand (±8 deg cap) → inner pitch PD (`kp = 28.5 Nm/rad`,
+  `kd = 7.0 Nm/(rad/s)`) → common-mode torque;
+- a slow trim integrator (0.01 rad/(m·s), ±20 deg anti-windup) learns the slope
+  offset from the position error. Without it a pitch-only loop has no static
+  equilibrium on an incline and the robot slides down every slope;
+- yaw may use only the torque headroom left after balance.
+
+Arming is refused while the mainboard feedback is older than 300 ms, while the pose
+error exceeds `0.70 ×` the static lift limit (about 28 deg at the nominal 5 Nm
+budget), or while the body is already on the ground (|pitch| > 45 deg). While armed,
+the same pose limit plus a 3 m travel limit and a 3 m/s speed limit latch the law
+off, zero the torque within one tick, require an explicit re-arm, and increment the
+`fall` diagnostic counter (`stats reset` zeroes it). Euler heading/roll are *not*
+used for any guard — only the gravity-derived pitch, which stays valid to ±180 deg.
+
+The e-stop path is unchanged and keeps bypassing every smoother.
+
+Unit tests exercise the ramp, the plant model, and the closed-loop cascade in
+simulation (level hold, recovery from 20 and 30 deg, slope hold, ramp entry,
+transport delay, dead zone, heavier machine). Bench validation per
+`docs/design_balance_home.md` §8 is pending. Note the honest limit: the design
+assumes a 5 Nm common-mode budget (`PlantParams::NOMINAL.max_torque_nm`), and at
+that budget a machine lying flat cannot be raised — lifting it needs roughly
+15–20 Nm, so the law refuses instead of trying. That budget is unverified: the
+donor drive is configured for 10 A per motor phase and the torque per amp has not
+been measured. The law scales with the plant, so a measured higher budget raises
+the lift limit without touching the code.
 
 ## 9. Build, flash, debug
 

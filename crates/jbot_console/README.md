@@ -45,17 +45,42 @@ The layout is a fixed instrument board:
   latch).
 - **Drive** — speed and steering setpoints with `Apply` and `Zero`, quick presets,
   a latched `E-STOP`, and `Clear`.
+- **Motor test (bench)** — a limited direct wheel-torque check: torque slider
+  and presets in EFeru command units (±300 clamp, ramped start, 5 s auto-stop),
+  refused while the e-stop is latched or the balance law is armed, with a live
+  read-out of the applied per-wheel torque and a latching `STOP (0)` button.
+  Built for held-robot bring-up; not a drive mode.
 - **Link** — stream rate, `Ping` / `Stat` / `Help`, and `Reset stats`.
 - **Calibration** — BNO055 mount selector (`normal` / `flip X` / `flip Y` /
   `rot ±90° X/Y`) or the guided **axis calibration**: stand the robot
   upright, lean it forward, backward, left and right, pressing the matching
   button after each pose; the console sweeps all mount selectors and applies
   the one whose attitude response matches the motion (a score table shows
-  the verdict). Also `Calibrate ZERO` (capture the current pose as the
-  attitude zero), `Calibrate LEVEL` (capture the balance stance as the
-  balance reference), an `ARM BALANCE` / `DISARM` gate, a level trim slider,
-  and `Reinit BNO055`. Arming is refused until zero and level are captured.
-- **System** — `Reboot` behind an explicit confirmation.
+  the verdict). **SET HOME** captures the balance reference for you (one button):
+  hold the robot UPRIGHT until the console reports it still (all three gyro
+  axes below 1.5 °/s for a full window), then hold the BALANCE STANCE the
+  same way; the console issues `zero` and `level` itself at the quiet moment,
+  so a capture never lands mid-swing. Manual `Calibrate ZERO` / `Calibrate
+  LEVEL` remain as fallback. Also an `ARM BALANCE` / `DISARM` gate, a level
+  trim slider, and `Reinit BNO055`. Arming is refused until zero and level
+  are captured.
+- **System** — `Reboot` behind an explicit confirmation, and **Record session → CSV**:
+  writes two files with a shared millisecond clock to the working directory,
+  ready to overlay operator actions on robot state for post-incident analysis:
+  - `jbot-telemetry-<unix>.csv` — one row per telemetry sample: attitude, rates,
+    wheel rpm, pack voltage, setpoints, applied balance torque (`torque_units`),
+    the balance reference, outer-loop demand, learned slope trim, travel since
+    arming, balance mode, spin-test torque, estop.
+  - `jbot-actions-<unix>.csv` — one row per operator-visible event: every command
+    sent (`tx`/`tx-drop`/`tx-down`), every non-telemetry reply (`rx`), connection
+    events (`sys`), and demo/recording toggles (`ui`).
+  Recording is independent of demo mode, so the recorder can be exercised without
+  hardware. Firmware telemetry `trq` (applied balance torque) appears in the
+  recording after the next firmware flash.
+- **Always-on event log** — in addition to the in-window event panel, every line
+  the console logs is appended to `jbot-events.log` in the working directory
+  (`unix_ms TAG text`, one line per event, flushed per line). No button required:
+  post-incident analysis does not depend on remembering to press REC.
 - **Event log** — every reply, disconnect, and safety action with a timestamp.
 
 Status chips show the connection state, whether telemetry is fresh, the IMU

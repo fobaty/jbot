@@ -71,7 +71,7 @@ impl Mount {
     }
 
     /// Stable selector stored in firmware state.
-    pub fn as_u32(self) -> u32 {
+    pub const fn as_u32(self) -> u32 {
         match self {
             Self::Normal => 0,
             Self::FlipX => 1,

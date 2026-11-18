@@ -19,9 +19,9 @@ instructions are in `firmware/README.md` section 2.9.
 
 | Pico | Hoverboard left cable |
 |---|---|
-| GP0 (pin 1, TX) | PA3 (RX) |
-| GP1 (pin 2, RX) | PA2 (TX) |
-| GND (pin 3) | GND |
+| GP16 (pin 21, TX) | PA3 (RX) |
+| GP17 (pin 22, RX) | PA2 (TX) |
+| GND (pin 23, or any GND) | GND |
 
 Never connect the 15 V pin: the mainboard's USART2 is not 5 V tolerant.
 

@@ -172,3 +172,8 @@ opencode.jsonc
 .copilot/
 .aider*
 continue/
+
+# Bench session recordings (written by jbot_console at runtime)
+jbot-events.log
+jbot-telemetry-*.csv
+jbot-actions-*.csv
