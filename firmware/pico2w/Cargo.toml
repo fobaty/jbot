@@ -23,6 +23,10 @@ embassy-sync = { version = "0.6", features = ["defmt"] }
 embedded-io-async = "0.6"
 static_cell = "2"
 
+# Traits for the flash driver. Already in the tree through `embassy-rp`; the
+# settings record (`src/nvm.rs`) needs them in scope directly.
+embedded-storage = "0.3"
+
 embassy-usb = { version = "0.3", default-features = false }
 
 cortex-m = "0.7"

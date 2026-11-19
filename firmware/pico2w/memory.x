@@ -5,9 +5,13 @@
  * inside the first 4 KiB of flash, and a binary-info block after `.text` so
  * picotool can identify the image. The layout follows the embassy-rp RP2350
  * example.
+ *
+ * The last 4 KiB erase block is reserved for the settings record
+ * (`src/nvm.rs`): the region stops one block short so the linker can never
+ * place code there, and no other part of the firmware addresses it.
  */
 MEMORY {
-    FLASH : ORIGIN = 0x10000000, LENGTH = 4096K
+    FLASH : ORIGIN = 0x10000000, LENGTH = 4092K
     RAM   : ORIGIN = 0x20000000, LENGTH = 512K
     SRAM8 : ORIGIN = 0x20080000, LENGTH = 4K
     SRAM9 : ORIGIN = 0x20081000, LENGTH = 4K

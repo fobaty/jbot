@@ -360,6 +360,52 @@ remain open.
 * **`mount` was 1 (flipx)** at the end of the session, after the 0...5
   sweep. The IMU is still mounted sideways-vertical relative to the
   chassis.
+* **Backward-tip fall at pscale 0.2 (2026-11-18, session
+  `jbot-telemetry-1795045179.csv`).** From a stable hold the operator
+  nudged the body backward (pitch < 0). Breakaway followed: -2 deg at
+  t=12.12 s, -5 deg at 12.87 s, -10 deg at 13.14 s, -16 deg at 13.24 s,
+  -28 deg at 13.37 s (1.2 s tip-over). Wheels drove backward (sign
+  correct), rpm grew to ~200/200, torque saturated at -1000 units; the
+  outer demand slammed into its +8 deg cap by t=13.14 s and could not
+  out-lean the fall (pitch - ref - demand stayed deeply negative). The
+  fall guard tripped at the 28 deg pose-error threshold
+  (`stop=pose_error`, `fall=2`), torque went to zero, e-stop was not
+  needed, the link and USB stayed up through the fall, and the body
+  came to rest near -54 deg. Conclusion: pscale 0.2 cannot recover a
+  dynamic lean at all; every earlier "hold" at 0.1-0.35 worked only
+  because the robot was kept near equilibrium by hand. Dynamic
+  recovery requires gain headroom the compiled tuning provides; the
+  low-scale ladder steps cannot validate it.
+
+### 8.4 Settings persistence (2026-11-18)
+
+The "lost its axes" report is explained by the boot state, not by the law:
+`MOUNT` initialised to `Mount::Normal` on every boot, `mount`/`zero`/`level`
+lived in RAM only, and the two documents disagreed about the correct selector
+(§8.3 records `mount 1`, `docs/pico-bridge.md` recorded `mount 5`). A reboot
+therefore silently restored a wrong attitude mapping, `zero` and `level`
+could be captured against it, and the arm gate accepted the result.
+
+Change (M3-42, partial):
+
+* The mount, the zero offsets and the level reference are stored in the last
+  4 KiB erase block of the QSPI flash. `memory.x` ends `FLASH` at `4092K`, so
+  the record cannot overlap the image.
+* The record is 32 bytes with magic, version, CRC-32 and range checks
+  (`firmware/pico_core/src/nvm.rs`, host-tested). Blank, foreign, truncated or
+  out-of-range content decodes to "no record" and the compiled defaults apply.
+* The **mount is restored at boot**. `zero` and `level` are stored but not
+  applied: both must still be captured in the current session, and the arm
+  gate is unchanged. `pscale` is deliberately not stored.
+* Writes happen on `mount`, `zero`, `level` and the explicit `save`; an erase
+  stalls the executor, so a write is refused while the law is armed. Nothing
+  on the control path, no limit, and no fail-safe transition was changed.
+
+Still open: a flash wear budget (one erase per capture; the ~100k cycle
+rating is far beyond bench use, but it is not written down), and a deliberate
+downgrade path — an older firmware refuses an unknown record version instead
+of misreading it, which is the safe default but leaves the operator with the
+compiled defaults and no explanation beyond the boot line.
 
 ## 9. Open items
 

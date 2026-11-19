@@ -229,7 +229,7 @@ answers each command with one `ok`/`err`/`stat` line and, while streaming, sends
 |---|---|---|
 | `help` / `?` | `ok help: ...` | Command list |
 | `ping` | `ok ping` | Liveness check |
-| `stat` | `stat up=... loop=... stream=... trim=... estop=... steps=... imu=... imu_err=... imu_code=... fb=... fb_drop=... rx=... fb_ok=... stop=... zero=... zroll=... level=... mount=... kpnm=... kdnm=... kpos=... kv=... ki=... pdem=... ptrm=... armed=... zcapt=... lcapt=... home=... fall=... vmax=... pscale=...` | Counters, settings, and the SI gains derived from the plant (gains shown are the effective law, i.e. after `pscale`) |
+| `stat` | `stat up=... loop=... stream=... trim=... estop=... steps=... imu=... imu_err=... imu_code=... fb=... fb_drop=... rx=... fb_ok=... stop=... zero=... zroll=... level=... mount=... nvm=... kpnm=... kdnm=... kpos=... kv=... ki=... pdem=... ptrm=... armed=... zcapt=... lcapt=... home=... fall=... vmax=... pscale=...` | Counters, settings, and the SI gains derived from the plant (gains shown are the effective law, i.e. after `pscale`) |
 | `pscale [0..2]` | `ok pscale <value>` / `err pscale needs ...` | Query/set the bench power scale: a runtime multiplier on the angular-output gains (`kpnm`/`kdnm` and the yaw differential). `1.0` = compiled tuning, `0` = law inert. The fall guards, the torque budget and the trim do not scale. Runtime-only; resets to `1.0` at boot |
 | `stream` | `ok stream <hz>` | Query the current rate |
 | `stream <hz>` | `ok stream <hz>` | `0` disables the stream, clamped to `0..=200` |
@@ -242,7 +242,9 @@ answers each command with one `ok`/`err`/`stat` line and, while streaming, sends
 | `vmax` | `ok vmax <deg/s>` | Query the commanded reference rate for the home ramp |
 | `vmax <deg/s>` | `ok vmax <deg/s>` | Set the reference rate, `0..=60`; `0` freezes the ramp. Start at 10 and raise in steps on the bench |
 | `mount` | `ok mount <n> <name>` | Query the BNO055 mount selector |
-| `mount <n|name>` | `ok mount <n> <name>` | Select the mounting orientation of the BNO055 (`normal`, `flipx`, `flipy`, `rotxp`, `rotxm`, `rotyp`, `rotym`); re-capture `zero` and `level` afterwards. Also disarms the balance law and invalidates the captures |
+| `mount <n|name>` | `ok mount <n> <name> (re-capture zero and level)` | Select the mounting orientation of the BNO055 (`normal`, `flipx`, `flipy`, `rotxp`, `rotxm`, `rotyp`, `rotym`); re-capture `zero` and `level` afterwards. Also disarms the balance law, invalidates the captures, and writes the settings record |
+| `save` | `ok save nvm=stored` / `err save refused: disarm first ...` | Write the settings record (mount, zero, level) to flash. Refused while armed, because the erase stalls the 200 Hz loop |
+| `forget` | `ok forget nvm=blank` | Erase the settings record; the runtime settings are untouched. Refused while armed |
 | `arm` | `ok armed` | Arm the balance law; refused unless the e-stop is clear, the IMU is fresh, `zero` and `level` have been captured this session, mainboard feedback is fresh (< 300 ms), the pose error is inside the lift budget, and the body is not on the ground (\|pitch\| ≤ 45 deg) |
 | `disarm` | `ok disarmed` | Disarm the balance law |
 | `speed` | `ok speed <mps>` | Query the speed setpoint |
@@ -331,7 +333,7 @@ T step=19043 loop=200 imu=ok cal=3 pitch=1.50 roll=-2.25 hdg=87.40 gy=0.06 gx=-0
 | `age` | Age of the last feedback frame in milliseconds, `4294967295` when none arrived |
 | `estop` | Firmware emergency stop latch, `0` or `1` |
 | `vset`, `wset` | Speed setpoint in m/s and steering setpoint in °/s |
-| `mnt` | BNO055 mount selector: `0` normal, `1` flip-x (180° about X), `2` flip-y (180° about Y), `3` rot +90° X, `4` rot −90° X, `5` rot +90° Y, `6` rot −90° Y. Default is `1` (flip-x), matching the bench chassis |
+| `mnt` | BNO055 mount selector: `0` normal, `1` flip-x (180° about X), `2` flip-y (180° about Y), `3` rot +90° X, `4` rot −90° X, `5` rot +90° Y, `6` rot −90° Y. A stored settings record overrides this at boot; with a blank flash the compiled default is `0` (normal) |
 | `zof`, `zro` | Applied pitch and roll zero offsets, degrees |
 | `lvl` | Applied balance (level) reference, degrees |
 | `arm` | Operator arm latch: `1` once `arm` succeeded this session, `0` at boot and after every e-stop, disarm, mount change, or zero/level capture |
@@ -352,11 +354,18 @@ The BNO055 reports fused Euler angles in its own frame. When the module is
 mounted sideways with the board plane vertical (the current chassis mount),
 the fusion output cannot be used directly, so the firmware
 re-expresses the gravity vector and the angular rates in the robot frame
-(X forward, Y left, Z up) with sign flips selected by `mount`. On the current
-frame the module measures ≈85–90° of Euler roll at the upright stance, which
-identifies it as rotated +90° about the robot Y axis: `mount 5` (`rotyp`)
-reads pitch ≈ 0 standing vertical and pitch > 0 leaning forward. Always
-re-verify on the bench after re-mounting before arming:
+(X forward, Y left, Z up) with sign flips selected by `mount`. Always
+re-verify on the bench after re-mounting before arming.
+
+Two bench records disagree about the current chassis and both are historical:
+this document records `mount 5` (`rotyp`, from a ≈85–90° Euler roll at the
+upright stance), while `docs/design_balance_home.md` §8 records `mount 1`
+(`flipx`) at the end of the last recorded session. The recorded `mount 0` run
+is unambiguous evidence of the failure mode: with `mount 0` the control law
+sees the BNO055's own Euler frame, and a forward lean showed up as ≈−26° of
+`roll` with almost no `pitch` change. Settle the mapping with the guided axis
+wizard (`jbot_console`) and the physical check below; do not arm on a
+remembered value.
 
 | `mnt` | Meaning | Sensor → robot vector map |
 |---|---|---|
@@ -395,10 +404,48 @@ The balance law is additionally gated by an operator arm latch: at boot, and
 after every e-stop, disarm, mount change, or zero/level capture, the torque
 command is zero regardless of the gains. `arm` is refused unless the e-stop
 is clear, the IMU sample is fresh, and both captures are done this session.
-Zero and level are stored in RAM only and are lost on reboot, so the arming
-sequence must be repeated after every power cycle; persistence to flash is
-tracked as backlog M3-05/M3-42 and is deliberately not faked in this
-revision.
+
+#### Persistent settings (flash)
+
+The mount, the zero offsets and the level reference are stored in the last
+4 KiB erase block of the QSPI flash; `memory.x` ends the `FLASH` region one
+block short (`4092K`), so the record can never overlap the application image.
+The record is 32 bytes: magic `JBNV`, format version, mount selector, the
+three angles, and a CRC-32 over the payload. A blank sector, a foreign image,
+a different version, a CRC mismatch or an out-of-range value all decode to
+"no record", and the firmware then falls back to the compiled defaults. The
+decoder lives in `firmware/pico_core/src/nvm.rs` and is unit-tested on the
+host.
+
+What happens at boot:
+
+- **The mount is restored.** It is geometry, not a tuning choice: losing it is
+  what makes the machine balance the wrong axis after a reboot.
+- **`zero` and `level` are not applied**, and the arm gate is unchanged: both
+  must still be captured in the current session. They are stored so the
+  console can print them as a reference and so the record always describes
+  the mount that was in force.
+- `pscale` is deliberately *not* stored: a bench-weakened law must not leak
+  into the next power-up.
+
+Writes happen on `mount`, `zero`, `level`, and on an explicit `save`. A flash
+erase parks the XIP cache and stalls the whole executor for tens of
+milliseconds, so saving is refused while the balance law is armed; with the
+law disarmed nothing commands torque and the mainboard keeps its own serial
+timeout. `forget` erases the block and leaves the runtime settings alone.
+
+The `mount`, `zero` and `level` replies keep their original shape, because the
+host parses them positionally; a failed write adds a second line,
+`err nvm write failed: <command> not persisted`. Only `save` and `forget`
+report the outcome inline (`ok save nvm=stored`, `ok forget nvm=blank`).
+
+The console prints the record on connect:
+
+```
+nvm mount=5 rotyp stored=1 zcapt=0 lcapt=0
+```
+
+`stat` carries the same flag as `nvm=<0|1>`.
 
 #### Safety and timing
 

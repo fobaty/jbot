@@ -8,7 +8,8 @@
 //!
 //! * Host → Pico: `help`, `ping`, `stat`, `stream <hz>`, `trim <deg>`,
 //!   `reinit`, `estop`, `clear`, `stats reset`, `reboot`,
-//!   `test <units> [units]`, `home <deg>`, `vmax <deg/s>`, `pscale <0..2>`.
+//!   `test <units> [units]`, `home <deg>`, `vmax <deg/s>`, `pscale <0..2>`,
+//!   `save`, `forget`.
 //! * Pico → host: `T key=value ...` telemetry, `ok ...` accepted, `err ...`
 //!   rejected, plus a banner on connect.
 //!
@@ -25,8 +26,10 @@ use embassy_usb::class::cdc_acm::{CdcAcmClass, State};
 use embassy_usb::{Builder, Config, UsbDevice};
 use static_cell::StaticCell;
 
+use crate::nvm::{self, Store};
 use crate::state::{self, Telemetry};
 use jbot_pico_core::mount::Mount;
+use jbot_pico_core::nvm::Record;
 use jbot_pico_core::spin::{SpinPair, SPIN_TORQUE_LIMIT};
 
 /// USB vendor id used for development boards without an assigned id.
@@ -148,8 +151,59 @@ enum Action {
     Reboot,
 }
 
+/// Settings snapshot that is worth keeping across a power cycle.
+///
+/// The mount is always meaningful; the zero offsets and the level reference
+/// only exist once they have been captured in this session, so an uncaptured
+/// value is stored as zero rather than as a stale number from a previous
+/// mount.
+fn current_record() -> Option<Record> {
+    let (zero_pitch_rad, zero_roll_rad) = if state::zero_captured() {
+        (state::zero_pitch_rad(), state::zero_roll_rad())
+    } else {
+        (0.0, 0.0)
+    };
+    let level_rad = if state::level_captured() {
+        state::pitch_trim_rad()
+    } else {
+        0.0
+    };
+    Record::new(
+        u8::try_from(state::mount()).ok()?,
+        zero_pitch_rad,
+        zero_roll_rad,
+        level_rad,
+    )
+}
+
+/// Write the current settings record to flash.
+///
+/// Blocking: the erase parks the XIP cache for tens of milliseconds, so this
+/// must only run while the balance law is disarmed. Every caller disarms first
+/// or refuses when armed.
+fn save_settings(flash: &mut Store) -> bool {
+    current_record().is_some_and(|record| nvm::save(flash, record).is_ok())
+}
+
+/// Report a failed settings write.
+///
+/// Success is silent on purpose: the host parses `ok level <deg>` and
+/// `ok zero pitch=... roll=...` positionally, so those reply lines must keep
+/// their shape. A failed write is a real fault (the settings would not survive
+/// the next power cycle), so it is reported as an `err` after the success
+/// line.
+async fn report_save_failure(class: &mut Console, saved: bool, context: &str) {
+    if !saved {
+        reply(
+            class,
+            format_args!("err nvm write failed: {context} not persisted"),
+        )
+        .await;
+    }
+}
+
 /// Execute one command line. Replies are written by this function.
-async fn handle_command(class: &mut Console, line: &[u8]) -> Action {
+async fn handle_command(class: &mut Console, flash: &mut Store, line: &[u8]) -> Action {
     let text = match core::str::from_utf8(line) {
         Ok(text) => text.trim(),
         Err(_) => {
@@ -169,7 +223,7 @@ async fn handle_command(class: &mut Console, line: &[u8]) -> Action {
             reply(
                 class,
                 format_args!(
-                    "ok help: ping | stat | stream <hz> | speed <mps> | steer <deg/s> | trim <deg> | zero | level | mount <name> | home [deg] | vmax [deg/s] | pscale [0..2] | arm | disarm | test <units> [units] | reinit | estop | clear | stats reset | reboot"
+                    "ok help: ping | stat | stream <hz> | speed <mps> | steer <deg/s> | trim <deg> | zero | level | mount <name> | home [deg] | vmax [deg/s] | pscale [0..2] | arm | disarm | test <units> [units] | reinit | estop | clear | save | forget | stats reset | reboot"
                 ),
             )
             .await;
@@ -186,7 +240,7 @@ async fn handle_command(class: &mut Console, line: &[u8]) -> Action {
             reply(
                 class,
                 format_args!(
-                    "stat up={:.1} loop={} stream={} trim={:.2} estop={} steps={} imu={} imu_err={} imu_code={} fb={} fb_drop={} rx={} fb_ok={} stop={} zero={:.2} zroll={:.2} level={:.2} mount={} kpnm={:.1} kdnm={:.1} kpos={:.2} kv={:.2} ki={:.3} pdem={:.1} ptrm={:.1} armed={} zcapt={} lcapt={} home={:.2} fall={} vmax={:.2} pscale={:.2}",
+                    "stat up={:.1} loop={} stream={} trim={:.2} estop={} steps={} imu={} imu_err={} imu_code={} fb={} fb_drop={} rx={} fb_ok={} stop={} zero={:.2} zroll={:.2} level={:.2} mount={} nvm={} kpnm={:.1} kdnm={:.1} kpos={:.2} kv={:.2} ki={:.3} pdem={:.1} ptrm={:.1} armed={} zcapt={} lcapt={} home={:.2} fall={} vmax={:.2} pscale={:.2}",
                     uptime_s,
                     state::loop_hz(),
                     state::stream_hz(),
@@ -205,6 +259,7 @@ async fn handle_command(class: &mut Console, line: &[u8]) -> Action {
                     state::zero_roll_rad().to_degrees(),
                     state::pitch_trim_rad().to_degrees(),
                     state::mount(),
+                    u8::from(state::nvm_present()),
                     tuning.pitch_kp_nm_per_rad,
                     tuning.pitch_kd_nm_per_rad_s,
                     tuning.position_gain_per_s,
@@ -361,11 +416,16 @@ async fn handle_command(class: &mut Console, line: &[u8]) -> Action {
                 // The home reference follows the captured calibration; drop
                 // any explicit override.
                 state::clear_home_target();
+                // Persist right away: the operator just proved that the mount
+                // maps this pose correctly, which is exactly the state worth
+                // surviving a power cycle.
+                let saved = save_settings(flash);
                 reply(
                     class,
                     format_args!("ok zero pitch={:.2} roll={:.2}", pitch, roll),
                 )
                 .await;
+                report_save_failure(class, saved, "zero").await;
             }
         }
         "level" => {
@@ -380,7 +440,9 @@ async fn handle_command(class: &mut Console, line: &[u8]) -> Action {
                 // The home reference follows the captured level; drop any
                 // explicit override.
                 state::clear_home_target();
+                let saved = save_settings(flash);
                 reply(class, format_args!("ok level {:.2}", level)).await;
+                report_save_failure(class, saved, "level").await;
             }
         }
         "home" => {
@@ -488,6 +550,7 @@ async fn handle_command(class: &mut Console, line: &[u8]) -> Action {
                         state::set_level_captured(false);
                         state::set_armed(false);
                         state::clear_home_target();
+                        let saved = save_settings(flash);
                         reply(
                             class,
                             format_args!(
@@ -497,6 +560,7 @@ async fn handle_command(class: &mut Console, line: &[u8]) -> Action {
                             ),
                         )
                         .await;
+                        report_save_failure(class, saved, "mount").await;
                     }
                     None => {
                         reply(
@@ -546,6 +610,41 @@ async fn handle_command(class: &mut Console, line: &[u8]) -> Action {
             state::set_estop(false);
             state::set_stop(None);
             reply(class, format_args!("ok clear")).await;
+        }
+        "save" => {
+            // Persist mount, zero offsets and level. A flash erase stalls the
+            // whole executor, so it is only allowed with the law disarmed:
+            // nothing is commanding torque, and the mainboard keeps its own
+            // serial timeout.
+            if state::armed() {
+                reply(
+                    class,
+                    format_args!(
+                        "err save refused: disarm first (the flash write stalls the loop)"
+                    ),
+                )
+                .await;
+            } else if save_settings(flash) {
+                state::set_nvm_present(true);
+                reply(class, format_args!("ok save nvm=stored")).await;
+            } else {
+                reply(class, format_args!("err save failed")).await;
+            }
+        }
+        "forget" => {
+            if state::armed() {
+                reply(class, format_args!("err forget refused: disarm first")).await;
+            } else {
+                match nvm::forget(flash) {
+                    Ok(()) => {
+                        state::set_nvm_present(false);
+                        reply(class, format_args!("ok forget nvm=blank")).await;
+                    }
+                    Err(()) => {
+                        reply(class, format_args!("err forget failed")).await;
+                    }
+                }
+            }
         }
         "stats" => {
             if argument == Some("reset") {
@@ -618,7 +717,7 @@ pub async fn usb_task(mut usb: Usb) {
 
 /// Serve the console: commands in, telemetry out.
 #[embassy_executor::task]
-pub async fn console_task(mut class: Console) {
+pub async fn console_task(mut class: Console, mut flash: Store) {
     let mut packet = [0u8; PACKET_SIZE as usize];
     let mut line = [0u8; MAX_LINE];
     let mut telemetry_buffer = [0u8; REPLY_BUFFER];
@@ -626,6 +725,24 @@ pub async fn console_task(mut class: Console) {
     loop {
         class.wait_connection().await;
         let _ = write_bytes(&mut class, BANNER).await;
+
+        // Say what the flash record contains. This is the first thing the
+        // operator sees after a power cycle, and a wrong mount is the failure
+        // that has to be impossible to miss.
+        let mount = Mount::from_u32(state::mount());
+        let text = format(
+            &mut telemetry_buffer,
+            format_args!(
+                "nvm mount={} {} stored={} zcapt={} lcapt={}",
+                mount.as_u32(),
+                mount.name(),
+                u8::from(state::nvm_present()),
+                u8::from(state::zero_captured()),
+                u8::from(state::level_captured())
+            ),
+        );
+        let len = text.len();
+        let _ = write_bytes(&mut class, &telemetry_buffer[..len]).await;
 
         // A new connection always starts on a clean line boundary.
         let mut line_len = 0usize;
@@ -657,7 +774,9 @@ pub async fn console_task(mut class: Console) {
                             if line_too_long {
                                 reply(&mut class, format_args!("err line too long")).await;
                             } else if line_len > 0 {
-                                match handle_command(&mut class, &line[..line_len]).await {
+                                match handle_command(&mut class, &mut flash, &line[..line_len])
+                                    .await
+                                {
                                     Action::Continue => {}
                                     Action::Reboot => {
                                         Timer::after(REBOOT_FLUSH).await;

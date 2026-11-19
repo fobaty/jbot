@@ -144,7 +144,13 @@ static LOOP_HZ: AtomicU32 = AtomicU32::new(0);
 /// BNO055 mount selector: the bench chassis carries the module rotated
 /// 180 degrees about the robot X axis, so flip-x is the default. It remains
 /// selectable over USB; any change still requires re-capturing `zero`/`level`.
+///
+/// At boot the stored record overrides this default when one decodes from
+/// flash (`crate::nvm`); the default only applies to a blank flash or a
+/// damaged record.
 static MOUNT: AtomicU32 = AtomicU32::new(Mount::Normal.as_u32());
+/// Whether a settings record was decoded from flash at boot.
+static NVM_PRESENT: AtomicBool = AtomicBool::new(false);
 /// Whether the latest IMU sample used by the control loop is fresh.
 static IMU_FRESH: AtomicBool = AtomicBool::new(false);
 /// Operator-controlled arm latch for the balance law. Cleared at boot, by
@@ -374,6 +380,16 @@ pub fn mount() -> u32 {
 /// Set the BNO055 mount selector.
 pub fn set_mount(mount: u32) {
     MOUNT.store(mount, Ordering::Relaxed);
+}
+
+/// Whether a settings record was decoded from flash at boot.
+pub fn nvm_present() -> bool {
+    NVM_PRESENT.load(Ordering::Relaxed)
+}
+
+/// Publish whether a settings record was decoded from flash at boot.
+pub fn set_nvm_present(present: bool) {
+    NVM_PRESENT.store(present, Ordering::Relaxed);
 }
 
 /// Freshness of the latest IMU sample, as used by the control loop.

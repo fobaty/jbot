@@ -36,6 +36,7 @@
 
 mod console;
 mod imu;
+mod nvm;
 mod state;
 
 use core::sync::atomic::Ordering;
@@ -152,11 +153,33 @@ async fn main(spawner: Spawner) {
 
     let watchdog = Watchdog::new(p.WATCHDOG);
 
+    // Settings record. The mount is geometry, not a tuning choice: losing it
+    // on every power cycle is what made the machine balance the wrong axis.
+    // The zero offsets and the level reference are restored as a printed
+    // reference only; the arm gate still demands a capture this session.
+    let mut flash = nvm::Store::new_blocking(p.FLASH);
+    match nvm::load(&mut flash) {
+        Some(record) => {
+            let mount = Mount::from_u32(u32::from(record.mount));
+            state::set_mount(mount.as_u32());
+            state::set_nvm_present(true);
+            info!(
+                "nvm: mount={} zero={} level={}",
+                mount.name(),
+                record.zero_pitch_rad.to_degrees(),
+                record.level_rad.to_degrees()
+            );
+        }
+        None => {
+            info!("nvm: no stored record, using compiled defaults");
+        }
+    }
+
     let usb_driver = embassy_rp::usb::Driver::new(p.USB, Irqs);
     let (usb, console) = console::new(usb_driver);
 
     spawner.must_spawn(console::usb_task(usb));
-    spawner.must_spawn(console::console_task(console));
+    spawner.must_spawn(console::console_task(console, flash));
     spawner.must_spawn(imu_task(imu));
     spawner.must_spawn(link_rx_task(link_rx));
     spawner.must_spawn(control_task(link_tx, marker, watchdog));
