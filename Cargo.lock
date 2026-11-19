@@ -1605,6 +1605,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "jbot_analysis"
+version = "0.1.0"
+
+[[package]]
 name = "jbot_common"
 version = "0.1.0"
 dependencies = [

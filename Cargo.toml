@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/jbot_analysis",
     "crates/jbot_common",
     "crates/jbot_console",
     "crates/jbot_hardware",

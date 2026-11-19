@@ -1,0 +1,12 @@
+[package]
+name = "jbot_analysis"
+version = "0.1.0"
+edition = "2021"
+authors = ["Chief Robotics Architect"]
+description = "Offline analysis of recorded JBOT console sessions (telemetry and actions CSV)"
+
+[[bin]]
+name = "jbot-analyze"
+path = "src/main.rs"
+
+[dependencies]
