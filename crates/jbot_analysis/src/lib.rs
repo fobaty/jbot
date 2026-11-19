@@ -19,3 +19,5 @@ pub mod metrics;
 pub mod session;
 
 pub use session::{Action, Error, Sample, Segment, Session};
+
+pub mod plant;
