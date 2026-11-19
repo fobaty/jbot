@@ -142,7 +142,7 @@ fore-aft offset are coupled and cannot be commanded independently. That is the
 accepted trade for a stiff, simple, lightweight leg.
 
 <p align="center">
-  <img src="jbot-v2.jpg" alt="Stage 2 concept: wheeled biped with a four-bar leg and hub-motor wheel" width="520">
+  <img src="jbot.jpg" alt="Stage 2 concept: wheeled biped with a four-bar leg and hub-motor wheel" width="520">
 </p>
 
 > Concept sketch, not a dimensioned drawing. Link lengths and the actuator
