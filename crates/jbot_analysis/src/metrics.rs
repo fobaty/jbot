@@ -24,6 +24,19 @@ const SATURATION_FRACTION: f64 = 0.995;
 /// frame is normalised so that ±1000 is ±`I_MOT_MAX`, whatever the configured
 /// current limit is; the law clamps to this value.
 const EFERU_FULL_SCALE_UNITS: f64 = 1000.0;
+/// Pitch beyond which leaving the armed state counts as a latch rather than a
+/// deliberate disarm, degrees. Matches the firmware recover threshold.
+pub const LATCH_PITCH_DEG: f64 = 15.0;
+/// Angle spread below which a session is called "too still to judge" rather
+/// than "unpaired", degrees.
+const MOTION_THRESHOLD_DEG: f64 = 1.0;
+/// Accepted slope band for "the angle integrates its own rate".
+///
+/// The BNO055 fusion lags the true angle, so a healthy pair reads 0.6..0.9
+/// rather than 1.0 and a tight band would reject it. A slope of 0.03 means the
+/// rate runs 30 times faster than the angle derivative, which is not a pair at
+/// all however well the two correlate.
+const SLOPE_BAND: (f64, f64) = (0.3, 3.0);
 
 /// Pearson correlation and least-squares slope of `y` against `x`.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -45,6 +58,9 @@ pub enum AxisVerdict {
     Swapped,
     /// The angle and its own rate have opposite signs.
     Inverted,
+    /// The channels moved, but the angle does not follow either rate: the
+    /// mapping pairs two unrelated signals.
+    Unpaired,
     /// Too few usable pairs, or the motion was too small to judge.
     Unknown,
 }
@@ -56,6 +72,7 @@ impl AxisVerdict {
             Self::Consistent => "consistent",
             Self::Swapped => "SWAPPED",
             Self::Inverted => "INVERTED",
+            Self::Unpaired => "UNPAIRED",
             Self::Unknown => "unknown",
         }
     }
@@ -63,6 +80,11 @@ impl AxisVerdict {
     /// Whether the axis can be trusted for the balance law.
     pub fn is_trustworthy(self) -> bool {
         matches!(self, Self::Consistent)
+    }
+
+    /// Whether the pair is definitely wrong, as opposed to unjudged.
+    pub fn is_fault(self) -> bool {
+        matches!(self, Self::Swapped | Self::Inverted | Self::Unpaired)
     }
 }
 
@@ -73,6 +95,10 @@ pub struct AxisLine {
     pub direct: Option<Fit>,
     /// `d(angle)/dt` against the other rate channel.
     pub cross: Option<Fit>,
+    /// Standard deviation of the angle itself, degrees. Below one degree the
+    /// session simply did not move enough to judge, and a noisy derivative
+    /// must not be mistaken for motion.
+    pub angle_std_deg: f64,
 }
 
 impl AxisLine {
@@ -88,7 +114,7 @@ impl AxisLine {
                 if direct.corr <= -0.7 {
                     return AxisVerdict::Inverted;
                 }
-                if direct.corr >= 0.7 && (0.7..=1.4).contains(&direct.slope) {
+                if direct.corr >= 0.7 && (SLOPE_BAND.0..=SLOPE_BAND.1).contains(&direct.slope) {
                     return AxisVerdict::Consistent;
                 }
             }
@@ -96,7 +122,13 @@ impl AxisLine {
         // A swapped axis can have a near-zero direct correlation, so the
         // cross channel is checked even when the direct one is unusable.
         if cross_is_strong {
-            AxisVerdict::Swapped
+            return AxisVerdict::Swapped;
+        }
+        // Channels that moved but do not pair with each other: a mount whose
+        // angle source and rate source disagree, which the balance law cannot
+        // survive.
+        if self.angle_std_deg >= MOTION_THRESHOLD_DEG {
+            AxisVerdict::Unpaired
         } else {
             AxisVerdict::Unknown
         }
@@ -113,14 +145,24 @@ pub struct AxisCheck {
 }
 
 impl AxisCheck {
-    /// Overall verdict: the worse of the two axes.
+    /// Overall verdict.
+    ///
+    /// A definite fault on either axis wins. Otherwise one clean axis is
+    /// enough: a robot that only leans forward during the test proves the
+    /// pitch pair, and a still roll axis must not hide that. The per-axis
+    /// verdicts remain the authority on which axis was actually judged.
     pub fn verdict(&self) -> AxisVerdict {
         let pitch = self.pitch.verdict();
         let roll = self.roll.verdict();
-        if !pitch.is_trustworthy() {
-            pitch
+        for verdict in [pitch, roll] {
+            if verdict.is_fault() {
+                return verdict;
+            }
+        }
+        if pitch.is_trustworthy() || roll.is_trustworthy() {
+            AxisVerdict::Consistent
         } else {
-            roll
+            AxisVerdict::Unknown
         }
     }
 }
@@ -134,9 +176,15 @@ impl AxisCheck {
 pub fn axis_check<'a>(samples: impl Iterator<Item = &'a Sample>) -> AxisCheck {
     let mut pitch: Vec<(f64, f64, f64)> = Vec::new();
     let mut roll: Vec<(f64, f64, f64)> = Vec::new();
+    let mut pitch_angles: Vec<f64> = Vec::new();
+    let mut roll_angles: Vec<f64> = Vec::new();
     let mut previous: Option<&Sample> = None;
 
     for sample in samples {
+        if sample.imu_fresh {
+            pitch_angles.push(sample.pitch_deg);
+            roll_angles.push(sample.roll_deg);
+        }
         if let Some(last) = previous {
             let dt = (sample.t_ms.saturating_sub(last.t_ms)) as f64 / 1000.0;
             if (MIN_DT_S..=MAX_DT_S).contains(&dt) && last.imu_fresh && sample.imu_fresh {
@@ -150,17 +198,18 @@ pub fn axis_check<'a>(samples: impl Iterator<Item = &'a Sample>) -> AxisCheck {
     }
 
     AxisCheck {
-        pitch: line(&pitch),
-        roll: line(&roll),
+        pitch: line(&pitch, deviation(&pitch_angles)),
+        roll: line(&roll, deviation(&roll_angles)),
     }
 }
 
 /// Build an [`AxisLine`] from `(derivative, own rate, other rate)` triples.
-fn line(pairs: &[(f64, f64, f64)]) -> AxisLine {
+fn line(pairs: &[(f64, f64, f64)], angle_std_deg: f64) -> AxisLine {
     if pairs.len() < 8 {
         return AxisLine {
             direct: None,
             cross: None,
+            angle_std_deg,
         };
     }
     let direct_x: Vec<f64> = pairs.iter().map(|pair| pair.0).collect();
@@ -169,6 +218,7 @@ fn line(pairs: &[(f64, f64, f64)]) -> AxisLine {
     AxisLine {
         direct: fit_through_origin(&direct_x, &direct_y),
         cross: fit_through_origin(&direct_x, &cross_y),
+        angle_std_deg,
     }
 }
 
@@ -416,6 +466,88 @@ pub fn oscillation<'a>(samples: impl Iterator<Item = &'a Sample>) -> Option<Osci
     })
 }
 
+/// Spread of one attitude channel over a session.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ChannelMotion {
+    /// Standard deviation of the angle, degrees.
+    pub std_deg: f64,
+    /// Standard deviation of the rate channel, degrees per second.
+    pub rate_std_dps: f64,
+}
+
+/// How the tilt is distributed between the two attitude channels.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Motion {
+    /// Pitch channel.
+    pub pitch: ChannelMotion,
+    /// Roll channel.
+    pub roll: ChannelMotion,
+}
+
+impl Motion {
+    /// Fraction of the tilt variance that lives in `pitch`, `0..=1`.
+    ///
+    /// A forward-lean test on a correctly mapped machine puts most of the
+    /// motion in `pitch`. A wrong mount moves `roll` instead, which is the
+    /// signature the rate/angle check also looks for.
+    pub fn pitch_share(&self) -> f64 {
+        let pitch = self.pitch.std_deg * self.pitch.std_deg;
+        let roll = self.roll.std_deg * self.roll.std_deg;
+        let total = pitch + roll;
+        if total <= f64::EPSILON {
+            0.0
+        } else {
+            pitch / total
+        }
+    }
+
+    /// Whether either channel carried enough motion to be worth judging.
+    pub fn has_motion(&self) -> bool {
+        self.pitch.rate_std_dps + self.roll.rate_std_dps > 1.0
+    }
+}
+
+/// Standard deviation of each attitude channel and its rate over the session.
+pub fn motion<'a>(samples: impl Iterator<Item = &'a Sample>) -> Motion {
+    let mut pitch = Vec::new();
+    let mut roll = Vec::new();
+    let mut gy = Vec::new();
+    let mut gx = Vec::new();
+    for sample in samples {
+        if !sample.imu_fresh {
+            continue;
+        }
+        pitch.push(sample.pitch_deg);
+        roll.push(sample.roll_deg);
+        gy.push(sample.gy_dps);
+        gx.push(sample.gx_dps);
+    }
+    Motion {
+        pitch: ChannelMotion {
+            std_deg: deviation(&pitch),
+            rate_std_dps: deviation(&gy),
+        },
+        roll: ChannelMotion {
+            std_deg: deviation(&roll),
+            rate_std_dps: deviation(&gx),
+        },
+    }
+}
+
+/// Population standard deviation of a series.
+fn deviation(values: &[f64]) -> f64 {
+    if values.len() < 2 {
+        return 0.0;
+    }
+    let mean = values.iter().sum::<f64>() / values.len() as f64;
+    let variance = values
+        .iter()
+        .map(|value| (value - mean).powi(2))
+        .sum::<f64>()
+        / values.len() as f64;
+    variance.sqrt()
+}
+
 /// Headline numbers for a session.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Summary {
@@ -429,6 +561,13 @@ pub struct Summary {
     pub estop_s: f64,
     /// Transitions into `mode 4`.
     pub falls: usize,
+    /// Transitions out of an armed mode while the body was past the recover
+    /// threshold.
+    ///
+    /// A mid-run latch is a single control tick, and the console samples the
+    /// telemetry at 50 Hz from a 200 Hz loop, so the `mode 4` row is usually
+    /// overwritten before it is read. The transition is the reliable witness.
+    pub suspected_latches: usize,
     /// Samples per balance mode, index `0..=4`.
     pub mode_counts: [usize; 5],
     /// Pitch range, degrees.
@@ -446,6 +585,7 @@ pub fn summary(session: &Session) -> Summary {
     let mut armed_s = 0.0;
     let mut estop_s = 0.0;
     let mut falls = 0;
+    let mut suspected_latches = 0;
     let mut mode_counts = [0usize; 5];
     let mut pitch = (f64::INFINITY, f64::NEG_INFINITY);
     let mut roll = (f64::INFINITY, f64::NEG_INFINITY);
@@ -467,6 +607,12 @@ pub fn summary(session: &Session) -> Summary {
         }
         if sample.mode == MODE_FALL && previous_mode != MODE_FALL {
             falls += 1;
+        }
+        if index > 0 {
+            let last = &session.samples[index - 1];
+            if last.armed() && !sample.armed() && last.pitch_deg.abs() >= LATCH_PITCH_DEG {
+                suspected_latches += 1;
+            }
         }
         mode_counts[usize::from(sample.mode).min(4)] += 1;
         pitch.0 = pitch.0.min(sample.pitch_deg);
@@ -494,6 +640,7 @@ pub fn summary(session: &Session) -> Summary {
         armed_s,
         estop_s,
         falls,
+        suspected_latches,
         mode_counts,
         pitch_range: pitch,
         roll_range: roll,
@@ -551,6 +698,34 @@ mod tests {
         assert_eq!(check.verdict(), AxisVerdict::Consistent);
         let pitch = check.pitch.direct.unwrap();
         assert!((pitch.slope - 1.0).abs() < 0.05, "slope {}", pitch.slope);
+    }
+
+    #[test]
+    fn a_rate_far_out_of_scale_is_not_consistent() {
+        // The mount-sweep signature: the channels correlate, but the reported
+        // rate is 30x the angle derivative, so the pair is unusable.
+        let samples: Vec<Sample> = consistent_run(4.0, |t| 20.0 * (2.0 * t).sin(), |_| 0.0)
+            .into_iter()
+            .map(|sample| Sample {
+                gy_dps: sample.gy_dps * 30.0,
+                ..sample
+            })
+            .collect();
+        assert_eq!(
+            axis_check(samples.iter()).pitch.verdict(),
+            AxisVerdict::Unpaired
+        );
+    }
+
+    #[test]
+    fn one_clean_axis_is_enough_for_the_overall_verdict() {
+        // A forward-lean check moves pitch only; the still roll axis must not
+        // downgrade the verdict for the axis that was actually exercised.
+        let samples = consistent_run(4.0, |t| 20.0 * (2.0 * t).sin(), |_| 0.0);
+        let check = axis_check(samples.iter());
+        assert_eq!(check.pitch.verdict(), AxisVerdict::Consistent);
+        assert_eq!(check.roll.verdict(), AxisVerdict::Unknown);
+        assert_eq!(check.verdict(), AxisVerdict::Consistent);
     }
 
     #[test]
@@ -701,6 +876,62 @@ mod tests {
     }
 
     #[test]
+    fn motion_exposes_a_wrong_axis_session() {
+        // What a forward-lean test looks like with `mount 0`: the tilt lands
+        // in roll, pitch barely moves.
+        let samples: Vec<Sample> = (0..200)
+            .map(|step| {
+                let t = step as f64 * 0.005;
+                Sample {
+                    t_ms: step * 5,
+                    imu_fresh: true,
+                    pitch_deg: 0.2 * t.sin(),
+                    roll_deg: 25.0 * t.sin(),
+                    gy_dps: 1.0 * t.cos(),
+                    gx_dps: 80.0 * t.cos(),
+                    mode: 0,
+                    ..Sample::default()
+                }
+            })
+            .collect();
+        let motion = motion(samples.iter());
+        assert!(motion.has_motion());
+        assert!(motion.pitch_share() < 0.01, "{motion:?}");
+    }
+
+    #[test]
+    fn motion_is_empty_for_a_still_session() {
+        let samples: Vec<Sample> = (0..50)
+            .map(|step| Sample {
+                t_ms: step * 5,
+                imu_fresh: true,
+                ..Sample::default()
+            })
+            .collect();
+        let motion = motion(samples.iter());
+        assert!(!motion.has_motion());
+        assert_eq!(motion.pitch_share(), 0.0);
+    }
+
+    #[test]
+    fn a_latch_is_inferred_from_the_armed_transition() {
+        let samples = vec![
+            sample(0, 0.0, 0.0, 0.0, 0.0, 0),
+            sample(10, 2.0, 0.0, 0.0, 0.0, 2),
+            sample(20, 20.0, 0.0, 0.0, 0.0, 2),
+            sample(30, 24.0, 0.0, 0.0, 0.0, 0),
+            sample(40, 40.0, 0.0, 0.0, 0.0, 0),
+        ];
+        let session = Session {
+            samples,
+            ..Session::default()
+        };
+        let summary = summary(&session);
+        assert_eq!(summary.suspected_latches, 1);
+        assert_eq!(summary.falls, 0);
+    }
+
+    #[test]
     fn summary_counts_modes_and_falls() {
         let samples = vec![
             sample(0, 0.0, 0.0, 0.0, 0.0, 0),
@@ -711,7 +942,7 @@ mod tests {
         ];
         let session = Session {
             samples,
-            truncated_rows: 0,
+            ..Session::default()
         };
         let summary = summary(&session);
         assert_eq!(summary.falls, 1);

@@ -470,6 +470,11 @@ event log, CSV recording, and the same commands from a keyboard. The native
 `jbot-console` (`crates/jbot_console`) speaks the same protocol and adds the
 attitude horizon and compass view.
 
+A recorded pair (`jbot-telemetry-*.csv` plus `jbot-actions-*.csv`) is read back
+by `jbot-analyze` (`crates/jbot_analysis`), which reports the axis mapping, the
+applied pitch law, the drive breakaway bracket and any ringing; see
+`docs/telemetry-analysis.md`.
+
 ### 8.2. Home reference, balance cascade, and fall latch (bench pending)
 
 The pitch reference is no longer a constant captured value. An acceleration-limited

@@ -407,6 +407,46 @@ downgrade path — an older firmware refuses an unknown record version instead
 of misreading it, which is the safe default but leaves the operator with the
 compiled defaults and no explanation beyond the boot line.
 
+### 8.5 Offline analysis of the recorded sessions (2026-11-18)
+
+`jbot-analyze` (`crates/jbot_analysis`, `docs/telemetry-analysis.md`) was run over
+all 14 recordings. It confirms §8.3 from the files alone and adds three numbers
+the bench could not see:
+
+* **The falling run reproduces the compiled law.** On
+  `jbot-telemetry-1795045179.csv` the two-predictor fit over 235 unsaturated
+  armed samples gives `kp = 1201 units/rad = 6.0 Nm/rad` and
+  `kd = 223 units/(rad/s) = 1.11 Nm/(rad/s)`, against the `stat` line's
+  `kpnm=5.7`, `kdnm=1.4`. `R2 = 0.9996`, residual 3 units. The gain that was
+  applied is the gain that was requested; the surviving 21 % `kd` gap is the
+  BNO055 fusion lag in the angle derivative, not a firmware fault.
+* **The dead zone is where the model says it is.** The breakaway bracket is
+  84..284 units (0.42..1.42 Nm nominal): the drive stayed at zero speed up to
+  84 units and was rolling from 284. This is consistent with the assumed 0.5 Nm
+  dead zone and explains why the first 3 s of the fall produced no wheel motion
+  at all — the law was still inside the dead zone.
+* **The recovery failure is a gain failure, not a sign failure.** `mount 1`
+  reads `pitch` against `gy` at correlation +0.90, slope 0.83, and the fit's
+  `kp` is positive: the channels are paired and the law pushes the right way.
+  5.7 Nm/rad is about a fifth of the 28.5 Nm/rad the nominal plant needs, which
+  is the same conclusion as §8.3 from the other direction.
+* **`mount 0` is visibly wrong.** In the sweep session
+  (`jbot-telemetry-1795041000.csv`, `mount=0`) 99 % of the angular variance sits
+  in roll while pitch is flat, and the roll pair is unpaired: a tilt of the
+  chassis does not reach the pitch channel at all.
+* **The roll pair does not close on the older sessions.** Four of the eight
+  pre-`mode` recordings put the roll angle against `gx` at correlation −0.6 to
+  −0.8, and three cross the −0.7 inversion threshold. Those sessions predate
+  the `mount` command and ran on the compiled default, `mount normal`, where
+  the law is fed BNO055 Euler angles but the damper is fed raw gyro rates, and
+  the two do not share a sign convention on this axis. The balance law only
+  consumes pitch, so this has not caused a fall; a roll or yaw damper built on
+  that pair would have the wrong sign, and a remapping mount removes the
+  mismatch by deriving both from one matrix.
+
+Ten of the 14 files predate the `mode` column, so arming and falls are reported
+as not measurable for them rather than as zero.
+
 ## 9. Open items
 
 1. Bench identification of mass, centre-of-mass height, total torque per 1000 units,

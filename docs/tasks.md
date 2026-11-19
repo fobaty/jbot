@@ -298,6 +298,14 @@ actuator/jitter/latency/E-stop protocols.
 | [ ] M3-55 | Implement `defmt` RTT logging and a panic handler that leaves the outputs safe | P1 | M3-02 | Panic dumps over RTT; torque stays zero after a panic |
 | [ ] M3-56 | Implement a startup self-test that covers IMU presence, calibration state, mainboard link, radio, pack voltage and charge state | P1 | M3-19 | `SELF_TEST` fails loudly and blocks arming when any check is missing |
 
+### 4.9. Offline analysis and plant identification
+
+| ID | Task | Priority | Depends on | Acceptance criterion |
+|---|---|---|---|---|
+| [x] M3-57 | Implement the offline session analyzer `jbot-analyze`: attitude/rate consistency per axis, recovered pitch law, drive breakaway bracket, ringing | P1 | M3-34 | Reads a recorded telemetry CSV and its action log; reports consistent/inverted/swapped/unpaired per axis and refuses to guess when the session is too still (`docs/telemetry-analysis.md`) |
+| [ ] M3-58 | Identify the plant on the bench: torque constant, dead zone, CoM height and the force ladder, then re-derive `kp`/`kd` and the saturation limits from measurement instead of the nominal 5 Nm figures | P1 | M3-57, M3-42 | Measured values recorded in `docs/design_balance_home.md`; the nominal constants are replaced and the change is justified by a recording |
+| [ ] M3-59 | Add a mount-selection wizard that sweeps the seven mounts, asks for a forward lean at each and picks the one whose pitch responds, then persists it | P1 | M3-57, M3-42 | Wizard completes without a console command list; the selected mount survives a reboot and the axis check confirms it |
+
 ---
 
 ## 5. M4. Sensor drivers and mission computer transport

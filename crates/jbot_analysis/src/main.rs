@@ -8,7 +8,7 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use jbot_analysis::metrics::{self, AxisVerdict, Breakaway, Fit, Oscillation};
+use jbot_analysis::metrics::{self, AxisCheck, AxisVerdict, Breakaway, Fit, Oscillation};
 use jbot_analysis::session::{self, Segment, Session};
 
 /// EFeru command units per newton-metre at the nominal 5 Nm plant. Reported as
@@ -78,8 +78,18 @@ fn usage() {
 fn report(path: &Path, explicit_actions: Option<&Path>) -> Result<(), session::Error> {
     let session = session::read_session(path)?;
     let summary = metrics::summary(&session);
+    let check = metrics::axis_check(session.samples.iter());
+    // `mode` arrived after the first recordings. Without it "armed 0.0 s" would
+    // read as "the law never ran", when the truth is "the file cannot say".
+    let mode_recorded = !session.missing.contains(&"mode");
 
     println!("{}", path.display());
+    if !session.missing.is_empty() {
+        println!(
+            "  schema: recorded before {} (those fields default to zero)",
+            session.missing.join(", ")
+        );
+    }
     println!(
         "  rows {} ({} truncated), {:.1} s, modes 0:{} 1:{} 2:{} 3:{} 4:{}",
         summary.rows,
@@ -91,10 +101,17 @@ fn report(path: &Path, explicit_actions: Option<&Path>) -> Result<(), session::E
         summary.mode_counts[3],
         summary.mode_counts[4],
     );
-    println!(
-        "  armed {:.2} s, estop {:.2} s, falls {}",
-        summary.armed_s, summary.estop_s, summary.falls
-    );
+    if mode_recorded {
+        println!(
+            "  armed {:.2} s, estop {:.2} s, falls {}, suspected latches {}",
+            summary.armed_s, summary.estop_s, summary.falls, summary.suspected_latches
+        );
+    } else {
+        println!(
+            "  estop {:.2} s, falls n/a, suspected latches n/a (schema predates `mode`)",
+            summary.estop_s
+        );
+    }
     println!(
         "  pitch {:.1}..{:.1} deg, roll {:.1}..{:.1} deg, rpm {:.0}..{:.0}, torque {:.0}..{:.0} units",
         summary.pitch_range.0,
@@ -106,6 +123,23 @@ fn report(path: &Path, explicit_actions: Option<&Path>) -> Result<(), session::E
         summary.torque_range.0,
         summary.torque_range.1,
     );
+
+    let motion = metrics::motion(session.samples.iter());
+    if motion.has_motion() {
+        println!(
+            "  motion  pitch std {:.1} deg (gy {:.1}), roll std {:.1} deg (gx {:.1}), pitch share {:.0} %",
+            motion.pitch.std_deg,
+            motion.pitch.rate_std_dps,
+            motion.roll.std_deg,
+            motion.roll.rate_std_dps,
+            motion.pitch_share() * 100.0,
+        );
+        if motion.pitch_share() < 0.3 {
+            println!(
+                "          most of the tilt is in roll: if this was a forward-lean check, the attitude mapping is wrong"
+            );
+        }
+    }
 
     let actions = actions_for(path, explicit_actions)?;
     let segments = match &actions {
@@ -145,7 +179,7 @@ fn report(path: &Path, explicit_actions: Option<&Path>) -> Result<(), session::E
     }
 
     println!();
-    print_axis_check(&session);
+    print_axis_check(&check);
     println!();
     print_law_fit(&session);
     println!();
@@ -156,8 +190,15 @@ fn report(path: &Path, explicit_actions: Option<&Path>) -> Result<(), session::E
     let mut warnings: Vec<String> = Vec::new();
     if summary.falls > 0 {
         warnings.push(format!(
-            "{} fall latch(es): the law stopped itself, check `stop` in the actions file",
+            "{} `mode 4` row(s) captured: the law latched itself, check `stop` in the actions file",
             summary.falls
+        ));
+    }
+    if summary.suspected_latches > 0 {
+        warnings.push(format!(
+            "{} mid-run latch(es) inferred from armed->disarmed past {:.0} deg (`mode 4` lasts one tick and the 50 Hz stream usually drops it)",
+            summary.suspected_latches,
+            metrics::LATCH_PITCH_DEG
         ));
     }
     if session.truncated_rows > 0 {
@@ -166,8 +207,26 @@ fn report(path: &Path, explicit_actions: Option<&Path>) -> Result<(), session::E
             session.truncated_rows
         ));
     }
-    if summary.armed_s <= 0.0 {
+    if !mode_recorded {
+        warnings.push(
+            "no `mode` column: arming, falls and the pitch law cannot be judged for this file"
+                .to_owned(),
+        );
+    } else if summary.armed_s <= 0.0 {
         warnings.push("no armed samples: the pitch law cannot be judged".to_owned());
+    }
+    // With `mount normal` the angles come from the BNO055 Euler output while
+    // the rates are the raw gyro, and the two conventions are not the same.
+    // The roll pair then reads inverted even on a healthy sensor. The control
+    // law only consumes pitch, so this is a latent fault, not the reason the
+    // robot will not balance; a remapping mount removes it.
+    if check.pitch.verdict() == AxisVerdict::Consistent
+        && check.roll.verdict() == AxisVerdict::Inverted
+    {
+        warnings.push(
+            "roll angle and roll rate disagree in sign; the usual cause is `mount normal`, which mixes BNO055 Euler angles with raw gyro rates. A remapping mount (-90x/+90x/-90y/+90y) re-derives both from the same matrix"
+                .to_owned(),
+        );
     }
     if !warnings.is_empty() {
         println!();
@@ -187,8 +246,7 @@ fn display_path(path: &Path) -> String {
 }
 
 /// Print the whole-session axis check.
-fn print_axis_check(session: &Session) {
-    let check = metrics::axis_check(session.samples.iter());
+fn print_axis_check(check: &AxisCheck) {
     println!("  axis check (angle derivative against gyro, 1..50 ms gaps)");
     line(
         "pitch",
@@ -206,11 +264,35 @@ fn print_axis_check(session: &Session) {
         check.roll.cross,
         check.roll.verdict(),
     );
-    println!(
-        "    verdict: {}{}",
-        check.verdict().label(),
-        verdict_hint(check.verdict())
-    );
+    let verdict = check.verdict();
+    print!("    verdict: {}{}", verdict.label(), verdict_hint(verdict));
+    if verdict.is_fault() {
+        // Name the axis behind the headline. `unpaired` alone reads as if the
+        // pitch pair were bad, when it is often the roll pair that never
+        // closed.
+        let mut failed = Vec::new();
+        if check.pitch.verdict().is_fault() {
+            failed.push("pitch");
+        }
+        if check.roll.verdict().is_fault() {
+            failed.push("roll");
+        }
+        print!(" (axis: {})", failed.join(", "));
+    } else if verdict == AxisVerdict::Consistent {
+        // Say which axis was left out, so "consistent" is not read as "both
+        // axes verified" when the test only moved one of them.
+        let mut skipped = Vec::new();
+        if !check.pitch.verdict().is_trustworthy() {
+            skipped.push("pitch");
+        }
+        if !check.roll.verdict().is_trustworthy() {
+            skipped.push("roll");
+        }
+        if !skipped.is_empty() {
+            print!(" ({} not judged)", skipped.join(", "));
+        }
+    }
+    println!();
 }
 
 fn verdict_hint(verdict: AxisVerdict) -> &'static str {
@@ -218,7 +300,8 @@ fn verdict_hint(verdict: AxisVerdict) -> &'static str {
         AxisVerdict::Consistent => "",
         AxisVerdict::Swapped => " - pitch/roll channels do not belong together",
         AxisVerdict::Inverted => " - angle and rate disagree in sign",
-        AxisVerdict::Unknown => " - too little motion to judge",
+        AxisVerdict::Unpaired => " - angle and rate channels do not belong together",
+        AxisVerdict::Unknown => " - neither axis moved enough to judge",
     }
 }
 
@@ -275,6 +358,9 @@ fn print_law_fit(session: &Session) {
                 },
             );
         }
+        None if session.missing.contains(&"mode") => {
+            println!("  pitch law: not measurable (schema predates `mode`)");
+        }
         None => println!("  pitch law: not measurable (not enough armed, unsaturated samples)"),
     }
 }
@@ -303,6 +389,9 @@ fn print_breakaway(session: &Session) {
                 moving_min_units.max(stuck_max_units) / NOMINAL_UNITS_PER_NM,
             );
         }
+        None if session.missing.contains(&"mode") => {
+            println!("  drive breakaway: not measurable (schema predates `mode`)");
+        }
         None => println!("  drive breakaway: not measurable (no armed rolling samples)"),
     }
 }
@@ -324,6 +413,9 @@ fn print_oscillation(session: &Session) {
                     "    p2p {error_p2p_deg:.1} deg, {crossings_per_s:.2} sign changes/s (no period: not oscillating)",
                 ),
             }
+        }
+        None if session.missing.contains(&"mode") => {
+            println!("  pitch error: not measurable (schema predates `mode`)");
         }
         None => println!("  pitch error: no armed samples"),
     }

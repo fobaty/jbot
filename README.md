@@ -201,6 +201,7 @@ jbot/
     ├── roadmap.md              # Phased delivery plan and gate criteria
     ├── system_requirements.md  # High-level requirements
     ├── agent_workflow.md       # Engineering workflow
+    ├── telemetry-analysis.md   # Offline analysis of recorded console sessions
     ├── tasks.md                # Task breakdown
     └── skills/                 # Rust robotics engineering guidelines
 ```
@@ -349,6 +350,7 @@ Two donor-specific hazards matter from day one:
 | [`docs/roadmap.md`](docs/roadmap.md) | Phases, gates, schedule, critical path |
 | [`docs/tasks.md`](docs/tasks.md) | Granular task breakdown |
 | [`docs/agent_workflow.md`](docs/agent_workflow.md) | Contribution and review workflow |
+| [`docs/telemetry-analysis.md`](docs/telemetry-analysis.md) | `jbot-analyze`: offline axis, law, breakaway and ringing report |
 | [`crates/jbot_console/README.md`](crates/jbot_console/README.md) | Native Pico console: attitude, compass, drive controls |
 | [`firmware/README.md`](firmware/README.md) | EFeru builds, flash, wiring, Pico plan |
 

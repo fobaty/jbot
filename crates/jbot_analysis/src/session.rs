@@ -8,8 +8,8 @@
 use std::fmt;
 use std::path::Path;
 
-/// Columns the analyzer needs from a telemetry file.
-const TELEMETRY_COLUMNS: [&str; 25] = [
+/// Columns the analyzer cannot work without.
+const REQUIRED_COLUMNS: [&str; 16] = [
     "t_ms",
     "step",
     "loop_hz",
@@ -25,9 +25,14 @@ const TELEMETRY_COLUMNS: [&str; 25] = [
     "bat_v",
     "age_ms",
     "estop",
+    "torque_units",
+];
+
+/// Columns that later firmware added; a recording without them is still
+/// readable, with the fields defaulted to zero.
+const OPTIONAL_COLUMNS: [&str; 9] = [
     "vset",
     "wset",
-    "torque_units",
     "test_left_units",
     "test_right_units",
     "ref_deg",
@@ -126,6 +131,13 @@ pub struct Session {
     pub samples: Vec<Sample>,
     /// Rows dropped because the file ended mid-line.
     pub truncated_rows: usize,
+    /// Columns the recording does not carry, in schema order.
+    ///
+    /// Sessions recorded before the pitch reference existed (`ref_deg`,
+    /// `demand_deg`, `trim_deg`, `position_m`, `mode`) are still readable;
+    /// the fields default to zero and the report says which sections cannot
+    /// run.
+    pub missing: Vec<&'static str>,
 }
 
 impl Session {
@@ -227,7 +239,14 @@ pub fn parse_session(text: &str) -> Result<Session, Error> {
     let names: Vec<&str> = header.split(',').map(str::trim).collect();
     let columns = Columns::resolve(&names)?;
 
-    let mut session = Session::default();
+    let mut session = Session {
+        missing: OPTIONAL_COLUMNS
+            .iter()
+            .filter(|name| !names.contains(name))
+            .copied()
+            .collect(),
+        ..Session::default()
+    };
     for (index, line) in lines {
         let number = index + 1;
         let line = line.trim();
@@ -317,6 +336,10 @@ pub fn mount_segments(actions: &[Action], end_ms: u64) -> Vec<Segment> {
 }
 
 /// Resolved column positions.
+///
+/// The first block is required: without it nothing can be analysed. The
+/// second block is optional and defaults to zero, so a recording from before
+/// the pitch reference existed still yields an axis and motion report.
 struct Columns {
     t_ms: usize,
     step: usize,
@@ -333,21 +356,21 @@ struct Columns {
     bat_v: usize,
     age_ms: usize,
     estop: usize,
-    vset: usize,
-    wset: usize,
+    vset: Option<usize>,
+    wset: Option<usize>,
     torque_units: usize,
-    test_left_units: usize,
-    test_right_units: usize,
-    ref_deg: usize,
-    demand_deg: usize,
-    trim_deg: usize,
-    position_m: usize,
-    mode: usize,
+    test_left_units: Option<usize>,
+    test_right_units: Option<usize>,
+    ref_deg: Option<usize>,
+    demand_deg: Option<usize>,
+    trim_deg: Option<usize>,
+    position_m: Option<usize>,
+    mode: Option<usize>,
 }
 
 impl Columns {
     fn resolve(names: &[&str]) -> Result<Self, Error> {
-        for required in TELEMETRY_COLUMNS {
+        for required in REQUIRED_COLUMNS {
             position(names, required)?;
         }
         Ok(Self {
@@ -366,16 +389,16 @@ impl Columns {
             bat_v: position(names, "bat_v")?,
             age_ms: position(names, "age_ms")?,
             estop: position(names, "estop")?,
-            vset: position(names, "vset")?,
-            wset: position(names, "wset")?,
+            vset: optional(names, "vset"),
+            wset: optional(names, "wset"),
             torque_units: position(names, "torque_units")?,
-            test_left_units: position(names, "test_left_units")?,
-            test_right_units: position(names, "test_right_units")?,
-            ref_deg: position(names, "ref_deg")?,
-            demand_deg: position(names, "demand_deg")?,
-            trim_deg: position(names, "trim_deg")?,
-            position_m: position(names, "position_m")?,
-            mode: position(names, "mode")?,
+            test_left_units: optional(names, "test_left_units"),
+            test_right_units: optional(names, "test_right_units"),
+            ref_deg: optional(names, "ref_deg"),
+            demand_deg: optional(names, "demand_deg"),
+            trim_deg: optional(names, "trim_deg"),
+            position_m: optional(names, "position_m"),
+            mode: optional(names, "mode"),
         })
     }
 
@@ -396,18 +419,26 @@ impl Columns {
             bat_v: number(fields, self.bat_v, "bat_v", line)?,
             age_ms: number(fields, self.age_ms, "age_ms", line)?,
             estop: flag(fields, self.estop, "estop", line)?,
-            vset: number(fields, self.vset, "vset", line)?,
-            wset: number(fields, self.wset, "wset", line)?,
+            vset: optional_number(fields, self.vset),
+            wset: optional_number(fields, self.wset),
             torque_units: number(fields, self.torque_units, "torque_units", line)?,
-            test_left_units: number(fields, self.test_left_units, "test_left_units", line)?,
-            test_right_units: number(fields, self.test_right_units, "test_right_units", line)?,
-            ref_deg: number(fields, self.ref_deg, "ref_deg", line)?,
-            demand_deg: number(fields, self.demand_deg, "demand_deg", line)?,
-            trim_deg: number(fields, self.trim_deg, "trim_deg", line)?,
-            position_m: number(fields, self.position_m, "position_m", line)?,
-            mode: mode(fields, self.mode, line)?,
+            test_left_units: optional_number(fields, self.test_left_units),
+            test_right_units: optional_number(fields, self.test_right_units),
+            ref_deg: optional_number(fields, self.ref_deg),
+            demand_deg: optional_number(fields, self.demand_deg),
+            trim_deg: optional_number(fields, self.trim_deg),
+            position_m: optional_number(fields, self.position_m),
+            mode: match self.mode {
+                Some(index) => mode(fields, index, line)?,
+                None => 0,
+            },
         })
     }
+}
+
+/// Column position, or `None` when the recording predates the field.
+fn optional(names: &[&str], want: &str) -> Option<usize> {
+    names.iter().position(|name| *name == want)
 }
 
 fn position(names: &[&str], want: &str) -> Result<usize, Error> {
@@ -424,6 +455,14 @@ fn number(fields: &[&str], index: usize, want: &str, line: usize) -> Result<f64,
             format!("`{want}` is not a number: `{}`", fields[index]),
         )
     })
+}
+
+/// Field value when the column exists, otherwise zero.
+fn optional_number(fields: &[&str], index: Option<usize>) -> f64 {
+    index
+        .and_then(|index| fields.get(index))
+        .and_then(|value| value.trim().parse::<f64>().ok())
+        .unwrap_or(0.0)
 }
 
 fn unsigned(fields: &[&str], index: usize, want: &str, line: usize) -> Result<u64, Error> {
@@ -515,6 +554,24 @@ mod tests {
         let text = format!("{HEADER},future\n{},1\n", row(10, 1.0, 0.0, 0.0, 0.0, 1));
         let session = parse_session(&text).unwrap();
         assert_eq!(session.samples.len(), 1);
+    }
+
+    #[test]
+    fn legacy_recording_without_reference_still_parses() {
+        let header = "t_ms,step,loop_hz,imu_fresh,pitch_deg,roll_deg,heading_deg,gy_dps,gx_dps,gz_dps,left_rpm,right_rpm,bat_v,age_ms,estop,torque_units";
+        let text = format!("{header}\n0,0,200,1,1.0,0.0,0,0,0,0,0,0,40.0,5,0,0\n");
+        let session = parse_session(&text).unwrap();
+        assert_eq!(session.samples.len(), 1);
+        assert_eq!(session.samples[0].mode, 0);
+        assert!(session.missing.contains(&"ref_deg"));
+        assert!(session.missing.contains(&"mode"));
+    }
+
+    #[test]
+    fn current_recording_reports_no_missing_columns() {
+        let text = format!("{HEADER}\n{}\n", row(10, 0.0, 0.0, 0.0, 0.0, 0));
+        let session = parse_session(&text).unwrap();
+        assert!(session.missing.is_empty(), "{:?}", session.missing);
     }
 
     #[test]
