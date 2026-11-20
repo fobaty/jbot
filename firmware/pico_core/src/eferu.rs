@@ -210,14 +210,16 @@ impl Feedback {
     /// Common-mode forward speed in m/s.
     ///
     /// Bench-verified on this unit (`VARIANT_USART`, no `INVERT_L_DIRECTION` /
-    /// `INVERT_R_DIRECTION`, identical hub wiring): a straight forward roll
-    /// reads `speedL ≈ speedR` (both positive), so linear speed is the mean
-    /// of the two readings. The mirrored-hub assumption `(L - R) / 2` reads
-    /// ~0 here and would stall the position loop and the range guard; the
-    /// balance loop itself does not depend on this sign.
+    /// `INVERT_R_DIRECTION`, mirror-mounted hub motors): a straight forward
+    /// roll reads opposite-sign hall speeds (`speedL ~= -speedR`), so linear
+    /// speed is half the difference. Measured in session
+    /// `jbot-telemetry-1795141040.csv` (2026-11-19): `test 50 -50` rolled the
+    /// machine forward and read `L = +7..9`, `R = -7..-10` rpm. The mean reads
+    /// about zero while rolling and only grows when the machine pivots; it
+    /// would stall the position loop and the range guard.
     pub fn forward_speed_mps(self, wheel_radius_m: f32) -> f32 {
         let scale = core::f32::consts::TAU * wheel_radius_m / 60.0;
-        0.5 * (f32::from(self.speed_left_rpm) + f32::from(self.speed_right_rpm)) * scale
+        0.5 * (f32::from(self.speed_left_rpm) - f32::from(self.speed_right_rpm)) * scale
     }
 }
 
@@ -315,19 +317,20 @@ mod tests {
 
     #[test]
     fn forward_speed_matches_bench_wiring() {
-        // Bench-verified: a straight forward roll reads same-sign hall
-        // speeds on this unit, so forward speed is the mean of the two.
+        // Bench-verified: a straight forward roll reads opposite-sign hall
+        // speeds on this unit (mirror-mounted hub motors), so forward speed
+        // is half the difference.
         let feedback = Feedback {
             speed_left_rpm: 250,
-            speed_right_rpm: 250,
+            speed_right_rpm: -250,
             ..Feedback::default()
         };
         let scale = core::f32::consts::TAU * 0.0825 / 60.0;
         assert!((feedback.forward_speed_mps(0.0825) - (250.0 * scale)).abs() < 1e-6);
-        // A counter-rolling pair (pivot in place) reads zero linear speed.
+        // A counter-rotating pair (pivot in place) reads zero linear speed.
         let pivot = Feedback {
             speed_left_rpm: 250,
-            speed_right_rpm: -250,
+            speed_right_rpm: 250,
             ..Feedback::default()
         };
         assert_eq!(pivot.forward_speed_mps(0.0825), 0.0);

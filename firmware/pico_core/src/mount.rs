@@ -29,7 +29,12 @@ pub const DEG_TO_RAD: f32 = 1.0 / RAD_TO_DEG;
 /// Mount orientation of the module on the chassis.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Mount {
-    /// X forward, Y left, Z up, aligned with the robot frame.
+    /// Use the device Euler angles directly; no gravity/rate remap.
+    ///
+    /// This is the right selector when the fused Euler pitch already tracks
+    /// the robot's forward lean, even if the module's own axes are rotated in
+    /// the chassis plane. On the 2026-11-19 chassis the module X axis runs
+    /// along the axle, so the raw pitch rate is the gyro X channel.
     #[default]
     Normal,
     /// Rotated 180 degrees about the robot X (forward) axis: the sensor
@@ -232,6 +237,19 @@ pub struct Attitude {
 }
 
 /// Derive the control-frame attitude from one sample.
+///
+/// The two branches consume different angle sources, so they pair the raw
+/// gyro axes differently:
+///
+/// * the gravity-derived branch computes pitch and roll from the remapped
+///   gravity vector, where pitch is a robot-frame rotation about Y and roll
+///   about X, so the matching rates are Y and X;
+/// * the Euler branch trusts the BNO055 fused angles. The device defines
+///   Euler pitch as a rotation about its own X axis and Euler roll about its
+///   Y axis, so the matching raw rates are X and Y. Measured on this build
+///   (session `jbot-telemetry-1795141040.csv`, 2026-11-19):
+///   `d(pitch)/dt` fits the raw X channel with slope 1.003 and `R^2 = 0.94`
+///   over 1852 samples, and is uncorrelated with raw Y (coefficient -0.08).
 pub fn attitude(mount: Mount, euler: Euler, gyro: AngularRate, gravity_ms2: [f32; 3]) -> Attitude {
     let gyro = mount.map_rate(gyro);
     if mount.remaps_axes() {
@@ -247,9 +265,9 @@ pub fn attitude(mount: Mount, euler: Euler, gyro: AngularRate, gravity_ms2: [f32
         Attitude {
             pitch_deg: euler.pitch_deg,
             roll_deg: euler.roll_deg,
-            pitch_rate_dps: gyro.y_dps,
+            pitch_rate_dps: gyro.x_dps,
             yaw_rate_dps: gyro.z_dps,
-            roll_rate_dps: gyro.x_dps,
+            roll_rate_dps: gyro.y_dps,
         }
     }
 }
@@ -402,7 +420,10 @@ mod tests {
         let attitude = attitude(Mount::Normal, euler, gyro, [0.0, 0.0, -G]);
         assert!((attitude.pitch_deg - 7.5).abs() < 1e-6);
         assert!((attitude.roll_deg + 5.0).abs() < 1e-6);
-        assert!((attitude.pitch_rate_dps - 1.5).abs() < 1e-6);
+        // BNO055 Euler pitch is a rotation about the device X axis and roll
+        // about Y, so the raw rates pair X -> pitch and Y -> roll.
+        assert!((attitude.pitch_rate_dps - 0.5).abs() < 1e-6);
+        assert!((attitude.roll_rate_dps - 1.5).abs() < 1e-6);
         assert!((attitude.yaw_rate_dps - 2.5).abs() < 1e-6);
     }
 }

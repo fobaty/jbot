@@ -619,7 +619,7 @@ pub fn summary(session: &Session) -> Summary {
         pitch.1 = pitch.1.max(sample.pitch_deg);
         roll.0 = roll.0.min(sample.roll_deg);
         roll.1 = roll.1.max(sample.roll_deg);
-        let mean = sample.mean_rpm();
+        let mean = sample.forward_rpm();
         rpm.0 = rpm.0.min(mean);
         rpm.1 = rpm.1.max(mean);
         torque.0 = torque.0.min(sample.torque_units);

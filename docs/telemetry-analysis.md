@@ -94,13 +94,16 @@ definitely wrong, and names the axis left out (`(roll not judged)`) when the
 session only moved one of them. A still axis never downgrades a clean one: a
 forward-lean check proves the pitch pair.
 
-`mount normal` mixes two conventions by design: the angles are the BNO055 Euler
-output, while the rates are the raw gyro re-expressed with the identity matrix.
-The two do not share a sign convention on the roll axis, so every `normal`
-session reports `roll ... inverted` even on a healthy sensor. The report says so
-in a note. The balance law only consumes pitch, so this is a latent fault rather
-than the reason a robot will not balance, and a remapping mount
-(`rotxp`/`rotxm`/`rotyp`/`rotym`) removes it by deriving both from one matrix.
+`mount normal` mixes two angle sources: the angles are the BNO055 Euler output,
+while the rates are the raw gyro. The BNO055 defines Euler pitch about its own X
+axis and roll about Y, so since the 2026-11-19 fix the firmware pairs raw X with
+pitch and raw Y with roll. The pitch pair then closes cleanly (slope 1.00 on the
+2026-11-19 session); before the fix the firmware fed raw Y to the pitch channel,
+and this check reported `pitch ... unpaired`, which is the finding that exposed
+the fault. The roll sign on the Euler path has not been bench-verified, so a
+`normal` session that moves roll may still report `roll ... inverted`; the
+balance law consumes pitch only. The gravity-derived mounts pair both channels
+from one matrix, so they do not have this caveat.
 
 When the action log contains `mount` commands the report prints the same check
 per segment, so a mount sweep can be read row by row.

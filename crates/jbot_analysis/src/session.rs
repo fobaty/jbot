@@ -108,9 +108,14 @@ impl Sample {
         self.pitch_deg - self.ref_deg - self.demand_deg
     }
 
-    /// Mean of the two wheel speeds, rpm.
-    pub fn mean_rpm(&self) -> f64 {
-        0.5 * (self.left_rpm + self.right_rpm)
+    /// Signed common-mode wheel speed, rpm.
+    ///
+    /// The hub motors are mounted mirror-image, so a straight roll reads
+    /// opposite-sign hall speeds on the two wheels; the forward speed is the
+    /// half-difference. The mean reads ~0 while rolling and only grows when
+    /// the machine pivots.
+    pub fn forward_rpm(&self) -> f64 {
+        0.5 * (self.left_rpm - self.right_rpm)
     }
 
     /// True while the balance law was driving an armed, non-fallen machine.

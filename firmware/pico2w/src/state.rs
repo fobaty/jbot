@@ -141,9 +141,11 @@ static STEER_SETPOINT_BITS: AtomicU32 = AtomicU32::new(0);
 static ESTOP: AtomicBool = AtomicBool::new(false);
 /// Measured control loop rate, hertz.
 static LOOP_HZ: AtomicU32 = AtomicU32::new(0);
-/// BNO055 mount selector: the bench chassis carries the module rotated
-/// 180 degrees about the robot X axis, so flip-x is the default. It remains
-/// selectable over USB; any change still requires re-capturing `zero`/`level`.
+/// BNO055 mount selector: `normal` trusts the fused Euler angles, which
+/// match the physical attitude on the current chassis (the module X axis
+/// runs along the axle, so the raw X rate is the pitch rate). It remains
+/// selectable over USB; any change still requires re-capturing
+/// `zero`/`level`.
 ///
 /// At boot the stored record overrides this default when one decodes from
 /// flash (`crate::nvm`); the default only applies to a blank flash or a

@@ -569,22 +569,28 @@ fn deadband_compensation(torque_nm: f32, deadband_nm: f32) -> f32 {
 
 /// Convert a wheel torque pair into the EFeru steer/speed command.
 ///
-/// Bench-verified wiring for the flashed `VARIANT_USART` mainboard (stock,
-/// no `INVERT_L_DIRECTION` / `INVERT_R_DIRECTION`): the left motor is driven
-/// by `pwml = +cmdL` and the right by `pwmr = -cmdR`, which assumes
-/// mirror-mounted motors. This unit is wired with identical hub motors, so
-/// equal wire commands counter-rotate the wheels. Measured on the floor:
-/// `test 100 100` pivots the machine in place, `test 100 -100` rolls it
-/// forward. The physical pair is therefore mapped with the right wheel
-/// negated before the mixer inverse, so same-sign `WheelTorque` values roll
-/// the machine straight.
+/// Bench-verified on the flashed `VARIANT_USART` mainboard (stock mixer, no
+/// `INVERT_L_DIRECTION` / `INVERT_R_DIRECTION`): the wire `speed` channel
+/// drives both wheels the same way, and `steer` counter-rotates them. The
+/// console `test` path feeds this function, which makes the mapping visible
+/// (session `jbot-telemetry-1795141040.csv`, 2026-11-19):
 ///
-/// [`crate::eferu::Feedback::forward_speed_mps`] needs no such mapping: a
-/// forward roll reads same-sign hall speeds on this unit.
+/// * `test 50 -50` reaches the wire as `speed = 50, steer = 0` and rolls the
+///   machine forward; the hall feedback reads `L = +7..9`, `R = -7..-10` rpm.
+/// * `test 100 100` reaches the wire as `speed = 0, steer = 100` and pivots
+///   the machine in place; the hall feedback reads `L ~= R ~= +6..8` rpm.
+///
+/// A same-sign physical [`WheelTorque`] is therefore a straight roll, which
+/// is exactly what the plain mixer inverse produces. The right wheel must not
+/// be negated here: doing so turns the balance law's common-mode torque into
+/// a `steer` command and makes the machine spin on the spot.
+///
+/// [`crate::eferu::Feedback::forward_speed_mps`] follows the same convention:
+/// a forward roll reads opposite-sign hall speeds on this unit.
 pub fn to_command(torque: WheelTorque) -> Command {
     let left = torque_to_i16(torque.left);
     let right = torque_to_i16(torque.right);
-    Command::from_wheel_torque(left, -right)
+    Command::from_wheel_torque(left, right)
 }
 
 fn torque_to_i16(value: f32) -> i16 {
@@ -1346,23 +1352,23 @@ mod tests {
 
     #[test]
     fn to_command_maps_physical_pair_through_bench_wiring() {
-        // Same-sign physical torque (both wheels roll the same way). The
-        // bench-verified VARIANT_USART wiring (pwml = +cmdL, pwmr = -cmdR)
-        // needs cmdL = left, cmdR = -right, which the mixer inverse encodes
-        // as wire (left, -right): cmdL = speed + steer, cmdR = speed - steer.
+        // Same-sign physical torque (both wheels roll forward) must reach the
+        // wire as a pure `speed` command; the stock mixer then drives both
+        // motors the same way.
         let pair = to_command(WheelTorque {
             left: 100.0,
             right: 100.0,
         });
-        assert_eq!(pair, Command::new(100, 0));
-        // A counter-rolling physical pair (yaw) stays counter-rolling.
+        assert_eq!(pair, Command::new(0, 100));
+        // A counter-rolling physical pair (yaw) reaches the wire as a pure
+        // `steer` command and pivots the machine.
         let steer = to_command(WheelTorque {
             left: 100.0,
             right: -100.0,
         });
-        assert_eq!(steer, Command::new(0, 100));
+        assert_eq!(steer, Command::new(100, 0));
         // Mixer round trip reproduces the bench wiring on the mainboard:
-        // cmdL = speed + steer = left, cmdR = speed - steer = -right.
+        // cmdL = speed + steer = left, cmdR = speed - steer = right.
         for (left, right) in [(0, 0), (100, 100), (-150, 200), (37, -91)] {
             let command = to_command(WheelTorque {
                 left: left as f32,
@@ -1371,7 +1377,7 @@ mod tests {
             let cmd_left = i32::from(command.speed) + i32::from(command.steer);
             let cmd_right = i32::from(command.speed) - i32::from(command.steer);
             assert!((cmd_left - left).abs() <= 1);
-            assert!((cmd_right + right).abs() <= 1);
+            assert!((cmd_right - right).abs() <= 1);
         }
     }
 

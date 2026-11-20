@@ -20,7 +20,13 @@ pub const RECORD_LEN: usize = 32;
 /// of a written sector starts with `J B N V`.
 pub const MAGIC: u32 = 0x564E_424A;
 /// Record format version. A different version is refused, not migrated.
-pub const VERSION: u16 = 1;
+///
+/// Version 2 invalidates the pre-resolder record, which held `mount 1`
+/// (flip-x) for the old IMU orientation. After the module was re-soldered the
+/// fused Euler angles match the physical attitude, so a refused record falls
+/// back to the compiled `Mount::Normal` default instead of silently restoring
+/// a wrong 180-degree flip.
+pub const VERSION: u16 = 2;
 /// Largest accepted magnitude of a stored angle, degrees.
 ///
 /// The zero offsets are small by construction and the level reference is the
@@ -192,7 +198,7 @@ mod tests {
     #[test]
     fn wrong_version_is_refused() {
         let mut bytes = sample().encode();
-        bytes[OFF_VERSION..OFF_VERSION + 2].copy_from_slice(&2u16.to_le_bytes());
+        bytes[OFF_VERSION..OFF_VERSION + 2].copy_from_slice(&(VERSION + 1).to_le_bytes());
         let crc = crc32(&bytes[..CRC_SPAN]);
         bytes[OFF_CRC..OFF_CRC + 4].copy_from_slice(&crc.to_le_bytes());
         assert_eq!(Record::decode(&bytes), None);

@@ -253,9 +253,11 @@ a bench check exist.
 
 1. **Confirm the torque scale.** With the robot on blocks, `test` a known command and
    measure the wheel torque; fill in `units_per_nm`/`max_torque_nm` for the real drive.
-2. **Confirm the wheel-speed sign.** Bench-verified: a straight forward roll reads
-   same-sign hall speeds (`speedL ≈ speedR`), so the firmware measures forward
-   speed as `0.5·(left + right)`. A counter-rolling pair (pivot) reads zero.
+2. **Confirm the wheel-speed sign.** Bench-verified (2026-11-19): a straight
+   forward roll reads opposite-sign hall speeds (`speedL ≈ -speedR`, e.g.
+   `+7`/`-10`), because the hub motors are mounted mirror-image, so the
+   firmware measures forward speed as `0.5·(left - right)`. A counter-rolling
+   pair (pivot) reads the same sign on both wheels and zero linear speed.
 3. **Dead zone and stiction.** Slow torque ramp on blocks; note the first value at
    which the wheel moves. This decides whether deadband compensation is safe.
 4. **Arm from ~5°** and watch `ref`, `dem`, `trm`, `x`. Expect a torque ramp, no step,
@@ -297,30 +299,39 @@ Two bench checks isolate the direction of the failure:
 
 Only when both pass does the fault live in the crossover between them.
 
-### 8.2 Motor wiring convention (bench-verified)
+### 8.2 Motor wiring convention (bench-verified, corrected 2026-11-19)
 
 The flashed `VARIANT_USART` mainboard runs the stock mixer with no
-`INVERT_L_DIRECTION` / `INVERT_R_DIRECTION`, so it drives the left motor with
-`pwml = +cmdL` and the right with `pwmr = -cmdR` (the mirror-mounted assumption).
-This unit is wired with identical hub motors instead. Measured on the floor
-with the balance law disarmed:
+`INVERT_L_DIRECTION` / `INVERT_R_DIRECTION`: the wire `speed` channel drives
+both wheels the same way and `steer` counter-rotates them. The console `test`
+command does not write those channels directly; its arguments are *wheel-torque*
+requests that pass through `to_command`, so the two conventions have to be kept
+apart.
 
-- `test 100 100` (equal wire commands): wheels counter-rotate, the machine
-  pivots in place and the rope-held body pitches back (−33 deg) — same-sign
-  wire commands are NOT a forward roll.
-- `test 100 -100` (counter wire commands): the machine rolls forward while the
-  held body pitches back, which is the expected inertia reaction to forward
-  acceleration with the law disarmed.
-- Hall feedback for a forward roll reads same-sign speeds (`L ≈ R ≈ +7..36`
-  RPM in the two tests above), not the mirrored opposite signs.
+Measured on the floor with the balance law disarmed (session
+`jbot-telemetry-1795141040.csv`, 2026-11-19):
 
-Firmware consequences, both bench-verified conventions, bypassing nothing:
+- `test 50 -50` reaches the wire as `speed = 50, steer = 0`, rolls the machine
+  forward, and the hall feedback reads `L = +7..9`, `R = -7..-10` rpm.
+- `test 100 100` reaches the wire as `speed = 0, steer = 100`, pivots the
+  machine in place, and the hall feedback reads `L ≈ R ≈ +6..8` rpm.
 
-- `to_command` negates the right wheel before the mixer inverse, so a
-  same-sign physical `WheelTorque` (both wheels rolling the same way) reaches
-  the wire as `cmdL = +T`, `cmdR = -T` and drives the robot forward.
-- `Feedback::forward_speed_mps` is the mean `0.5·(left + right)`, not the
-  mirrored `(left - right)` / 2.
+Firmware consequences:
+
+- `to_command` uses the plain mixer inverse, `Command::from_wheel_torque(left,
+  right)`: a same-sign physical `WheelTorque` (both wheels rolling the same
+  way) becomes wire `speed`, and a counter-rolling pair becomes wire `steer`.
+  Negating the right wheel turns the balance law's common-mode torque into a
+  pivot command and makes the machine spin on the spot.
+- `Feedback::forward_speed_mps` is the half-difference
+  `0.5·(left - right)`, because the hub motors are mounted mirror-image and a
+  forward roll reads opposite-sign hall speeds.
+
+Historical note: the 2026-11-18 version of this section concluded the opposite
+(negate the right wheel; average the hall speeds). That conclusion compared the
+`test` arguments as if they were wire channels, and the same-sign rpm it cites
+came from armed runs that were pivoting in place rather than rolling. The
+2026-11-19 motor test separates the two conventions and supersedes it.
 
 The mainboard was NOT reflashed: the stock build is byte-verified against the
 Link protocol and only the Pico mapping changed. If the mainboard is ever
@@ -358,8 +369,8 @@ remain open.
   (pitch=-6.81, -3.26, -2.23, -0.55). This is what the auto-calibration
   feature controls (stillness-gated capture); use it for every zero/level.
 * **`mount` was 1 (flipx)** at the end of the session, after the 0...5
-  sweep. The IMU is still mounted sideways-vertical relative to the
-  chassis.
+  sweep. The IMU was still mounted sideways-vertical relative to the
+  chassis at that time (superseded by §8.6).
 * **Backward-tip fall at pscale 0.2 (2026-11-18, session
   `jbot-telemetry-1795045179.csv`).** From a stable hold the operator
   nudged the body backward (pitch < 0). Breakaway followed: -2 deg at
@@ -371,11 +382,19 @@ remain open.
   fall guard tripped at the 28 deg pose-error threshold
   (`stop=pose_error`, `fall=2`), torque went to zero, e-stop was not
   needed, the link and USB stayed up through the fall, and the body
-  came to rest near -54 deg. Conclusion: pscale 0.2 cannot recover a
-  dynamic lean at all; every earlier "hold" at 0.1-0.35 worked only
-  because the robot was kept near equilibrium by hand. Dynamic
-  recovery requires gain headroom the compiled tuning provides; the
-  low-scale ladder steps cannot validate it.
+  came to rest near -54 deg. Conclusion filed at the time: pscale 0.2
+  cannot recover a dynamic lean at all; every earlier "hold" at 0.1-0.35
+  worked only because the robot was kept near equilibrium by hand.
+
+**Confound (found 2026-11-19).** Every armed run in this section went
+through the negated mixer described in the 2026-11-18 version of §8.2, so the
+common-mode torque the law produced reached the wheels as a *steer* command:
+the wheels counter-rotated instead of driving the body. The command-path fit
+(the first bullet) still holds, because it only checks torque magnitude and
+sign against the attitude error. The conclusions about recovery margin and
+about "rpm ~200/200 driving backward" do not: same-sign rpm means a pivot on
+this wiring. The pscale ladder has to be re-run after the §8.2 correction
+before any statement about gain headroom is made.
 
 ### 8.4 Settings persistence (2026-11-18)
 
@@ -425,27 +444,95 @@ the bench could not see:
   84 units and was rolling from 284. This is consistent with the assumed 0.5 Nm
   dead zone and explains why the first 3 s of the fall produced no wheel motion
   at all — the law was still inside the dead zone.
-* **The recovery failure is a gain failure, not a sign failure.** `mount 1`
-  reads `pitch` against `gy` at correlation +0.90, slope 0.83, and the fit's
-  `kp` is positive: the channels are paired and the law pushes the right way.
-  5.7 Nm/rad is about a fifth of the 28.5 Nm/rad the nominal plant needs, which
-  is the same conclusion as §8.3 from the other direction.
-* **`mount 0` is visibly wrong.** In the sweep session
-  (`jbot-telemetry-1795041000.csv`, `mount=0`) 99 % of the angular variance sits
-  in roll while pitch is flat, and the roll pair is unpaired: a tilt of the
-  chassis does not reach the pitch channel at all.
-* **The roll pair does not close on the older sessions.** Four of the eight
-  pre-`mode` recordings put the roll angle against `gx` at correlation −0.6 to
-  −0.8, and three cross the −0.7 inversion threshold. Those sessions predate
-  the `mount` command and ran on the compiled default, `mount normal`, where
-  the law is fed BNO055 Euler angles but the damper is fed raw gyro rates, and
-  the two do not share a sign convention on this axis. The balance law only
-  consumes pitch, so this has not caused a fall; a roll or yaw damper built on
-  that pair would have the wrong sign, and a remapping mount removes the
-  mismatch by deriving both from one matrix.
+* **The recovery failure was called a gain failure, not a sign failure
+  (historical).** `mount 1` reads `pitch` against `gy` at correlation +0.90,
+  slope 0.83, and the fit's `kp` is positive: the channels are paired and the
+  law pushes the right way. 5.7 Nm/rad is about a fifth of the 28.5 Nm/rad the
+  nominal plant needs. The command path is still confirmed, but the conclusion
+  that the *machine* could not recover is confounded: §8.3's mixer mapping
+  turned that common-mode torque into a pivot, so the wheels never produced the
+  linear force the fit assumes.
+* **`mount 0` was visibly wrong before the re-solder (historical).** In the
+  sweep session (`jbot-telemetry-1795041000.csv`, `mount=0`) 99 % of the
+  angular variance sits in roll while pitch is flat, and the roll pair is
+  unpaired: a tilt of the chassis did not reach the pitch channel at all. That
+  was the pre-2026-11-19 module orientation; §8.6 supersedes it.
+* **The roll pair did not close on the older sessions (historical).** Four of
+  the eight pre-`mode` recordings put the roll angle against `gx` at
+  correlation −0.6 to −0.8, and three cross the −0.7 inversion threshold. Those
+  sessions predate the `mount` command and ran on the compiled default,
+  `mount normal`, where the law was fed BNO055 Euler angles but the damper was
+  fed the wrong raw axis. §8.6 records the corrected pairing.
 
 Ten of the 14 files predate the `mode` column, so arming and falls are reported
 as not measurable for them rather than as zero.
+
+### 8.6 IMU re-soldered, `mount normal` is correct (2026-11-19)
+
+The BNO055 was re-soldered to the chassis and the console's attitude window now
+matches the physical pose with `mount normal`: upright reads pitch ≈ 0,
+on-back ≈ −90°, face-down ≈ +90°. The module's own axes are *not* robot-aligned
+(the Euler pitch is a rotation about the chip X axis, which runs along the
+robot's axle direction), but the fused Euler angles are the lean angles the law
+wants, so the Euler path is the correct one for this selector. The previous
+`flipx` correction is gone:
+
+* The compiled firmware default is `Mount::Normal` (`mount 0`).
+* The console's mount selector also defaults to `normal` before the first
+  `stat`/telemetry frame arrives; previously it started at `flipx`.
+* The raw pitch rate is the **X** channel, not Y. Least squares on the
+  2026-11-19 session (`jbot-telemetry-1795141040.csv`, 1852 samples) gives
+  `d(pitch)/dt = 1.003·gx - 0.077·gy + 0.022·gz`, `R^2 = 0.94`. The
+  gravity-derived mounts keep `gyro.y` because their pitch is a robot-frame
+  rotation about Y. The old `Mount::Normal` fed `gyro.y` to the damper, so the
+  pitch damping term was measuring the sideways axis; that is the second fault
+  fixed in §8.7.
+* The flash record version is now 2. A version-1 record is refused, so the
+  stored `mount 1` from the pre-resolder session cannot come back after a
+  reboot; the firmware logs `nvm: no stored record, using compiled defaults`
+  and starts on `mount normal`. Nothing else in the record was applied at boot,
+  so no calibration is lost — `zero` and `level` are still captured per
+  session.
+* Run `save` once (`mount normal`, `zero` and `level` captured) to write a
+  version-2 record for the new orientation.
+
+The historical `mount 1` fits in §8.3 and §8.5 describe the old module
+orientation and remain evidence of the wrong-mount failure mode, not the
+current setup.
+
+### 8.7 Spin on arm: mixer sign and pitch-rate axis (2026-11-19)
+
+Arming made the robot spin in a circle instead of driving forward or backward.
+Two independent faults explain it; both were reproduced from the recorded
+session before any code changed.
+
+1. **The mixer sign was inverted.** `to_command` negated the right wheel before
+   the EFeru mixer inverse. That maps common-mode `WheelTorque` to the wire
+   `steer` channel, i.e. counter-rotation, so every balance output pivoted the
+   machine. The motor test separates the conventions cleanly: `test 50 -50`
+   (wire `speed=50`) rolls forward, `test 100 100` (wire `steer=100`) pivots.
+   The fix is the plain inverse `Command::from_wheel_torque(left, right)`.
+2. **The pitch damper read the wrong raw axis.** Under `mount normal` the law
+   consumed BNO055 Euler pitch but the rate filter consumed raw gyro Y.
+   `jbot-analyze` on the same session reports `pitch vs gy: corr +0.04,
+   UNPAIRED`, while raw X fits the pitch derivative with slope 1.00. The fix is
+   `pitch_rate = gyro.x`, `roll_rate = gyro.y` on the Euler path.
+
+The wheel-speed sign was corrected at the same time: a forward roll reads
+opposite-sign hall speeds, so `forward_speed_mps` is the half-difference. The
+old mean reported ~0 while the machine rolled and grew only during the pivot,
+which also corrupted `x` and the travel guard.
+
+Yaw is still out of the loop (`Tuning::from_plant` sets `yaw_kp_units = 0.0`),
+so the law cannot command a differential on its own; the spin came entirely
+from fault 1. If yaw is enabled later, note that the recorded heading rises at
+about `-gz` (the 2026-11-19 pivot turns ~+35 °/s of heading while `gz` reads
+−35), and the `steer` sign must be verified together with that pair.
+
+Open after this change: re-run the pscale ladder (start at 0.10-0.20) with the
+fixed mixer and rate axis before any claim about recovery margin, and flash the
+mainboard `TRQ_MODE` profile (§2.10 of `docs/pico-bridge.md`) so the Pico's
+torque request is not applied as a voltage command.
 
 ## 9. Open items
 

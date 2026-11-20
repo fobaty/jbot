@@ -252,7 +252,7 @@ answers each command with one `ok`/`err`/`stat` line and, while streaming, sends
 | `steer` | `ok steer <deg/s>` | Query the steering setpoint |
 | `steer <deg/s>` | `ok steer <deg/s>` | Accepted range `-180..=180` |
 | `test` | `ok test l=<units> r=<units>` | Query the applied spin-test torque |
-| `test <units> [units]` | `ok test l=<units> r=<units>` | Bench spin test: direct wheel-torque request, ±300 units clamp, one argument drives both wheels. Applied only while the balance law is disarmed and the e-stop is clear; the applied torque ramps at 600 units/s and the request expires 5 s after it was accepted. Bench wiring convention for the flashed `VARIANT_USART` build (no `INVERT_*`): same-sign requests roll both wheels the same way; the wire command negates the right wheel |
+| `test <units> [units]` | `ok test l=<units> r=<units>` | Bench spin test: direct wheel-torque request, ±300 units clamp, one argument drives both wheels. Applied only while the balance law is disarmed and the e-stop is clear; the applied torque ramps at 600 units/s and the request expires 5 s after it was accepted. The arguments are *wheel-torque* requests, not wire channels: `to_command` maps them through the stock mixer inverse. Bench-verified 2026-11-19 for the flashed `VARIANT_USART` build (no `INVERT_*`): same-sign requests roll straight (`test 50 -50` reached the wire as `speed=50` and rolled forward), equal requests pivot (`test 100 100` reached the wire as `steer=100`) |
 | `reinit` | `ok reinit` | Re-runs the BNO055 start-up sequence |
 | `estop` | `ok estop` | Latches the emergency stop |
 | `clear` | `ok clear` | Clears the latch |
@@ -351,25 +351,33 @@ client.
 #### Mount compensation and attitude calibration
 
 The BNO055 reports fused Euler angles in its own frame. When the module is
-mounted sideways with the board plane vertical (the current chassis mount),
-the fusion output cannot be used directly, so the firmware
-re-expresses the gravity vector and the angular rates in the robot frame
-(X forward, Y left, Z up) with sign flips selected by `mount`. Always
-re-verify on the bench after re-mounting before arming.
+mounted sideways with the board plane vertical, the fusion output cannot be
+used directly, so the firmware re-expresses the gravity vector and the angular
+rates in the robot frame (X forward, Y left, Z up) with sign flips selected by
+`mount`. Always re-verify on the bench after re-mounting before arming.
 
-Two bench records disagree about the current chassis and both are historical:
-this document records `mount 5` (`rotyp`, from a ≈85–90° Euler roll at the
-upright stance), while `docs/design_balance_home.md` §8 records `mount 1`
-(`flipx`) at the end of the last recorded session. The recorded `mount 0` run
-is unambiguous evidence of the failure mode: with `mount 0` the control law
-sees the BNO055's own Euler frame, and a forward lean showed up as ≈−26° of
-`roll` with almost no `pitch` change. Settle the mapping with the guided axis
-wizard (`jbot_console`) and the physical check below; do not arm on a
-remembered value.
+The IMU was re-soldered on 2026-11-19 and `mount normal` now matches the
+physical attitude: upright reads pitch ≈ 0, on-back ≈ −90°, face-down ≈ +90°.
+The earlier bench records (`mount 5` / `rotyp` in this document, `mount 1` /
+`flipx` in `docs/design_balance_home.md` §8) describe the previous module
+orientation and are historical. They are kept because they document the
+failure mode of a wrong selector: with a flipped mount the control law sees
+the wrong axis, and a forward lean shows up as roll. Settle any future
+orientation change with the guided axis wizard (`jbot_console`) and the
+physical check below; do not arm on a remembered value.
+
+The Euler path and the gravity path pair the raw gyro axes differently. The
+BNO055 defines Euler pitch as a rotation about its own X axis and Euler roll
+about Y, so under `mount normal` the firmware feeds raw X to the pitch-rate
+channel and raw Y to the roll-rate channel. The gravity path (every other
+mount) derives pitch from a robot-frame rotation about Y, so it uses raw Y for
+pitch. Mixing the two conventions is what made `mount normal` look unpaired
+before 2026-11-19; the balance law consumes the pitch channel only, which is
+why it failed to damp instead of visibly misbehaving.
 
 | `mnt` | Meaning | Sensor → robot vector map |
 |---|---|---|
-| `0` | normal, aligned with the robot frame | `(x, y, z)` (Euler pitch/roll are used as-is) |
+| `0` | normal, Euler angles used as the lean angles | raw X → pitch rate, raw Y → roll rate |
 | `1` | **flip-x**: rotated 180° about the forward axis | `(x, -y, -z)` |
 | `2` | **flip-y**: rotated 180° about the left axis | `(-x, y, -z)` |
 | `3` | **rot +90° X**: rotated +90° about the forward axis | `(x, -z, y)` |
@@ -414,8 +422,10 @@ The record is 32 bytes: magic `JBNV`, format version, mount selector, the
 three angles, and a CRC-32 over the payload. A blank sector, a foreign image,
 a different version, a CRC mismatch or an out-of-range value all decode to
 "no record", and the firmware then falls back to the compiled defaults. The
-decoder lives in `firmware/pico_core/src/nvm.rs` and is unit-tested on the
-host.
+current format version is 2: it deliberately refuses version-1 records, which
+could still hold the pre-resolder `mount 1` (flip-x), so the fallback selects
+`mount normal`. The decoder lives in `firmware/pico_core/src/nvm.rs` and is
+unit-tested on the host.
 
 What happens at boot:
 
