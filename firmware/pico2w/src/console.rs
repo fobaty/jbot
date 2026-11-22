@@ -15,8 +15,8 @@
 //!
 //! Nothing here is on the control path: a missing host only means lines are
 //! dropped, and a slow host cannot stall the 200 Hz loop. The console task
-//! survives a host closing the port: DTR is used to detect the disconnect, so
-//! the next session resumes without re-enumerating USB.
+//! survives a host closing the port: writes are bounded by a timeout and a
+//! dead session is dropped, so the next one resumes without re-enumerating USB.
 
 use core::fmt::{self, Write};
 
@@ -52,6 +52,8 @@ const BANNER: &[u8] = b"JBOT pico bridge 0.1 ready\n";
 const IDLE_POLL: Duration = Duration::from_millis(200);
 /// Time allowed for the final USB packets to leave before a requested reboot.
 const REBOOT_FLUSH: Duration = Duration::from_millis(50);
+/// Maximum time a telemetry write may wait for a host to drain the endpoint.
+const WRITE_TIMEOUT: Duration = Duration::from_millis(250);
 /// Largest accepted `home` bias away from the captured level, degrees.
 ///
 /// A standing two-wheel machine cannot hold a large commanded pitch: the pitch
@@ -119,20 +121,18 @@ async fn write_bytes(class: &mut Console, bytes: &[u8]) -> Result<(), ()> {
     Ok(())
 }
 
-/// Wait for a host that is actually using the port.
+/// Write a reply with a deadline.
 ///
-/// `wait_connection` only observes that the USB endpoint is enabled. A host
-/// that closes the serial port leaves the endpoint enabled and DTR deasserted;
-/// without this check the console resumes writing into an endpoint nobody
-/// drains and parks forever in `write_packet`. Polling DTR keeps the task
-/// alive across host sessions without a USB re-enumeration.
-async fn wait_host(class: &mut Console) {
-    loop {
-        class.wait_connection().await;
-        if class.dtr() {
-            return;
-        }
-        Timer::after(IDLE_POLL).await;
+/// `write_packet` waits for the host to drain the endpoint. A host that closes
+/// the port can leave that wait pending forever, parking the console task even
+/// though the endpoint is still enabled. Bounding the write lets the task leave
+/// the dead session and wait for the next host. Dropping the write future
+/// before its completion is safe: the buffer and register updates happen only
+/// after the endpoint reports ready.
+async fn write_bounded(class: &mut Console, bytes: &[u8]) -> bool {
+    match select(write_bytes(class, bytes), Timer::after(WRITE_TIMEOUT)).await {
+        Either::First(result) => result.is_ok(),
+        Either::Second(()) => false,
     }
 }
 
@@ -149,7 +149,7 @@ fn format<'a>(buffer: &'a mut [u8], args: fmt::Arguments<'_>) -> &'a [u8] {
 async fn reply(class: &mut Console, args: fmt::Arguments<'_>) -> bool {
     let mut buffer = [0u8; REPLY_BUFFER];
     let len = format(&mut buffer, args).len();
-    write_bytes(class, &buffer[..len]).await.is_ok()
+    write_bounded(class, &buffer[..len]).await
 }
 
 /// Parse an unsigned decimal.
@@ -852,8 +852,8 @@ pub async fn console_task(mut class: Console, mut flash: Store) {
     let mut telemetry_buffer = [0u8; REPLY_BUFFER];
 
     loop {
-        wait_host(&mut class).await;
-        let _ = write_bytes(&mut class, BANNER).await;
+        class.wait_connection().await;
+        let _ = write_bounded(&mut class, BANNER).await;
 
         // Say what the flash record contains. This is the first thing the
         // operator sees after a power cycle, and a wrong mount is the failure
@@ -871,7 +871,7 @@ pub async fn console_task(mut class: Console, mut flash: Store) {
             ),
         );
         let len = text.len();
-        let _ = write_bytes(&mut class, &telemetry_buffer[..len]).await;
+        let _ = write_bounded(&mut class, &telemetry_buffer[..len]).await;
 
         // A new connection always starts on a clean line boundary.
         let mut line_len = 0usize;
@@ -888,16 +888,10 @@ pub async fn console_task(mut class: Console, mut flash: Store) {
             let event = select(Timer::after(period), class.read_packet(&mut packet)).await;
             match event {
                 Either::First(()) => {
-                    // A host that closed the port drops DTR before the USB
-                    // endpoint is disabled. Leaving now avoids parking the
-                    // task in write_packet with nobody draining the endpoint.
-                    if !class.dtr() {
-                        break;
-                    }
                     if hz != 0 {
                         if let Some(telemetry) = state::TELEMETRY.try_take() {
                             let text = format_telemetry(&mut telemetry_buffer, &telemetry);
-                            if write_bytes(&mut class, text).await.is_err() {
+                            if !write_bounded(&mut class, text).await {
                                 break;
                             }
                         }
@@ -933,5 +927,9 @@ pub async fn console_task(mut class: Console, mut flash: Store) {
                 Either::Second(Err(_)) => break,
             }
         }
+        // A closed host can leave the endpoint enabled, so wait_connection
+        // would return immediately. A short pause keeps a dead session from
+        // becoming a tight loop while the next host is opening the port.
+        Timer::after(IDLE_POLL).await;
     }
 }

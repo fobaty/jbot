@@ -55,10 +55,13 @@ torque-speed envelope already reduces the available torque there.
 During WP0, closing the host serial port left the Pico's USB CDC console task
 unable to resume: the write into an undrained endpoint blocked and each later
 host session saw no telemetry until the Pico USB cable was re-enumerated.
-This was not part of WP0. A later change makes `console_task` watch DTR and
-wait for a real host before writing, so a session can be closed and reopened
-without re-enumeration. The fix was flashed on 2026-11-22 and closing/reopening
-the port was confirmed to resume telemetry without touching the USB cable.
+This was not part of WP0. A later change bounds every console write with a timeout and drops a dead
+session, so a port can be closed and reopened without re-enumeration. An
+intermediate DTR gate was tried and reverted: after a Pico re-enumeration the
+host does not reassert DTR, which blocked the console until the cable was
+replugged. The bounded-write fix was flashed on 2026-11-22 and
+closing/reopening the port was confirmed to resume telemetry without touching
+the USB cable.
 
 Quality gates after the tooling changes: `cargo fmt --all -- --check`,
 `cargo check --workspace --all-targets`, `cargo test --workspace` and
