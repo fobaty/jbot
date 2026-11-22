@@ -11,7 +11,6 @@ mod attitude;
 mod autocal;
 mod axiscal;
 mod link;
-mod live;
 mod protocol;
 mod record;
 mod theme;
@@ -22,7 +21,6 @@ fn main() -> eframe::Result {
     let mut demo = false;
     let mut port = None;
     let mut stream_hz = protocol::DEFAULT_STREAM_HZ;
-    let mut api_port = Some(live::DEFAULT_PORT);
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     let mut index = 0;
 
@@ -38,20 +36,6 @@ fn main() -> eframe::Result {
             "--help" | "-h" => {
                 print_help();
                 return Ok(());
-            }
-            "--no-api" => api_port = None,
-            "--api-port" => {
-                index += 1;
-                match arguments
-                    .get(index)
-                    .and_then(|value| value.parse::<u16>().ok())
-                {
-                    Some(value) => api_port = Some(value),
-                    None => {
-                        eprintln!("--api-port needs a port number");
-                        std::process::exit(2);
-                    }
-                }
             }
             "--port" => {
                 index += 1;
@@ -93,19 +77,10 @@ fn main() -> eframe::Result {
         ..Default::default()
     };
 
-    let live_state = live::LiveState::default();
-    if let Some(port_number) = api_port {
-        match live::spawn(live_state.clone(), port_number) {
-            Ok(()) => println!("live read-only API: http://127.0.0.1:{port_number}/"),
-            Err(error) => eprintln!("live API disabled (cannot bind port {port_number}: {error})"),
-        }
-    }
-
     let startup = app::Startup {
         demo,
         port,
         stream_hz,
-        live: live_state,
     };
 
     eframe::run_native(
@@ -125,8 +100,6 @@ fn print_help() {
            --demo           run with synthetic attitude and telemetry\n\
            --port <path>    serial port (for example /dev/cu.usbmodemJBOT_PICO_011)\n\
            --stream <hz>    telemetry rate requested on connect (default 20)\n\
-           --api-port <p>   localhost read-only API port (default 8712)\n\
-           --no-api         do not start the read-only API\n\
            --list           list serial ports and exit\n\
            -h, --help       show this help"
     );

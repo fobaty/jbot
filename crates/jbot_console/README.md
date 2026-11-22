@@ -28,28 +28,6 @@ cargo run -p jbot_console -- --port /dev/cu.usbmodemJBOT_PICO_011 --stream 50
 | `--stream <hz>` | Telemetry rate requested on connect, clamped to `1..=200` |
 | `--list` | Print the detected serial ports and exit |
 | `-h`, `--help` | Usage summary |
-| `--api-port <p>` | Read-only localhost API port (default `8712`) |
-| `--no-api` | Do not start the API |
-
-## Live read-only API
-
-The console publishes its current state on `127.0.0.1` so another process can
-read telemetry without owning the serial port or waiting for a CSV to close.
-It accepts GET only, has no command endpoint, and CSV recording stays enabled
-as before.
-
-```sh
-curl http://127.0.0.1:8712/api/status
-curl http://127.0.0.1:8712/api/state
-curl 'http://127.0.0.1:8712/api/samples?last=2000'
-curl 'http://127.0.0.1:8712/api/events?last=50'
-```
-
-`/api/state` returns the latest telemetry and `stat` reply plus the active CSV
-path. `/api/samples` returns a ring buffer of the last 4096 samples (~20 s at
-200 Hz) with a console-relative `t_ms` for each row; this is enough to fit a
-spin-up test without reading a file. `/api/events` returns the tail of the
-event log. The root path lists the endpoints in plain text.
 
 On connect the console requests the configured stream rate and sends `stat` to
 populate the link panel. If the board rejects a command the reply is shown in the
