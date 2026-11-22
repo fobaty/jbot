@@ -484,7 +484,7 @@ nvm mount=5 rotyp stored=1 zcapt=0 lcapt=0
 - `stream` accepts up to 200 Hz. Above a few tens of hertz the USB link, not the
   firmware, becomes the limit.
 
-The bench application in `tools/pico` drives this protocol: telemetry panels,
+The archived Python bench console in `archive/python-tools/pico` drove this protocol: telemetry panels,
 event log, CSV recording, and the same commands from a keyboard. The native
 `jbot-console` (`crates/jbot_console`) speaks the same protocol and adds the
 attitude horizon and compass view.

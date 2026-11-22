@@ -6,10 +6,10 @@ log, writes CSV, and sends the line commands defined in `docs/pico-bridge.md`
 section 8.1.
 
 Usage:
-    python3 tools/pico/jbot_console.py                     # autodetect, TUI
-    python3 tools/pico/jbot_console.py --port /dev/cu.usbmodemJBOT_PICO_011
-    python3 tools/pico/jbot_console.py --no-ui --csv run.csv   # -> csv/run.csv
-    python3 tools/pico/jbot_console.py --list
+    python3 archive/python-tools/pico/jbot_console.py                     # autodetect, TUI
+    python3 archive/python-tools/pico/jbot_console.py --port /dev/cu.usbmodemJBOT_PICO_011
+    python3 archive/python-tools/pico/jbot_console.py --no-ui --csv run.csv   # -> csv/run.csv
+    python3 archive/python-tools/pico/jbot_console.py --list
 
 Keys:
     :            type any command, Enter sends it

@@ -248,7 +248,7 @@ Command frames are 8 bytes (`<HhhH`: `0xABCD`, steer, speed, checksum), sent at
 sequence number, so leave a small inter-frame gap: `usart2_rx_check` accepts a
 frame only when exactly 8 bytes arrived since the last idle line. The host side -
 the Pico bridge, the Mac console and the wire protocol - lives in
-[`tools/hover/`](../tools/hover/README.md).
+[`archive/python-tools/hover/`](../archive/python-tools/hover/README.md).
 
 Live check on the bench board (Pico 2 W, MicroPython, UART0 GP16/GP17 at
 115200 8N1, 1 s capture): 97 frames, exactly 18 bytes apart, every checksum
@@ -477,7 +477,7 @@ cargo run --release          # picotool load -u -v -x -t elf
 There is no `probe-rs` installation on the bench machine; `picotool` is used
 instead. The release ELF is `target/thumbv8m.main-none-eabihf/release/pico-bridge`.
 Flashing replaces MicroPython, which also removes the temporary
-`tools/hover/hover_bridge.py` console; reflash MicroPython if that console is
+`archive/python-tools/hover/hover_bridge.py` console; reflash MicroPython if that console is
 needed again.
 
 Once flashed, the image enumerates as a USB CDC-ACM port, so the telemetry is
@@ -535,7 +535,7 @@ run can be checked from a script instead of by eye.
 | `imu=stale`, `imu_code=1` | I2C failure to the BNO055; check the four wires and the address strap. |
 | `loop` below 195 | The 5 ms tick is missing deadlines; suspect USB or `defmt` cost before the control law. |
 
-The Python bench console lives in `tools/pico` (see `tools/pico/README.md`):
+The archived Python bench console lived in `archive/python-tools/pico` (see `archive/python-tools/pico/README.md`):
 `jbot_console.py` is a curses application with telemetry panels, an event log,
 CSV recording and hotkeys for the commands above, and `--no-ui` gives a plain
 text mode for scripts. `jbot_link.py` holds the protocol layer, so the same code

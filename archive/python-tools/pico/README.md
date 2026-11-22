@@ -24,21 +24,21 @@ python3 -m pip install pyserial
 ```
 
 Flash the Rust firmware first (section 5.8 of `firmware/README.md`). The
-MicroPython `tools/hover` build and this application cannot both own the port.
+MicroPython `archive/python-tools/hover` build and this application cannot both own the port.
 
 ## Running
 
 ```sh
-python3 tools/pico/jbot_console.py                        # autodetect, TUI
-python3 tools/pico/jbot_console.py --port /dev/cu.usbmodemJBOT_PICO_011
-python3 tools/pico/jbot_console.py --list                 # show the port
-python3 tools/pico/jbot_console.py --stream 20 --csv run.csv
-python3 tools/pico/jbot_console.py --no-ui                # plain text
+python3 archive/python-tools/pico/jbot_console.py                        # autodetect, TUI
+python3 archive/python-tools/pico/jbot_console.py --port /dev/cu.usbmodemJBOT_PICO_011
+python3 archive/python-tools/pico/jbot_console.py --list                 # show the port
+python3 archive/python-tools/pico/jbot_console.py --stream 20 --csv run.csv
+python3 archive/python-tools/pico/jbot_console.py --no-ui                # plain text
 ```
 
 `--stream` is the telemetry rate requested on connect (`0..200` Hz, default
 10). The Pico starts at 1 Hz after a reset, so the application sets the rate
-itself on every connect. Bare filenames are resolved by `tools/bench_paths.py`:
+itself on every connect. Bare filenames are resolved by `archive/python-tools/bench_paths.py`:
 `--csv run.csv` writes `csv/run.csv`, and `--events file.log` writes
 `logs/file.log`. An absolute path is used as given.
 
@@ -97,7 +97,7 @@ on screen. `--events path` writes `unix_time level text` lines into `logs/`.
 from stdin, one per line:
 
 ```sh
-printf 'stat\nstream 5\n' | python3 tools/pico/jbot_console.py --no-ui
+printf 'stat\nstream 5\n' | python3 archive/python-tools/pico/jbot_console.py --no-ui
 ```
 
 This is the mode to use from a script, a `tmux` session on the robot, or a
@@ -107,7 +107,7 @@ soak test: it has no terminal requirements and keeps the same safety behaviour
 ## Tests
 
 ```sh
-python3 -m unittest discover -s tools/pico -p 'test_*.py'
+python3 -m unittest discover -s archive/python-tools/pico -p 'test_*.py'
 ```
 
 The suite covers telemetry and `stat` parsing, line classification, the event

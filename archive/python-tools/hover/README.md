@@ -31,8 +31,8 @@ Never connect the 15 V pin: the mainboard's USART2 is not 5 V tolerant.
 # Pico side: MicroPython must already be flashed, then
 export PATH="$HOME/.local/bin:$PATH"
 PORT=$(ls /dev/cu.usbmodem* | head -1)
-mpremote connect $PORT fs cp tools/hover/hover_bridge.py :hover_bridge.py
-mpremote connect $PORT fs cp tools/hover/hover_bridge.py :main.py
+mpremote connect $PORT fs cp archive/python-tools/hover/hover_bridge.py :hover_bridge.py
+mpremote connect $PORT fs cp archive/python-tools/hover/hover_bridge.py :main.py
 mpremote connect $PORT reset
 
 # Mac side
@@ -44,13 +44,13 @@ python3 -m pip install --user pyserial   # only once
 ## Running
 
 ```bash
-python3 tools/hover/hover_drive.py                    # autodetect the port
-python3 tools/hover/hover_drive.py --port /dev/cu.usbmodem2101 --max 200
-python3 tools/hover/hover_drive.py --log run1.csv     # -> csv/run1.csv
+python3 archive/python-tools/hover/hover_drive.py                    # autodetect the port
+python3 archive/python-tools/hover/hover_drive.py --port /dev/cu.usbmodem2101 --max 200
+python3 archive/python-tools/hover/hover_drive.py --log run1.csv     # -> csv/run1.csv
 ```
 
 Log names are resolved into `csv/` at the repository root by
-`tools/bench_paths.py`; an absolute path is used as given. `hover_menu.py` runs
+`archive/python-tools/bench_paths.py`; an absolute path is used as given. `hover_menu.py` runs
 on the Pico itself, so its `hover_menu_log.csv` stays on the Pico filesystem.
 
 ```

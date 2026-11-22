@@ -182,4 +182,4 @@ opencode.jsonc
 .aider*
 continue/
 
-# Bench session recordings live in logs/ and csv/ (see tools/bench_paths.py)
+# Bench session recordings live in logs/ and csv/ (see archive/python-tools/bench_paths.py)

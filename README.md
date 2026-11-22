@@ -176,6 +176,8 @@ accepted trade for a stiff, simple, lightweight leg.
 ```text
 jbot/
 ├── Cargo.toml                  # Host workspace definition and release profile
+├── archive/
+│   └── python-tools/           # Legacy Python tooling, reference only (not built)
 ├── config/
 │   └── robot.toml              # Typed robot configuration
 ├── crates/

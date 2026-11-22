@@ -9,7 +9,7 @@ commands defined in [`docs/pico-bridge.md`](../../docs/pico-bridge.md) section
 mount/zero/level calibration commands.
 
 The goal is a single tool for bench bring-up that replaces the scattered
-`tools/pico` Python scripts: one window for attitude, telemetry, drive setpoints,
+the archived `archive/python-tools/pico` Python scripts: one window for attitude, telemetry, drive setpoints,
 and the firmware event log.
 
 ## Run

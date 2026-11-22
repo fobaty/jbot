@@ -106,7 +106,7 @@ have all three).
 ## Proposed roadmap for this repository (gated)
 
 1. **Simulation only, no hardware:** add a nonlinear large-angle plant (sin instead of the linear term, wheel speed/torque limits, dead zone, delay) and implement a pure two-phase raise function modelled on BalancingWii, with unit tests and a sweep over start angles and torque budgets. No flashing.
-2. **Bench identification:** add the proposed open-loop `test <u>` slow torque-ramp command; measure the real dead zone and units/Nm under load; record into `csv/` through `tools/bench_paths.py`.
+2. **Bench identification:** add the proposed open-loop `test <u>` slow torque-ramp command; measure the real dead zone and units/Nm under load; record into `csv/` through `archive/python-tools/bench_paths.py`.
 3. **Behaviour layer:** introduce explicit modes (`balance`, `drive`, `spin`, `raise`, `safe-fall`) with entry/exit guards, estop priority and telemetry, keeping the existing safety function as the single source of truth.
 4. **Only after 1-3 pass:** request fresh step-by-step safety approval for any raise trial (rope, hands on body, <=0.5 m zone, minimal torque, smooth ramp/damping).
 5. **Stage 2:** if jumps, step climbing or recovery from full side-lying are required, adopt the LQR + VMC architecture from the wheel-legged reference rather than trying to stretch the two-wheel law.

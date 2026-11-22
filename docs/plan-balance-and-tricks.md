@@ -55,7 +55,7 @@ and still excludes full side/upside-down recovery. It is simulation-only.
 
 The open-loop commands already exist: `test <u> [u]` in
 `firmware/pico2w/src/console.rs` and the host driver
-`tools/pico/jbot_torque_id.py`, which spins the wheels free and derives
+`archive/python-tools/pico/jbot_torque_id.py`, which spins the wheels free and derives
 `M = I*alpha` from the hall feedback. Hold the robot by hand on the bench and
 run that driver over several levels; it writes results into `csv/`. Derive the
 loaded dead zone and units/Nm with an uncertainty band; if possible cross-check

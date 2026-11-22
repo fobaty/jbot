@@ -3,7 +3,7 @@
 
 Run from the repository root:
 
-    python3 -m unittest discover -s tools/pico -p 'test_*.py'
+    python3 -m unittest discover -s archive/python-tools/pico -p 'test_*.py'
 """
 
 import os

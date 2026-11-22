@@ -8,7 +8,8 @@ explicitly absolute path is kept as-is so an operator can redirect a capture.
 import os
 
 TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
-REPO_ROOT = os.path.dirname(TOOLS_DIR)
+# This helper now lives in archive/python-tools, two levels below the root.
+REPO_ROOT = os.path.dirname(os.path.dirname(TOOLS_DIR))
 LOG_DIR = os.path.join(REPO_ROOT, "logs")
 CSV_DIR = os.path.join(REPO_ROOT, "csv")
 

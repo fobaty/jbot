@@ -4,7 +4,7 @@
 # the 20 Hz motor frame stream, so the host only has to send readable text
 # commands. Deploy this file as `:main.py` to start it on boot:
 #
-#   mpremote connect $PORT fs cp tools/pico/hover_bridge.py :main.py
+#   mpremote connect $PORT fs cp archive/python-tools/hover/hover_bridge.py :main.py
 #   mpremote connect $PORT reset
 #
 # Host -> Pico (one line each, newline terminated):
