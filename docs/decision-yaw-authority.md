@@ -47,5 +47,7 @@ done later as a separate approved reflash if full-authority spin is needed.
 Option 1 approved and implemented (2026-11-22). `Command::from_wheel_torque`
 now sends the full wheel-torque difference; the mixer round-trip unit test
 covers both the corrected mapping and the +/-500 per-wheel saturation ceiling.
-The code is **not flashed**: a Pico reflash is required before any bench trial,
-and the mainboard config is unchanged.
+The code was flashed to the Pico on 2026-11-22 (`picotool load -u -v -x -t elf`,
+verified OK). The mainboard config is unchanged. The yaw response itself is
+still unmeasured on the bench because the mainboard was not woken during the
+reflash session.

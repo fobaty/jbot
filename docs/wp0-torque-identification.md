@@ -57,8 +57,8 @@ unable to resume: the write into an undrained endpoint blocked and each later
 host session saw no telemetry until the Pico USB cable was re-enumerated.
 This was not part of WP0. A later change makes `console_task` watch DTR and
 wait for a real host before writing, so a session can be closed and reopened
-without re-enumeration; that fix is pending the Pico reflash and still needs
-bench confirmation.
+without re-enumeration. The fix was flashed on 2026-11-22 and closing/reopening
+the port was confirmed to resume telemetry without touching the USB cable.
 
 Quality gates after the tooling changes: `cargo fmt --all -- --check`,
 `cargo check --workspace --all-targets`, `cargo test --workspace` and
