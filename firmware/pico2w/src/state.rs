@@ -172,6 +172,12 @@ static ZERO_ROLL_BITS: AtomicU32 = AtomicU32::new(0);
 static LATEST_MAPPED_PITCH_BITS: AtomicU32 = AtomicU32::new(0);
 /// Latest mapped (pre-zero) roll in degrees, stored as `f32` bits.
 static LATEST_MAPPED_ROLL_BITS: AtomicU32 = AtomicU32::new(0);
+/// Measured on-back pitch reference in degrees; `NaN` means not measured.
+static POSE_BACK_BITS: AtomicU32 = AtomicU32::new(f32::NAN.to_bits());
+/// Measured face-down pitch reference in degrees; `NaN` means not measured.
+static POSE_FACE_BITS: AtomicU32 = AtomicU32::new(f32::NAN.to_bits());
+/// Measured vertical pitch reference in degrees; `NaN` means not measured.
+static POSE_HOME_BITS: AtomicU32 = AtomicU32::new(f32::NAN.to_bits());
 /// Applied spin-test left torque, in command units, stored as `f32` bits.
 static SPIN_APPLIED_LEFT_BITS: AtomicU32 = AtomicU32::new(0);
 /// Applied spin-test right torque, in command units, stored as `f32` bits.
@@ -487,6 +493,45 @@ pub fn set_zero_pitch_rad(rad: f32) {
 /// Set the roll zero offset in radians.
 pub fn set_zero_roll_rad(rad: f32) {
     ZERO_ROLL_BITS.store(rad.to_bits(), Ordering::Relaxed);
+}
+
+/// Measured on-back pitch reference, or `None` when not captured.
+pub fn pose_back_deg() -> Option<f32> {
+    pose_from_bits(POSE_BACK_BITS.load(Ordering::Relaxed))
+}
+
+/// Measured face-down pitch reference, or `None` when not captured.
+pub fn pose_face_deg() -> Option<f32> {
+    pose_from_bits(POSE_FACE_BITS.load(Ordering::Relaxed))
+}
+
+/// Measured vertical pitch reference, or `None` when not captured.
+pub fn pose_home_deg() -> Option<f32> {
+    pose_from_bits(POSE_HOME_BITS.load(Ordering::Relaxed))
+}
+
+/// Store or clear the on-back pitch reference.
+pub fn set_pose_back_deg(value: Option<f32>) {
+    POSE_BACK_BITS.store(pose_to_bits(value), Ordering::Relaxed);
+}
+
+/// Store or clear the face-down pitch reference.
+pub fn set_pose_face_deg(value: Option<f32>) {
+    POSE_FACE_BITS.store(pose_to_bits(value), Ordering::Relaxed);
+}
+
+/// Store or clear the vertical pitch reference.
+pub fn set_pose_home_deg(value: Option<f32>) {
+    POSE_HOME_BITS.store(pose_to_bits(value), Ordering::Relaxed);
+}
+
+fn pose_from_bits(bits: u32) -> Option<f32> {
+    let value = f32::from_bits(bits);
+    value.is_finite().then_some(value)
+}
+
+fn pose_to_bits(value: Option<f32>) -> u32 {
+    value.unwrap_or(f32::NAN).to_bits()
 }
 
 /// Publish the latest mapped attitude (pre-zero), degrees.

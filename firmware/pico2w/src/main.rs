@@ -155,21 +155,31 @@ async fn main(spawner: Spawner) {
 
     let watchdog = Watchdog::new(p.WATCHDOG);
 
-    // Settings record. The mount is geometry, not a tuning choice: losing it
-    // on every power cycle is what made the machine balance the wrong axis.
-    // The zero offsets and the level reference are restored as a printed
-    // reference only; the arm gate still demands a capture this session.
+    // Settings record. The mount and the measured pose table are geometry, not
+    // tuning choices: losing them on every power cycle is what made the machine
+    // balance the wrong axis. The vertical pose doubles as the pitch zero, so
+    // it is restored into the live state; level still needs a fresh capture.
     let mut flash = nvm::Store::new_blocking(p.FLASH);
     match nvm::load(&mut flash) {
         Some(record) => {
             let mount = Mount::from_u32(u32::from(record.mount));
             state::set_mount(mount.as_u32());
             state::set_nvm_present(true);
+            state::set_pose_back_deg(record.pose_back_deg);
+            state::set_pose_face_deg(record.pose_face_deg);
+            state::set_pose_home_deg(record.pose_home_deg);
+            if let Some(home_deg) = record.pose_home_deg {
+                state::set_zero_pitch_rad(home_deg.to_radians());
+                state::set_zero_captured(true);
+            }
             info!(
-                "nvm: mount={} zero={} level={}",
+                "nvm: mount={} zero={} level={} poses={}/{}/{}",
                 mount.name(),
                 record.zero_pitch_rad.to_degrees(),
-                record.level_rad.to_degrees()
+                record.level_rad.to_degrees(),
+                record.pose_back_deg.unwrap_or(f32::NAN),
+                record.pose_face_deg.unwrap_or(f32::NAN),
+                record.pose_home_deg.unwrap_or(f32::NAN)
             );
         }
         None => {

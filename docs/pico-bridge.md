@@ -239,14 +239,16 @@ answers each command with one `ok`/`err`/`stat` line and, while streaming, sends
 | `trim <deg>` | `ok trim <deg>` | Accepted range `-90..=90` |
 | `zero` | `ok zero pitch=<deg> roll=<deg>` | Capture the current attitude as the zero offsets; the captured pose reads as 0 afterwards |
 | `level` | `ok level <deg>` | Capture the current (zeroed) pitch as the balance reference; equivalent to `trim` with an automatic value. Also clears any explicit `home` override |
+| `pose` | `ok pose back=<deg> face=<deg> home=<deg>` | List the stored pose pitch references. Unmeasured slots print `NaN` |
+| `pose <back/face/home> [deg]` | `ok pose <name> <deg>` | Store a measured pitch reference for a pose, `-180..=180`. With no angle, capture the current pre-zero pitch. `home` also becomes the pitch zero and marks it captured. Writes the settings record; disarms the balance law |
 | `home` | `ok home <deg>` | Set the home reference to the captured `level` equilibrium; the balance law ramps to it from the current pose. The transition is acceleration-limited (10 deg/s max rate, 20 deg/s^2 max acceleration) |
 | `home <deg>` | `ok home <deg>` | Set an explicit home bias, `-5..=5`. A standing machine cannot hold a larger commanded pitch: the inner loop trades angle against holding torque and the base walks. Overrides the captured `level` until `zero`, `level`, or `mount` is re-captured |
 | `vmax` | `ok vmax <deg/s>` | Query the commanded reference rate for the home ramp |
 | `vmax <deg/s>` | `ok vmax <deg/s>` | Set the reference rate, `0..=60`; `0` freezes the ramp. Start at 10 and raise in steps on the bench |
 | `mount` | `ok mount <n> <name>` | Query the BNO055 mount selector |
 | `mount <n|name>` | `ok mount <n> <name> (re-capture zero and level)` | Select the mounting orientation of the BNO055 (`normal`, `flipx`, `flipy`, `rotxp`, `rotxm`, `rotyp`, `rotym`); re-capture `zero` and `level` afterwards. Also disarms the balance law, invalidates the captures, and writes the settings record |
-| `save` | `ok save nvm=stored` / `err save refused: disarm first ...` | Write the settings record (mount, zero, level) to flash. Refused while armed, because the erase stalls the 200 Hz loop |
-| `forget` | `ok forget nvm=blank` | Erase the settings record; the runtime settings are untouched. Refused while armed |
+| `save` | `ok save nvm=stored` / `err save refused: disarm first ...` | Write the settings record (mount, zero, level, pose references) to flash. Refused while armed, because the erase stalls the 200 Hz loop |
+| `forget` | `ok forget nvm=blank` | Erase the settings record and clear the runtime pose references. This is the invalidation step after a construction change. Refused while armed |
 | `arm` | `ok armed` | Arm the balance law; refused unless the e-stop is clear, the IMU is fresh, `zero` and `level` have been captured this session, mainboard feedback is fresh (< 300 ms), the pose error is inside the lift budget, and the body is not on the ground (\|pitch\| ≤ 45 deg) |
 | `disarm` | `ok disarmed` | Disarm the balance law |
 | `speed` | `ok speed <mps>` | Query the speed setpoint |
@@ -417,34 +419,39 @@ is clear, the IMU sample is fresh, and both captures are done this session.
 
 #### Persistent settings (flash)
 
-The mount, the zero offsets and the level reference are stored in the last
-4 KiB erase block of the QSPI flash; `memory.x` ends the `FLASH` region one
-block short (`4092K`), so the record can never overlap the application image.
-The record is 32 bytes: magic `JBNV`, format version, mount selector, the
-three angles, and a CRC-32 over the payload. A blank sector, a foreign image,
-a different version, a CRC mismatch or an out-of-range value all decode to
-"no record", and the firmware then falls back to the compiled defaults. The
-current format version is 2: it deliberately refuses version-1 records, which
-could still hold the pre-resolder `mount 1` (flip-x), so the fallback selects
-`mount normal`. The decoder lives in `firmware/pico_core/src/nvm.rs` and is
+The mount, the zero offsets, the level reference and the three measured pose
+pitch references are stored in the last 4 KiB erase block of the QSPI flash;
+`memory.x` ends the `FLASH` region one block short (`4092K`), so the record can
+never overlap the application image. The record is 32 bytes: magic `JBNV`,
+format version, mount selector, the zero/roll/level angles, three pose angles
+in deci-degrees, and a CRC-32 over the first 28 bytes. A blank sector, a
+foreign image, a different version, a CRC mismatch or an out-of-range value all
+decode to "no record", and the firmware then falls back to the compiled
+defaults. The current format version is 3: it adds the pose table and refuses
+version-2 records. The decoder lives in `firmware/pico_core/src/nvm.rs` and is
 unit-tested on the host.
 
 What happens at boot:
 
 - **The mount is restored.** It is geometry, not a tuning choice: losing it is
   what makes the machine balance the wrong axis after a reboot.
-- **`zero` and `level` are not applied**, and the arm gate is unchanged: both
-  must still be captured in the current session. They are stored so the
-  console can print them as a reference and so the record always describes
-  the mount that was in force.
-- `pscale` is deliberately *not* stored: a bench-weakened law must not leak
-  into the next power-up.
+- **The pose table is restored**, and the `home` (vertical) pitch becomes the
+  live pitch zero, so a reboot does not erase the measured attitude references.
+  Roll is deliberately not part of the table: this stage has no tilt axis.
+- **`level` is still not applied**: it must be captured in the current session.
+- `pscale` and `slew` are deliberately *not* stored: a bench-weakened law must
+  not leak into the next power-up.
 
-Writes happen on `mount`, `zero`, `level`, and on an explicit `save`. A flash
-erase parks the XIP cache and stalls the whole executor for tens of
-milliseconds, so saving is refused while the balance law is armed; with the
-law disarmed nothing commands torque and the mainboard keeps its own serial
-timeout. `forget` erases the block and leaves the runtime settings alone.
+After a construction change the references are no longer valid. The commanded
+invalidation is `forget`, which erases the record and clears the runtime pose
+table; the poses must then be measured again. There is no automatic geometry
+detection.
+
+Writes happen on `mount`, `zero`, `level`, `pose` and on an explicit `save`. A
+flash erase parks the XIP cache and stalls the whole executor for tens of
+milliseconds, so saving is refused while the balance law is armed; with the law
+disarmed nothing commands torque and the mainboard keeps its own serial
+timeout.
 
 The `mount`, `zero` and `level` replies keep their original shape, because the
 host parses them positionally; a failed write adds a second line,

@@ -143,6 +143,11 @@ fn parse_f32(text: &str) -> Option<f32> {
     text.parse().ok()
 }
 
+/// Optional pose reference for a reply; `NaN` means it has not been measured.
+fn pose_value(value: Option<f32>) -> f32 {
+    value.unwrap_or(f32::NAN)
+}
+
 /// What the console task should do after a command.
 enum Action {
     /// Keep serving.
@@ -173,6 +178,9 @@ fn current_record() -> Option<Record> {
         zero_pitch_rad,
         zero_roll_rad,
         level_rad,
+        state::pose_back_deg(),
+        state::pose_face_deg(),
+        state::pose_home_deg(),
     )
 }
 
@@ -223,7 +231,7 @@ async fn handle_command(class: &mut Console, flash: &mut Store, line: &[u8]) -> 
             reply(
                 class,
                 format_args!(
-                    "ok help: ping | stat | stream <hz> | speed <mps> | steer <deg/s> | trim <deg> | zero | level | mount <name> | home [deg] | vmax [deg/s] | pscale [0..2] | slew [units/s] | arm | disarm | test <units> [units] | reinit | estop | clear | save | forget | stats reset | reboot"
+                    "ok help: ping | stat | stream <hz> | speed <mps> | steer <deg/s> | trim <deg> | zero | level | pose [back|face|home] [deg] | mount <name> | home [deg] | vmax [deg/s] | pscale [0..2] | slew [units/s] | arm | disarm | test <units> [units] | reinit | estop | clear | save | forget | stats reset | reboot"
                 ),
             )
             .await;
@@ -446,6 +454,63 @@ async fn handle_command(class: &mut Console, flash: &mut Store, line: &[u8]) -> 
                 report_save_failure(class, saved, "level").await;
             }
         }
+        "pose" => match argument {
+            None => {
+                reply(
+                    class,
+                    format_args!(
+                        "ok pose back={:.2} face={:.2} home={:.2}",
+                        pose_value(state::pose_back_deg()),
+                        pose_value(state::pose_face_deg()),
+                        pose_value(state::pose_home_deg())
+                    ),
+                )
+                .await;
+            }
+            Some(name) => {
+                let captured = match parts.next() {
+                    Some(text) => parse_f32(text),
+                    None if state::imu_fresh() => Some(state::latest_mapped_attitude().0),
+                    None => {
+                        reply(class, format_args!("err pose needs a fresh IMU sample")).await;
+                        return Action::Continue;
+                    }
+                };
+                match captured {
+                    Some(deg) if deg.is_finite() && deg.abs() <= 180.0 => {
+                        match name {
+                            "back" => state::set_pose_back_deg(Some(deg)),
+                            "face" => state::set_pose_face_deg(Some(deg)),
+                            "home" => {
+                                state::set_pose_home_deg(Some(deg));
+                                // The vertical reference doubles as the pitch zero so a
+                                // captured attitude survives a reboot without a fresh
+                                // calibration. Roll is left untouched: tilts are not
+                                // part of this stage.
+                                state::set_zero_pitch_rad(deg.to_radians());
+                                state::set_zero_captured(true);
+                                state::set_armed(false);
+                                state::clear_home_target();
+                            }
+                            _ => {
+                                reply(class, format_args!("err pose name is back, face or home"))
+                                    .await;
+                                return Action::Continue;
+                            }
+                        }
+                        let saved = save_settings(flash);
+                        if saved {
+                            state::set_nvm_present(true);
+                        }
+                        reply(class, format_args!("ok pose {name} {deg:.2}")).await;
+                        report_save_failure(class, saved, "pose").await;
+                    }
+                    _ => {
+                        reply(class, format_args!("err pose needs degrees in -180..180")).await;
+                    }
+                }
+            }
+        },
         "home" => {
             // Set the home reference: a small pitch bias away from the
             // captured level. The balance law ramps there smoothly from the
@@ -675,6 +740,11 @@ async fn handle_command(class: &mut Console, flash: &mut Store, line: &[u8]) -> 
                 match nvm::forget(flash) {
                     Ok(()) => {
                         state::set_nvm_present(false);
+                        // A construction change invalidates geometry references.
+                        // The saved pose table must not survive as a plausible number.
+                        state::set_pose_back_deg(None);
+                        state::set_pose_face_deg(None);
+                        state::set_pose_home_deg(None);
                         reply(class, format_args!("ok forget nvm=blank")).await;
                     }
                     Err(()) => {
