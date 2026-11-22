@@ -11,6 +11,7 @@ use crate::attitude;
 use crate::autocal::StillnessTracker;
 use crate::axiscal::{self, Lean, Measurements, MOUNT_COUNT, MOUNT_NAMES};
 use crate::link::{available_ports, looks_like_pico, LinkEvent, LinkHandle};
+use crate::live;
 use crate::protocol::{Message, Stat, Telemetry, MAX_STREAM_HZ};
 use crate::record::{self, EventLog, SessionRecorder};
 use crate::theme;
@@ -27,6 +28,8 @@ pub struct Startup {
     pub port: Option<String>,
     /// Telemetry rate requested on connect.
     pub stream_hz: u32,
+    /// Shared live view exposed by the read-only local API.
+    pub live: live::LiveState,
 }
 
 /// Event log severity.
@@ -232,6 +235,7 @@ pub struct ConsoleApp {
     started: Instant,
     recorder: Option<SessionRecorder>,
     event_log: Option<EventLog>,
+    live: live::LiveState,
 }
 
 impl ConsoleApp {
@@ -295,6 +299,7 @@ impl ConsoleApp {
             started,
             recorder: None,
             event_log: None,
+            live: startup.live,
         };
 
         if let Ok(event_log) = EventLog::open(&record::logs_dir()) {
@@ -416,6 +421,7 @@ impl ConsoleApp {
                         format!("recording failed: {error}; stopping recorder"),
                     );
                     self.recorder = None;
+                    self.live.set_recorder(None);
                 }
                 if let Some(previous) = self.last_step {
                     if telemetry.step < previous && previous.wrapping_sub(telemetry.step) > 1_000 {
@@ -455,6 +461,7 @@ impl ConsoleApp {
                     self.armed = armed;
                 }
                 self.axis_cal_sample(telemetry.pitch_deg, telemetry.roll_deg);
+                self.live.set_telemetry(telemetry.clone());
                 self.telemetry = Some(telemetry);
                 self.telemetry_at = Some(Instant::now());
             }
@@ -504,6 +511,7 @@ impl ConsoleApp {
                 if let Some(armed) = stat.armed {
                     self.armed = armed;
                 }
+                self.live.set_stat(stat.clone());
                 self.stat = Some(stat);
             }
             Message::Ok(text) => {
@@ -1323,6 +1331,7 @@ impl ConsoleApp {
                     actions_path.display(),
                 ),
             );
+            self.live.set_recorder(None);
             return;
         }
         match record::start(&record::csv_dir()) {
@@ -1335,7 +1344,9 @@ impl ConsoleApp {
                         recorder.actions_path().display(),
                     ),
                 );
+                let path = recorder.telemetry_path().to_string_lossy().into_owned();
                 self.recorder = Some(recorder);
+                self.live.set_recorder(Some(path));
             }
             Err(error) => {
                 self.log(Level::Error, format!("cannot start the recording: {error}"));
@@ -1363,6 +1374,7 @@ impl ConsoleApp {
 
     fn log(&mut self, level: Level, text: impl Into<String>) {
         let text = text.into();
+        self.live.push_event(format!("{} {}", level.tag(), text));
         if let Some(event_log) = &mut self.event_log {
             event_log.record(level.tag(), &text);
         }
