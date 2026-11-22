@@ -57,6 +57,10 @@ fn main() {
         "breakaway bracket: stuck <= {:?} units, moving >= {:?} units",
         report.stuck_max_units, report.moving_min_units
     );
+    println!(
+        "linear fit: dead zone {:?} units, scale {:?} units/Nm",
+        report.dead_zone_units, report.units_per_nm_linear
+    );
     if report.levels.is_empty() {
         println!("no spin-up plateau found: check that the motor test was used while disarmed");
     }

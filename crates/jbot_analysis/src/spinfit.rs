@@ -36,6 +36,10 @@ pub struct SpinReport {
     pub stuck_max_units: Option<f64>,
     /// Smallest command that did move the wheel, EFeru units.
     pub moving_min_units: Option<f64>,
+    /// Intercept of `units = dead_zone + I*units_per_nm*alpha`, EFeru units.
+    pub dead_zone_units: Option<f64>,
+    /// Scale from the same linear fit, units/Nm.
+    pub units_per_nm_linear: Option<f64>,
 }
 
 /// Contiguous runs of a nearly constant spin-test command.
@@ -105,14 +109,23 @@ fn acceleration(plateau: &[Sample]) -> Option<f64> {
     if end <= start || (end - start) as f64 / 1000.0 < MIN_PLATEAU_S {
         return None;
     }
-    // Drop the ramp-in edges; the middle of the plateau is pure spin-up.
-    let from = start + (end - start) / 5;
-    let to = end - (end - start) / 5;
-    let window: Vec<&Sample> = plateau
-        .iter()
-        .filter(|sample| sample.t_ms >= from && sample.t_ms <= to)
-        .collect();
-    if window.len() < MIN_PLATEAU_SAMPLES {
+    // Use only the beginning of the spin-up, while the wheels are still far
+    // from the no-load speed limit. At high commands the torque-speed envelope
+    // already cuts the available torque by the middle of the plateau, which
+    // would make alpha fall as the command grows.
+    const LOW_SPEED_RPS: f64 = 20.0;
+    let mut window: Vec<&Sample> = Vec::new();
+    for sample in plateau {
+        let speed = rpm_to_rps(sample.left_rpm.abs()).max(rpm_to_rps(sample.right_rpm.abs()));
+        if speed > LOW_SPEED_RPS {
+            break;
+        }
+        window.push(sample);
+    }
+    if window.len() < 8 {
+        window = plateau.iter().take(MIN_PLATEAU_SAMPLES).collect();
+    }
+    if window.len() < 8 {
         return None;
     }
 
@@ -171,6 +184,36 @@ pub fn fit(samples: &[Sample], wheel_inertia_kgm2: f64) -> SpinReport {
 
     report.stuck_max_units = stuck.into_iter().max_by(|a, b| a.total_cmp(b));
     report.moving_min_units = moving.into_iter().min_by(|a, b| a.total_cmp(b));
+
+    // A plain units/torque ratio is biased low at small commands because part
+    // of the command is spent on the dead zone. Fit the affine relation
+    // `units = intercept + slope * alpha`; the slope then gives units/Nm and
+    // the intercept gives the dead zone in command units.
+    let points: Vec<(f64, f64)> = report
+        .levels
+        .iter()
+        .map(|level| (level.alpha_rps2, level.units))
+        .collect();
+    if points.len() >= 2 {
+        let n = points.len() as f64;
+        let mean_alpha = points.iter().map(|(alpha, _)| alpha).sum::<f64>() / n;
+        let mean_units = points.iter().map(|(_, units)| units).sum::<f64>() / n;
+        let numerator = points
+            .iter()
+            .map(|(alpha, units)| (alpha - mean_alpha) * (units - mean_units))
+            .sum::<f64>();
+        let denominator = points
+            .iter()
+            .map(|(alpha, _)| (alpha - mean_alpha).powi(2))
+            .sum::<f64>();
+        if denominator > 0.0 {
+            let slope = numerator / denominator;
+            if slope > 0.0 {
+                report.dead_zone_units = Some(mean_units - slope * mean_alpha);
+                report.units_per_nm_linear = Some(slope / wheel_inertia_kgm2.max(1e-9));
+            }
+        }
+    }
     report
 }
 

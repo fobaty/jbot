@@ -9,6 +9,10 @@ description = "Desktop console and BNO055 attitude display for the JBOT Pico 2 W
 name = "jbot-console"
 path = "src/main.rs"
 
+[[bin]]
+name = "spin-driver"
+path = "src/bin/spin_driver.rs"
+
 [dependencies]
 eframe = "0.37"
 serialport = "4.10"
