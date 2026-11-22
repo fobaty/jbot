@@ -15,8 +15,9 @@
 //!
 //! Nothing here is on the control path: a missing host only means lines are
 //! dropped, and a slow host cannot stall the 200 Hz loop. The console task
-//! survives a host closing the port: writes are bounded by a timeout and a
-//! dead session is dropped, so the next one resumes without re-enumerating USB.
+//! survives a host closing the port: writes are gated on DTR so no write is
+//! attempted into an undrained endpoint, and a session can be reopened without
+//! re-enumerating USB.
 
 use core::fmt::{self, Write};
 
@@ -52,8 +53,7 @@ const BANNER: &[u8] = b"JBOT pico bridge 0.1 ready\n";
 const IDLE_POLL: Duration = Duration::from_millis(200);
 /// Time allowed for the final USB packets to leave before a requested reboot.
 const REBOOT_FLUSH: Duration = Duration::from_millis(50);
-/// Maximum time a telemetry write may wait for a host to drain the endpoint.
-const WRITE_TIMEOUT: Duration = Duration::from_millis(250);
+
 /// Largest accepted `home` bias away from the captured level, degrees.
 ///
 /// A standing two-wheel machine cannot hold a large commanded pitch: the pitch
@@ -121,18 +121,20 @@ async fn write_bytes(class: &mut Console, bytes: &[u8]) -> Result<(), ()> {
     Ok(())
 }
 
-/// Write a reply with a deadline.
+/// Wait for a host session without relying on DTR being asserted at open.
 ///
-/// `write_packet` waits for the host to drain the endpoint. A host that closes
-/// the port can leave that wait pending forever, parking the console task even
-/// though the endpoint is still enabled. Bounding the write lets the task leave
-/// the dead session and wait for the next host. Dropping the write future
-/// before its completion is safe: the buffer and register updates happen only
-/// after the endpoint reports ready.
-async fn write_bounded(class: &mut Console, bytes: &[u8]) -> bool {
-    match select(write_bytes(class, bytes), Timer::after(WRITE_TIMEOUT)).await {
-        Either::First(result) => result.is_ok(),
-        Either::Second(()) => false,
+/// Most hosts assert DTR when they open the port. A device that just
+/// re-enumerated can be opened by a host that does not, so waiting for DTR
+/// forever would block the console until USB is replugged. Writes are gated on
+/// DTR in the inner loop instead; here we only give a normal host a moment to
+/// assert it before starting the session.
+async fn wait_host(class: &mut Console) {
+    class.wait_connection().await;
+    for _ in 0..20 {
+        if class.dtr() {
+            return;
+        }
+        Timer::after(Duration::from_millis(100)).await;
     }
 }
 
@@ -149,7 +151,7 @@ fn format<'a>(buffer: &'a mut [u8], args: fmt::Arguments<'_>) -> &'a [u8] {
 async fn reply(class: &mut Console, args: fmt::Arguments<'_>) -> bool {
     let mut buffer = [0u8; REPLY_BUFFER];
     let len = format(&mut buffer, args).len();
-    write_bounded(class, &buffer[..len]).await
+    write_bytes(class, &buffer[..len]).await.is_ok()
 }
 
 /// Parse an unsigned decimal.
@@ -852,26 +854,31 @@ pub async fn console_task(mut class: Console, mut flash: Store) {
     let mut telemetry_buffer = [0u8; REPLY_BUFFER];
 
     loop {
-        class.wait_connection().await;
-        let _ = write_bounded(&mut class, BANNER).await;
+        wait_host(&mut class).await;
 
-        // Say what the flash record contains. This is the first thing the
-        // operator sees after a power cycle, and a wrong mount is the failure
-        // that has to be impossible to miss.
-        let mount = Mount::from_u32(state::mount());
-        let text = format(
-            &mut telemetry_buffer,
-            format_args!(
-                "nvm mount={} {} stored={} zcapt={} lcapt={}",
-                mount.as_u32(),
-                mount.name(),
-                u8::from(state::nvm_present()),
-                u8::from(state::zero_captured()),
-                u8::from(state::level_captured())
-            ),
-        );
-        let len = text.len();
-        let _ = write_bounded(&mut class, &telemetry_buffer[..len]).await;
+        // Never write into an endpoint nobody drains. A host that did not
+        // assert DTR is skipped entirely; the next connection gets the intro.
+        if class.dtr() {
+            let _ = write_bytes(&mut class, BANNER).await;
+
+            // Say what the flash record contains. This is the first thing the
+            // operator sees after a power cycle, and a wrong mount is the
+            // failure that has to be impossible to miss.
+            let mount = Mount::from_u32(state::mount());
+            let text = format(
+                &mut telemetry_buffer,
+                format_args!(
+                    "nvm mount={} {} stored={} zcapt={} lcapt={}",
+                    mount.as_u32(),
+                    mount.name(),
+                    u8::from(state::nvm_present()),
+                    u8::from(state::zero_captured()),
+                    u8::from(state::level_captured())
+                ),
+            );
+            let len = text.len();
+            let _ = write_bytes(&mut class, &telemetry_buffer[..len]).await;
+        }
 
         // A new connection always starts on a clean line boundary.
         let mut line_len = 0usize;
@@ -888,10 +895,13 @@ pub async fn console_task(mut class: Console, mut flash: Store) {
             let event = select(Timer::after(period), class.read_packet(&mut packet)).await;
             match event {
                 Either::First(()) => {
-                    if hz != 0 {
+                    // Writes are only safe while a host holds the port open.
+                    // Without the DTR check a closed host parks the task in
+                    // write_packet until USB is re-enumerated.
+                    if class.dtr() && hz != 0 {
                         if let Some(telemetry) = state::TELEMETRY.try_take() {
                             let text = format_telemetry(&mut telemetry_buffer, &telemetry);
-                            if !write_bounded(&mut class, text).await {
+                            if write_bytes(&mut class, text).await.is_err() {
                                 break;
                             }
                         }

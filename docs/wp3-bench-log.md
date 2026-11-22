@@ -21,14 +21,36 @@ Actions:
 
 The first reconnect fix gated the console on DTR. That worked for a plain port
 close/reopen but blocked the console after the Pico re-enumerated when the
-mainboard was powered on, because the host did not reassert DTR. The Pico had to
-be replugged to recover. The gate was removed; instead every console write is
-bounded by a 250 ms timeout and a dead session is dropped after a short pause.
-The revised firmware was reflashed and the reconnect check passed. The ending
-state of the first fix is recorded as a reverted approach, not as a result.
+mainboard was powered on, because the host did not reassert DTR. The second
+attempt bounded every write with a 250 ms timeout; cancelling a write left the
+USB endpoint unusable and the console stopped answering after a driver run.
+The final version keeps DTR gating for writes but gives a host two seconds to
+assert DTR at session start before proceeding, so a re-enumerated device with
+a DTR-less host still streams. It was reflashed and used for the yaw check
+below; closing the port between host sessions no longer needs a USB replug.
+
+## Session 2 — yaw differential check (no body rotation expected)
+
+Approved command-driven disturbance, robot fixed, wheels in air. The final
+console firmware was flashed first; the first two console approaches were
+reverted because they could park the console task (see the note above).
+
+`spin-driver --steer --levels 60 --hold-ms 1000` sent `test 60 -60`. The driver
+had to wait for the wake pulse's wheels to coast down before its safety gate;
+the flashed firmware has no electric brake. Evidence:
+`csv/jbot-spin-1795391173099.csv`.
+
+- Both wheels counter-rotate (hall readings `+71 / +82 rpm` over the first
+  300 ms), confirming a pure `steer` command with zero common mode.
+- Early-plateau acceleration is about 25 rad/s² (left) and 29 rad/s² (right),
+  matching the 25-31 rad/s² measured for common-mode `test 60` in WP0. With the
+  old unit-coefficient inverse the differential command would have produced
+  roughly half that. The yaw-authority fix is therefore confirmed at the wheel.
+- `gz` stays within +/-2.25 dps and heading is unchanged: the body is
+  mechanically fixed, so it cannot yaw. Body-yaw verification needs a session
+  where the operator holds the machine by hand.
 
 ## Gate
 
-The link check passes. The next step — a command-driven low-torque rotation to
-confirm the corrected yaw differential — needs fresh step-by-step approval and
-is not part of this log.
+Both the link check and the wheel-level yaw check pass. Body-yaw verification
+under hand-held conditions still needs fresh step-by-step approval.

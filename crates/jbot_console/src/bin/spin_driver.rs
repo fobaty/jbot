@@ -293,14 +293,27 @@ fn main() {
         Duration::from_millis(300),
     );
     send(&mut serial, "test 0");
-    pump(
-        &mut serial,
-        &mut buffer,
-        &mut csv,
-        &mut latest,
-        &started,
-        Duration::from_millis(800),
-    );
+    // The flashed firmware has no electric brake, so the wake pulse leaves the
+    // wheels coasting for several seconds. Wait for them to actually stop so
+    // the safety gate below sees a genuinely idle machine.
+    println!("wake pulse: waiting for the wheels to coast down");
+    let coast_deadline = Instant::now() + Duration::from_secs(20);
+    while Instant::now() < coast_deadline {
+        pump(
+            &mut serial,
+            &mut buffer,
+            &mut csv,
+            &mut latest,
+            &started,
+            Duration::from_millis(200),
+        );
+        if latest
+            .as_ref()
+            .is_some_and(|sample| sample.left_rpm.abs() < 10.0 && sample.right_rpm.abs() < 10.0)
+        {
+            break;
+        }
+    }
 
     for &level in &levels {
         // Safety gate: fresh link, no e-stop, disarmed, zero torque and rpm.
