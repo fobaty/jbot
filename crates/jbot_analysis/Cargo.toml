@@ -10,3 +10,7 @@ name = "jbot-analyze"
 path = "src/main.rs"
 
 [dependencies]
+
+[[bin]]
+name = "recovery-sweep"
+path = "src/bin/recovery_sweep.rs"
