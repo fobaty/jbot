@@ -686,6 +686,9 @@ impl ConsoleApp {
             slope_trim_deg: Some(0.5 * (t * 0.07).sin()),
             position_m: Some(0.2 * (t * 0.1).sin()),
             balance_mode: Some(0),
+            guard_tilt_deg: Some(pitch),
+            op_mode: Some(0),
+            raise_grace_s: Some(0.0),
         });
         self.telemetry_at = Some(now);
     }
@@ -2989,6 +2992,19 @@ fn balance_mode_name(mode: Option<u8>) -> &'static str {
     }
 }
 
+/// Operational mode code from the firmware's `BalanceMode`.
+fn op_mode_name(mode: Option<u8>) -> &'static str {
+    match mode {
+        Some(0) => "balance",
+        Some(1) => "drive",
+        Some(2) => "spin",
+        Some(3) => "raise",
+        Some(4) => "safe_fall",
+        Some(5) => "fault",
+        _ => "?",
+    }
+}
+
 /// Format an optional number with fixed precision, `--` when absent.
 fn opt_f32(value: Option<f32>, precision: usize) -> String {
     value.map_or_else(|| "--".to_owned(), |v| format!("{:.*}", precision, v))
@@ -3105,6 +3121,15 @@ fn debug_rows(telemetry: Option<&Telemetry>, stat: Option<&Stat>) -> Vec<(&'stat
                     |m| format!("{} {}", m, balance_mode_name(Some(m))),
                 ),
             );
+            row(
+                "tele.op_mode",
+                t.op_mode.map_or_else(
+                    || "--".to_owned(),
+                    |m| format!("{} {}", m, op_mode_name(Some(m))),
+                ),
+            );
+            row("tele.guard_tilt_deg", opt_signed(t.guard_tilt_deg, 2));
+            row("tele.raise_grace_s", opt_f32(t.raise_grace_s, 2));
         }
         None => row("tele.*", "no telemetry".to_owned()),
     }

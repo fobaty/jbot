@@ -15,10 +15,11 @@
 //!
 //! Torque requests use `TRQ_MODE`: `+/-1000` maps to `+/-I_MOT_MAX`. The F103
 //! applies its own mixer unless `TANK_STEERING` is enabled, so a desired wheel
-//! pair is converted with [`Command::from_wheel_torque`]. That inverse assumes
-//! `SPEED_COEFFICIENT = STEER_COEFFICIENT = 16384` (both 1.0); the production
-//! mainboard profile must keep those values, otherwise the yaw differential is
-//! scaled by `STEER_COEFFICIENT`.
+//! pair is converted with [`Command::from_wheel_torque`]. The flashed
+//! `VARIANT_USART` profile has `SPEED_COEFFICIENT = 1.0` and
+//! `STEER_COEFFICIENT = 0.5`, so that inverse doubles the differential before it
+//! is sent. The wire `steer` field is still limited to +/-1000, which caps the
+//! differential at +/-1000 units (500 per wheel) in this profile.
 //!
 //! The F103 accepts a command only when exactly 8 bytes arrived between two
 //! idle periods, so the sender must leave a small inter-frame gap.
@@ -67,15 +68,19 @@ impl Command {
 
     /// Build a command from a desired left/right wheel torque pair.
     ///
-    /// The EFeru mixer computes `cmdL = speed + steer` and
-    /// `cmdR = speed - steer` with unit coefficients, so the inverse is the
-    /// mean for the common mode and half the difference for the differential.
+    /// The flashed EFeru mixer computes `cmdL = speed + 0.5 * steer` and
+    /// `cmdR = speed - 0.5 * steer` (`STEER_COEFFICIENT = 0.5`). The inverse is
+    /// therefore the mean for the common mode and the *full* difference for
+    /// the differential, which cancels the 0.5 coefficient:
+    /// `speed + 0.5*(left-right) == (left+right)/2 + (left-right)/2 == left`.
     /// The conversion truncates toward zero; the residual is below one unit.
+    /// A pair whose difference exceeds 1000 units saturates the wire `steer`
+    /// field, so full differential authority is not available in this profile.
     pub fn from_wheel_torque(left: i16, right: i16) -> Self {
         let left = i32::from(clamp_torque(left));
         let right = i32::from(clamp_torque(right));
         let speed = (left + right) / 2;
-        let steer = (left - right) / 2;
+        let steer = left - right;
         Self::new(steer as i16, speed as i16)
     }
 
@@ -308,6 +313,8 @@ mod tests {
         assert_eq!(command.speed, -TORQUE_LIMIT);
     }
 
+    // The mixer round trip is covered in wheel_torque_matches_eferu_mixer.
+
     #[test]
     fn command_rejects_bad_checksum() {
         let mut frame = Command::new(10, -20).encode();
@@ -341,14 +348,23 @@ mod tests {
 
     #[test]
     fn wheel_torque_matches_eferu_mixer() {
-        // The F103 computes cmdL = speed + steer and cmdR = speed - steer.
+        // The flashed F103 profile computes cmdL = speed + steer/2 and
+        // cmdR = speed - steer/2 (STEER_COEFFICIENT = 0.5).
+        fn mix(command: Command) -> (i32, i32) {
+            let speed = i32::from(command.speed);
+            let steer = i32::from(command.steer);
+            (speed + steer / 2, speed - steer / 2)
+        }
         for (left, right) in [(-1000, -1000), (0, 0), (500, -500), (37, 91)] {
-            let command = Command::from_wheel_torque(left, right);
-            let mixed_left = i32::from(command.speed) + i32::from(command.steer);
-            let mixed_right = i32::from(command.speed) - i32::from(command.steer);
+            let (mixed_left, mixed_right) = mix(Command::from_wheel_torque(left, right));
             assert!((mixed_left - i32::from(left)).abs() <= 1);
             assert!((mixed_right - i32::from(right)).abs() <= 1);
         }
+        // The old unit-coefficient inverse sent steer = 100 for this pair,
+        // which the 0.5 mixer turned into a half-authority +50/-50 pivot.
+        assert_eq!(Command::from_wheel_torque(100, -100).steer, 200);
+        // A differential beyond 1000 units saturates the wire steer field.
+        assert_eq!(mix(Command::from_wheel_torque(1000, -1000)), (500, -500));
     }
 
     #[test]

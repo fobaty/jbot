@@ -59,6 +59,12 @@ impl LowPass {
         self.value
     }
 
+    /// Latest filtered value, for consumers that must not advance the filter
+    /// (for example a guard reading a held sample during a sensor gap).
+    pub fn value(&self) -> f32 {
+        self.value
+    }
+
     /// Drop all state; the next sample passes through unchanged.
     pub fn reset(&mut self) {
         self.value = 0.0;

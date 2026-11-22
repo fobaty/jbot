@@ -41,7 +41,8 @@ gain table and the inner law; this document is the record of what v2 is and why.
   at 3 Nm and about 0.63 at 8–12 Nm. The fall guard caps the accepted pose error at
   30 degrees regardless.
 * **Lying flat is beyond the currently assumed torque budget.** Lifting a body whose
-  centre of mass is `L = 0.18 m` off the ground needs roughly `m g L ≈ 15–20 Nm`,
+  centre of mass is `L = 0.25 m` from the wheel axle (`com_height_m` in
+  `config/robot.toml`, the same value used in §10) needs roughly `m g L ≈ 24–25 Nm`,
   while `PlantParams::NOMINAL` assumes 5 Nm of common-mode torque. That number is
   **an assumption, not a measurement**: the donor drive is configured with a 10 A per
   motor phase current limit (`firmware/stm32f103/eferu` `I_MOT_MAX`), and the torque

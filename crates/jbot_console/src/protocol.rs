@@ -93,6 +93,12 @@ pub struct Telemetry {
     pub position_m: Option<f32>,
     /// Balance mode: 0 disarmed, 1 transit, 2 hold, 3 recover, 4 fall.
     pub balance_mode: Option<u8>,
+    /// Separately filtered tilt seen by the fall guard, degrees.
+    pub guard_tilt_deg: Option<f32>,
+    /// Operational mode code from `BalanceMode`.
+    pub op_mode: Option<u8>,
+    /// Remaining guard grace for a deliberate raise, seconds.
+    pub raise_grace_s: Option<f32>,
 }
 
 impl Telemetry {
@@ -279,6 +285,9 @@ pub fn parse_telemetry(line: &str) -> Option<Telemetry> {
             "trm" => telemetry.slope_trim_deg = Some(parse_f32(value)?),
             "x" => telemetry.position_m = Some(parse_f32(value)?),
             "mode" => telemetry.balance_mode = Some(parse_u8(value)?),
+            "gtlt" => telemetry.guard_tilt_deg = Some(parse_f32(value)?),
+            "opm" => telemetry.op_mode = Some(parse_u8(value)?),
+            "grace" => telemetry.raise_grace_s = Some(parse_f32(value)?),
             _ => {}
         }
     }
@@ -591,7 +600,7 @@ fn parse_feedback_word(value: &str) -> Option<bool> {
 mod tests {
     use super::*;
 
-    const FULL: &str = "T step=19043 loop=200 imu=ok cal=3 pitch=1.50 roll=-2.25 hdg=87.40 gy=0.06 gx=-0.12 gz=0.03 err=0x00 mb=ok L=12 R=-13 bat=41.50 tmp=39.3 age=3 estop=0 vset=0.25 wset=-15.00 mnt=1 zof=1.75 zro=-0.50 lvl=0.30 arm=1 trq=123 ref=4.50 dem=-1.25 trm=2.75 x=0.412 mode=2";
+    const FULL: &str = "T step=19043 loop=200 imu=ok cal=3 pitch=1.50 roll=-2.25 hdg=87.40 gy=0.06 gx=-0.12 gz=0.03 err=0x00 mb=ok L=12 R=-13 bat=41.50 tmp=39.3 age=3 estop=0 vset=0.25 wset=-15.00 mnt=1 zof=1.75 zro=-0.50 lvl=0.30 arm=1 trq=123 ref=4.50 dem=-1.25 trm=2.75 x=0.412 mode=2 gtlt=1.23 opm=3 grace=0.45";
 
     #[test]
     fn parses_a_full_sample() {
@@ -622,6 +631,9 @@ mod tests {
         assert_eq!(telemetry.slope_trim_deg, Some(2.75));
         assert_eq!(telemetry.position_m, Some(0.412));
         assert_eq!(telemetry.balance_mode, Some(2));
+        assert_eq!(telemetry.guard_tilt_deg, Some(1.23));
+        assert_eq!(telemetry.op_mode, Some(3));
+        assert_eq!(telemetry.raise_grace_s, Some(0.45));
     }
 
     #[test]

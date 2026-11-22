@@ -109,6 +109,12 @@ pub struct Telemetry {
     pub position_m: f32,
     /// Balance mode: 0 disarmed, 1 transit, 2 hold, 3 recover, 4 fall.
     pub balance_mode: u8,
+    /// Separately filtered tilt seen by the fall guard, degrees.
+    pub guard_tilt_deg: f32,
+    /// Operational mode code from `jbot_pico_core::control::BalanceMode`.
+    pub op_mode: u8,
+    /// Remaining guard grace for a deliberate raise, seconds.
+    pub raise_grace_s: f32,
 }
 
 /// Balance mode values carried by [`Telemetry::balance_mode`].

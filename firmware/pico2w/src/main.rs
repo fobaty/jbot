@@ -57,7 +57,7 @@ use embedded_io_async::{Read, Write};
 use static_cell::StaticCell;
 
 use jbot_pico_core::control::{
-    to_command, BalanceController, BalanceInput, SafetyState, WheelTorque,
+    to_command, BalanceController, BalanceInput, BalanceMode, SafetyState, WheelTorque,
 };
 use jbot_pico_core::eferu::{Command, Feedback, FeedbackParser};
 use jbot_pico_core::filters::{LowPass, SlewLimiter};
@@ -81,6 +81,10 @@ const CONTROL_PERIOD_S: f32 = 0.005;
 /// Cut-off of the first-order low-pass filter on the pitch rate used by the
 /// derivative term.
 const D_FILTER_CUTOFF_HZ: f32 = 12.0;
+/// Separate, slower filter on the pitch angle used only by the fall guard. The
+/// control path keeps its own rate filter, so guard tuning cannot change the
+/// torque law.
+const GUARD_TILT_CUTOFF_HZ: f32 = 4.0;
 /// Maximum rate of change of the applied wheel torque, command units per second.
 const TORQUE_SLEW_PER_S: f32 = state::DEFAULT_TORQUE_SLEW_PER_S;
 /// IMU sampling period: 10 ms, that is 100 Hz.
@@ -288,6 +292,7 @@ async fn control_task(
     let mut last_feedback_at: Option<Instant> = None;
     let mut spin = SpinTest::new();
     let mut rate_lp = LowPass::new(D_FILTER_CUTOFF_HZ, CONTROL_PERIOD_S);
+    let mut guard_tilt_lp = LowPass::new(GUARD_TILT_CUTOFF_HZ, CONTROL_PERIOD_S);
     let mut torque_slew_left = SlewLimiter::new(TORQUE_SLEW_PER_S);
     let mut torque_slew_right = SlewLimiter::new(TORQUE_SLEW_PER_S);
     let mut balance = BalanceController::new();
@@ -333,6 +338,17 @@ async fn control_task(
         state::set_imu_fresh(imu_fresh);
         let feedback_fresh = last_feedback_at.is_some_and(|at| at.elapsed() < FEEDBACK_MAX_AGE);
         state::set_link_fresh(feedback_fresh);
+
+        // The guard observes a separately filtered pitch tilt. It advances only
+        // on fresh attitude samples, so an IMU gap cannot make the guard look
+        // newly level; the control path keeps its own rate filter.
+        let guard_tilt_rad = if imu_fresh {
+            guard_tilt_lp
+                .update(attitude_of(&last_imu).pitch_deg.to_radians() - state::zero_pitch_rad())
+        } else {
+            guard_tilt_lp.value()
+        };
+
         let measured_speed = if feedback_fresh {
             last_feedback.forward_speed_mps(WHEEL_RADIUS_M)
         } else {
@@ -367,6 +383,7 @@ async fn control_task(
         let command = if estop {
             reset_smoothing(
                 &mut rate_lp,
+                &mut guard_tilt_lp,
                 &mut torque_slew_left,
                 &mut torque_slew_right,
                 &mut balance,
@@ -413,6 +430,7 @@ async fn control_task(
                 );
                 reset_smoothing(
                     &mut rate_lp,
+                    &mut guard_tilt_lp,
                     &mut torque_slew_left,
                     &mut torque_slew_right,
                     &mut balance,
@@ -485,7 +503,12 @@ async fn control_task(
                     position_m: tracking_error_m,
                     ..safety
                 };
-                if let Some(reason) = guard.fall_cause(&tuning) {
+                // Mode-aware guard. Only Balance is selectable today; the
+                // mode enum and grace argument are the tested hook for a
+                // future deliberate Raise attempt.
+                if let Some(reason) =
+                    guard.mode_guard_cause(&tuning, BalanceMode::Balance, guard_tilt_rad, 0.0)
+                {
                     fell = true;
                     state::set_armed(false);
                     state::set_stop(Some(reason));
@@ -500,6 +523,7 @@ async fn control_task(
                     );
                     reset_smoothing(
                         &mut rate_lp,
+                        &mut guard_tilt_lp,
                         &mut torque_slew_left,
                         &mut torque_slew_right,
                         &mut balance,
@@ -519,6 +543,9 @@ async fn control_task(
                         trim_deg: balance.trim_rad().to_degrees(),
                         position_m,
                         mode: state::MODE_DISARMED,
+                        guard_tilt_deg: guard_tilt_rad.to_degrees(),
+                        op_mode: BalanceMode::Balance.code(),
+                        raise_grace_s: 0.0,
                     };
                     to_command(WheelTorque { left, right })
                 }
@@ -526,6 +553,7 @@ async fn control_task(
         } else {
             reset_smoothing(
                 &mut rate_lp,
+                &mut guard_tilt_lp,
                 &mut torque_slew_left,
                 &mut torque_slew_right,
                 &mut balance,
@@ -606,6 +634,12 @@ struct BalanceReport {
     position_m: f32,
     /// Balance mode code, filled in after the command selection.
     mode: u8,
+    /// Separately filtered guard tilt, degrees in the zeroed frame.
+    guard_tilt_deg: f32,
+    /// Operational mode code from `BalanceMode`.
+    op_mode: u8,
+    /// Raise grace remaining, seconds.
+    raise_grace_s: f32,
 }
 
 impl BalanceReport {
@@ -620,12 +654,14 @@ impl BalanceReport {
 /// reference state.
 fn reset_smoothing(
     rate_lp: &mut LowPass,
+    guard_tilt_lp: &mut LowPass,
     torque_slew_left: &mut SlewLimiter,
     torque_slew_right: &mut SlewLimiter,
     balance: &mut BalanceController,
     reference: &mut PitchReference,
 ) {
     rate_lp.reset();
+    guard_tilt_lp.reset();
     torque_slew_left.reset();
     torque_slew_right.reset();
     balance.reset(0.0);
@@ -703,6 +739,9 @@ fn snapshot(
         slope_trim_deg: report.trim_deg,
         position_m: report.position_m,
         balance_mode: report.mode,
+        guard_tilt_deg: report.guard_tilt_deg,
+        op_mode: report.op_mode,
+        raise_grace_s: report.raise_grace_s,
     }
 }
 

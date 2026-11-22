@@ -37,12 +37,13 @@ and still excludes full side/upside-down recovery. It is simulation-only.
 * There is no open-loop `test <u>` command for torque identification and no
   command-driven disturbance source; manual pushes were abandoned as
   unreproducible.
-* Arm/fall has only two states. There is no dedicated stand-up mode, no guard
-  grace period and no reference ramp for a large-angle recovery.
-* Flashed `VARIANT_USART` falls back to `DEFAULT_STEER_COEFFICIENT=8192`
-  (0.5), while `Command::from_wheel_torque` in `firmware/pico_core/src/eferu.rs`
-  inverts the mixer assuming 1.0. Differential yaw authority is half of what
-  the controller asks for.
+* Arm/fall used to have only two states. WP2 adds a mode enum, a guard grace
+  period and a separately filtered guard tilt in pure, tested code (not yet
+  flashed).
+* Flashed `VARIANT_USART` falls back to `DEFAULT_STEER_COEFFICIENT=8192` (0.5).
+  `Command::from_wheel_torque` used to invert the mixer assuming 1.0, so yaw
+  differential was half of the request; WP2 corrects the inverse in code (not
+  yet flashed). See `docs/decision-yaw-authority.md`.
 * Serial timeout is about 0.8 s in source and about 2 s to full stop; the
   100 ms design target in `config/robot.toml` is not met.
 * `docs/design_balance_home.md` section 2 uses `L=0.18 m`, while
@@ -110,6 +111,16 @@ needed to observe a raise. All decisions stay in the tested pure
 quality gates before any flash.
 
 **Gate:** 100 % tests, zero warnings, and a written yaw-authority decision.
+
+The written decision is in `docs/decision-yaw-authority.md`. Option 1 was
+approved and implemented: the Pico mixer inverse now matches the flashed
+`STEER_COEFFICIENT = 0.5`, with a unit test modelling the mainboard mixer. The
+mode enum, guard grace hook and separately filtered guard tilt are also in
+place with unit tests. The guard now reads a separate 4 Hz filtered tilt while
+the control path keeps its 12 Hz rate filter. Nothing has been flashed, so the
+active firmware still has the old half-authority inverse; a Pico reflash is
+required before bench use, and the guard filter's effect on fall latency must be
+observed in the first armed trial.
 
 ### WP3 — Bench trials (each session needs fresh step-by-step approval)
 

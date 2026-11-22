@@ -288,6 +288,79 @@ impl Tuning {
 /// bound for its `pscale` command.
 pub const MAX_PSCALE: f32 = 2.0;
 
+/// High-level operating mode of the balance supervisor.
+///
+/// The live telemetry keeps its own historical `balance_mode` field; this enum
+/// is the explicit operational mode consumed by the guard and by future trick
+/// controllers. Codes are stable and must never be reordered.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum BalanceMode {
+    /// Upright balance and position hold.
+    #[default]
+    Balance,
+    /// Commanded translation.
+    Drive,
+    /// Commanded in-place pivot.
+    Spin,
+    /// Deliberate stand-up attempt; the guard grants a short grace period.
+    Raise,
+    /// Intentional, controlled descent.
+    SafeFall,
+    /// Unrecoverable fault; torque stays zero until a fresh arm.
+    Fault,
+}
+
+impl BalanceMode {
+    /// Short stable label for logs and telemetry.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Balance => "balance",
+            Self::Drive => "drive",
+            Self::Spin => "spin",
+            Self::Raise => "raise",
+            Self::SafeFall => "safe_fall",
+            Self::Fault => "fault",
+        }
+    }
+
+    /// Numeric code for telemetry. Stable: never reorder.
+    pub const fn code(self) -> u8 {
+        match self {
+            Self::Balance => 0,
+            Self::Drive => 1,
+            Self::Spin => 2,
+            Self::Raise => 3,
+            Self::SafeFall => 4,
+            Self::Fault => 5,
+        }
+    }
+
+    /// Inverse of [`Self::code`]; `None` for an unknown code.
+    pub const fn from_code(code: u8) -> Option<Self> {
+        match code {
+            0 => Some(Self::Balance),
+            1 => Some(Self::Drive),
+            2 => Some(Self::Spin),
+            3 => Some(Self::Raise),
+            4 => Some(Self::SafeFall),
+            5 => Some(Self::Fault),
+            _ => None,
+        }
+    }
+
+    /// Whether this mode grants a guard grace period.
+    pub const fn grants_raise_grace(self) -> bool {
+        matches!(self, Self::Raise)
+    }
+}
+
+/// How long [`BalanceMode::Raise`] relaxes the guard, seconds.
+pub const RAISE_GRACE_S: f32 = 0.8;
+
+/// Pose-error and lying allowance granted during the raise grace, radians.
+/// About 60 degrees: enough for a deliberate lean, short of a full lie-down.
+pub const RAISE_GRACE_ERROR_RAD: f32 = 1.05;
+
 /// Why the supervisor refused a fresh arm request or ended a balance attempt.
 ///
 /// The supervisor is pure so the decision can be tested without hardware and
@@ -383,9 +456,44 @@ impl SafetyState {
 
     /// Why a running balance attempt must be ended, if it must.
     pub fn fall_cause(&self, tuning: &Tuning) -> Option<StopReason> {
-        if self.pitch_rad.abs() > LYING_RAD {
+        self.mode_guard_cause(tuning, BalanceMode::Balance, self.pitch_rad, 0.0)
+    }
+
+    /// Mode-aware fall decision.
+    ///
+    /// `guard_tilt_rad` is the separately filtered tilt used only by the guard,
+    /// so the control path keeps its own 12 Hz-filtered rate. During
+    /// [`BalanceMode::Raise`] with grace left, the pose-error and lying limits
+    /// are widened so a deliberate stand-up attempt is not latched as a fall;
+    /// every other mode is identical to [`Self::fall_cause`]. A non-finite guard
+    /// tilt falls back to the unfiltered pose instead of disabling the guard.
+    pub fn mode_guard_cause(
+        &self,
+        tuning: &Tuning,
+        mode: BalanceMode,
+        guard_tilt_rad: f32,
+        grace_remaining_s: f32,
+    ) -> Option<StopReason> {
+        let guard_tilt = if guard_tilt_rad.is_finite() {
+            guard_tilt_rad
+        } else {
+            self.pitch_rad
+        };
+        let grace_active = mode.grants_raise_grace() && grace_remaining_s > 0.0;
+        let lying_limit = if grace_active {
+            RAISE_GRACE_ERROR_RAD
+        } else {
+            LYING_RAD
+        };
+        let pose_limit = if grace_active {
+            tuning.fall_error_rad().max(RAISE_GRACE_ERROR_RAD)
+        } else {
+            tuning.fall_error_rad()
+        };
+        let error = guard_tilt - self.reference_rad;
+        if guard_tilt.abs() > lying_limit {
             Some(StopReason::Lying)
-        } else if self.pose_error_rad().abs() > tuning.fall_error_rad() {
+        } else if error.abs() > pose_limit {
             Some(StopReason::PoseError)
         } else if self.position_m.abs() > RANGE_LIMIT_M {
             Some(StopReason::Range)
@@ -667,9 +775,10 @@ fn deadband_compensation(torque_nm: f32, deadband_nm: f32) -> f32 {
 ///
 /// * `test 50 50` reaches the wire as `speed = 50, steer = 0` and rolls the
 ///   machine forward; the hall feedback reads `L = +8`, `R = -8` rpm.
-/// * `test 100 -100` reaches the wire as `speed = 0, steer = 100` and pivots
-///   the machine in place; the heading changes and the gyro reads
-///   `gz ~= -30 dps`.
+/// * `test 100 -100` pivots the machine in place; the heading changes and the
+///   gyro reads `gz ~= -30 dps`. That session used the old inverse and the wire
+///   saw `steer = 100` (half authority due to `STEER_COEFFICIENT = 0.5`); the
+///   corrected inverse now sends `steer = 200` for the same request.
 ///
 /// A same-sign physical [`WheelTorque`] is therefore a straight roll, which
 /// is exactly what the plain mixer inverse produces. The right wheel must not
@@ -1568,6 +1677,93 @@ mod tests {
     }
 
     #[test]
+    fn balance_modes_have_stable_codes() {
+        let modes = [
+            BalanceMode::Balance,
+            BalanceMode::Drive,
+            BalanceMode::Spin,
+            BalanceMode::Raise,
+            BalanceMode::SafeFall,
+            BalanceMode::Fault,
+        ];
+        for mode in modes {
+            assert!(!mode.as_str().is_empty());
+            assert!(mode.as_str().is_ascii());
+            assert_eq!(BalanceMode::from_code(mode.code()), Some(mode));
+        }
+        assert_eq!(BalanceMode::default(), BalanceMode::Balance);
+        assert_eq!(BalanceMode::from_code(6), None);
+        assert!(BalanceMode::Raise.grants_raise_grace());
+        assert!(!BalanceMode::Balance.grants_raise_grace());
+    }
+
+    #[test]
+    fn raise_grace_suppresses_a_deliberate_large_pose_error() {
+        let t = tuning();
+        let tilt = 0.60_f32;
+        let state = SafetyState {
+            pitch_rad: tilt,
+            reference_rad: 0.0,
+            ..safety()
+        };
+        assert_eq!(
+            state.mode_guard_cause(&t, BalanceMode::Balance, tilt, 0.0),
+            Some(StopReason::PoseError)
+        );
+        assert_eq!(
+            state.mode_guard_cause(&t, BalanceMode::Raise, tilt, RAISE_GRACE_S),
+            None
+        );
+        assert_eq!(
+            state.mode_guard_cause(&t, BalanceMode::Raise, tilt, 0.0),
+            Some(StopReason::PoseError)
+        );
+    }
+
+    #[test]
+    fn raise_grace_widens_the_lying_limit_but_not_past_a_full_fall() {
+        let t = tuning();
+        let tilt = 0.90_f32;
+        let state = SafetyState {
+            pitch_rad: tilt,
+            reference_rad: 0.0,
+            ..safety()
+        };
+        assert_eq!(
+            state.mode_guard_cause(&t, BalanceMode::Balance, tilt, 0.0),
+            Some(StopReason::Lying)
+        );
+        assert_eq!(
+            state.mode_guard_cause(&t, BalanceMode::Raise, tilt, 0.5),
+            None
+        );
+        assert_eq!(
+            state.mode_guard_cause(&t, BalanceMode::Raise, LYING_RAD + 0.4, 0.5),
+            Some(StopReason::Lying)
+        );
+    }
+
+    #[test]
+    fn guard_uses_its_own_tilt_and_falls_back_safely() {
+        let t = tuning();
+        let state = SafetyState {
+            pitch_rad: 0.0,
+            reference_rad: 0.0,
+            ..safety()
+        };
+        assert_eq!(state.fall_cause(&t), None);
+        assert_eq!(
+            state.mode_guard_cause(&t, BalanceMode::Balance, 0.60, 0.0),
+            Some(StopReason::PoseError)
+        );
+        // A missing guard sample must not disable the guard.
+        assert_eq!(
+            state.mode_guard_cause(&t, BalanceMode::Balance, f32::NAN, 0.0),
+            None
+        );
+    }
+
+    #[test]
     fn stop_reasons_have_stable_labels() {
         let reasons = [
             StopReason::StaleFeedback,
@@ -1603,16 +1799,16 @@ mod tests {
             left: 100.0,
             right: -100.0,
         });
-        assert_eq!(steer, Command::new(100, 0));
-        // Mixer round trip reproduces the bench wiring on the mainboard:
-        // cmdL = speed + steer = left, cmdR = speed - steer = right.
+        assert_eq!(steer, Command::new(200, 0));
+        // Mixer round trip with the flashed STEER_COEFFICIENT = 0.5:
+        // cmdL = speed + steer/2 = left, cmdR = speed - steer/2 = right.
         for (left, right) in [(0, 0), (100, 100), (-150, 200), (37, -91)] {
             let command = to_command(WheelTorque {
                 left: left as f32,
                 right: right as f32,
             });
-            let cmd_left = i32::from(command.speed) + i32::from(command.steer);
-            let cmd_right = i32::from(command.speed) - i32::from(command.steer);
+            let cmd_left = i32::from(command.speed) + i32::from(command.steer) / 2;
+            let cmd_right = i32::from(command.speed) - i32::from(command.steer) / 2;
             assert!((cmd_left - left).abs() <= 1);
             assert!((cmd_right - right).abs() <= 1);
         }
