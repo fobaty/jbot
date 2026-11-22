@@ -349,8 +349,18 @@ impl BalanceMode {
     }
 
     /// Whether this mode grants a guard grace period.
-    pub const fn grants_raise_grace(self) -> bool {
-        matches!(self, Self::Raise)
+    pub const fn grants_guard_grace(self) -> bool {
+        matches!(self, Self::Raise | Self::SafeFall)
+    }
+
+    /// Default grace duration for the mode, seconds. Zero when no grace is
+    /// granted.
+    pub const fn default_grace_s(self) -> f32 {
+        match self {
+            Self::Raise => RAISE_GRACE_S,
+            Self::SafeFall => SAFE_FALL_GRACE_S,
+            _ => 0.0,
+        }
     }
 }
 
@@ -360,6 +370,15 @@ pub const RAISE_GRACE_S: f32 = 0.8;
 /// Pose-error and lying allowance granted during the raise grace, radians.
 /// About 60 degrees: enough for a deliberate lean, short of a full lie-down.
 pub const RAISE_GRACE_ERROR_RAD: f32 = 1.05;
+
+/// Target pitch of a controlled fall, radians (about 60 degrees). Chosen to
+/// leave a margin before a full lie-down, which the guard still reports.
+pub const SAFE_FALL_TARGET_RAD: f32 = 1.05;
+/// Rate at which the controlled-fall reference leans away, radians per second
+/// (about 15 degrees per second). Slow enough for the operator to abort.
+pub const SAFE_FALL_RATE_RAD_S: f32 = 0.262;
+/// How long the guard tolerates the growing pose error of a controlled fall.
+pub const SAFE_FALL_GRACE_S: f32 = 6.0;
 
 /// Why the supervisor refused a fresh arm request or ended a balance attempt.
 ///
@@ -377,6 +396,8 @@ pub enum StopReason {
     Range,
     /// Base speed exceeded [`FALL_SPEED_MPS`].
     Speed,
+    /// A controlled fall reached its target angle and was ended deliberately.
+    SafeFall,
 }
 
 impl StopReason {
@@ -388,6 +409,7 @@ impl StopReason {
             Self::PoseError => "pose_error",
             Self::Range => "range",
             Self::Speed => "speed",
+            Self::SafeFall => "safe_fall",
         }
     }
 
@@ -399,6 +421,7 @@ impl StopReason {
             Self::PoseError => 3,
             Self::Range => 4,
             Self::Speed => 5,
+            Self::SafeFall => 6,
         }
     }
 
@@ -410,6 +433,7 @@ impl StopReason {
             3 => Some(Self::PoseError),
             4 => Some(Self::Range),
             5 => Some(Self::Speed),
+            6 => Some(Self::SafeFall),
             _ => None,
         }
     }
@@ -479,7 +503,7 @@ impl SafetyState {
         } else {
             self.pitch_rad
         };
-        let grace_active = mode.grants_raise_grace() && grace_remaining_s > 0.0;
+        let grace_active = mode.grants_guard_grace() && grace_remaining_s > 0.0;
         let lying_limit = if grace_active {
             RAISE_GRACE_ERROR_RAD
         } else {
@@ -750,6 +774,73 @@ impl BalanceController {
 
 /// Smooth inverse of the torque dead zone, newton-metres in and out.
 ///
+/// Ramped pitch reference for a controlled fall.
+///
+/// The reference starts at the measured pitch so arming the mode cannot cause
+/// an instantaneous command jump, then leans away at a bounded rate in the
+/// direction the body is already falling. Reaching the target does not remove
+/// the reference: the operator or the supervisor ends the mode.
+#[derive(Clone, Copy, Debug)]
+pub struct SafeFallReference {
+    direction: f32,
+    angle_rad: f32,
+    rate_rad_s: f32,
+    target_rad: f32,
+    started: bool,
+}
+
+impl SafeFallReference {
+    /// Build a ramp with the given rate and target. Non-finite or non-positive
+    /// arguments fall back to the documented defaults.
+    pub fn new(rate_rad_s: f32, target_rad: f32) -> Self {
+        let rate = if rate_rad_s.is_finite() && rate_rad_s > 0.0 {
+            rate_rad_s
+        } else {
+            SAFE_FALL_RATE_RAD_S
+        };
+        let target = if target_rad.is_finite() && target_rad > 0.0 {
+            target_rad.min(SAFE_FALL_TARGET_RAD)
+        } else {
+            SAFE_FALL_TARGET_RAD
+        };
+        Self {
+            direction: 1.0,
+            angle_rad: 0.0,
+            rate_rad_s: rate,
+            target_rad: target,
+            started: false,
+        }
+    }
+
+    /// Advance one tick and return the pitch reference in radians.
+    /// An invalid sample returns the previous reference without advancing.
+    pub fn update(&mut self, pitch_rad: f32, period_s: f32) -> f32 {
+        if !pitch_rad.is_finite() || !period_s.is_finite() || period_s <= 0.0 {
+            return self.direction * self.angle_rad;
+        }
+        if !self.started {
+            self.direction = if pitch_rad < 0.0 { -1.0 } else { 1.0 };
+            self.angle_rad = pitch_rad.abs().min(self.target_rad);
+            self.started = true;
+            return self.direction * self.angle_rad;
+        }
+        self.angle_rad = (self.angle_rad + self.rate_rad_s * period_s).min(self.target_rad);
+        self.direction * self.angle_rad
+    }
+
+    /// True once the ramp has reached its target angle.
+    pub fn done(&self) -> bool {
+        self.started && self.angle_rad >= self.target_rad
+    }
+
+    /// Drop the ramp so a fresh mode entry re-anchors to the measured pitch.
+    pub fn reset(&mut self) {
+        self.direction = 1.0;
+        self.angle_rad = 0.0;
+        self.started = false;
+    }
+}
+
 /// The drive ignores commands below `deadband` and then applies the excess, so
 /// the inverse has to add the dead zone back. A hard sign step would act like a
 /// relay and pump the machine, so the last bit before zero is blended.
@@ -1693,8 +1784,12 @@ mod tests {
         }
         assert_eq!(BalanceMode::default(), BalanceMode::Balance);
         assert_eq!(BalanceMode::from_code(6), None);
-        assert!(BalanceMode::Raise.grants_raise_grace());
-        assert!(!BalanceMode::Balance.grants_raise_grace());
+        assert!(BalanceMode::Raise.grants_guard_grace());
+        assert!(BalanceMode::SafeFall.grants_guard_grace());
+        assert!(!BalanceMode::Balance.grants_guard_grace());
+        assert_eq!(BalanceMode::Balance.default_grace_s(), 0.0);
+        assert_eq!(BalanceMode::Raise.default_grace_s(), RAISE_GRACE_S);
+        assert_eq!(BalanceMode::SafeFall.default_grace_s(), SAFE_FALL_GRACE_S);
     }
 
     #[test]
@@ -1764,6 +1859,73 @@ mod tests {
     }
 
     #[test]
+    fn safe_fall_grace_holds_a_large_intentional_lean() {
+        let t = tuning();
+        let tilt = 0.60_f32;
+        let state = SafetyState {
+            pitch_rad: tilt,
+            reference_rad: 0.0,
+            ..safety()
+        };
+        assert_eq!(
+            state.mode_guard_cause(&t, BalanceMode::SafeFall, tilt, 0.0),
+            Some(StopReason::PoseError)
+        );
+        assert_eq!(
+            state.mode_guard_cause(&t, BalanceMode::SafeFall, tilt, SAFE_FALL_GRACE_S),
+            None
+        );
+        // Grace never suppresses range or speed, which mean the machine ran away.
+        assert_eq!(
+            SafetyState {
+                position_m: RANGE_LIMIT_M + 0.1,
+                ..state
+            }
+            .mode_guard_cause(&t, BalanceMode::SafeFall, tilt, SAFE_FALL_GRACE_S),
+            Some(StopReason::Range)
+        );
+    }
+
+    #[test]
+    fn safe_fall_reference_ramps_slowly_from_the_measured_pitch() {
+        let mut ramp = SafeFallReference::new(SAFE_FALL_RATE_RAD_S, SAFE_FALL_TARGET_RAD);
+        let first = ramp.update(0.20, DT);
+        assert!((first - 0.20).abs() < 1e-6, "no jump on entry: {first}");
+        let second = ramp.update(0.20, DT);
+        assert!(second > first);
+        assert!((second - first - SAFE_FALL_RATE_RAD_S * DT).abs() < 1e-6);
+        for _ in 0..1000 {
+            ramp.update(0.20, DT);
+        }
+        assert!(ramp.done());
+        assert!((ramp.update(0.20, DT) - SAFE_FALL_TARGET_RAD).abs() < 1e-6);
+    }
+
+    #[test]
+    fn safe_fall_reference_leans_the_way_the_body_falls() {
+        let mut ramp = SafeFallReference::new(1.0, SAFE_FALL_TARGET_RAD);
+        let first = ramp.update(-0.10, DT);
+        assert!(first < 0.0, "negative pitch must ramp negative: {first}");
+        for _ in 0..300 {
+            ramp.update(-0.10, DT);
+        }
+        assert!((ramp.update(-0.10, DT) + SAFE_FALL_TARGET_RAD).abs() < 1e-6);
+        ramp.reset();
+        assert!(!ramp.done());
+        let first = ramp.update(0.10, DT);
+        assert!(first > 0.0);
+    }
+
+    #[test]
+    fn safe_fall_reference_ignores_invalid_samples() {
+        let mut ramp = SafeFallReference::new(1.0, SAFE_FALL_TARGET_RAD);
+        ramp.update(0.10, DT);
+        let held = ramp.update(0.10, DT);
+        assert_eq!(ramp.update(f32::NAN, DT), held);
+        assert_eq!(ramp.update(0.10, 0.0), held);
+    }
+
+    #[test]
     fn stop_reasons_have_stable_labels() {
         let reasons = [
             StopReason::StaleFeedback,
@@ -1771,6 +1933,7 @@ mod tests {
             StopReason::PoseError,
             StopReason::Range,
             StopReason::Speed,
+            StopReason::SafeFall,
         ];
         for reason in reasons {
             assert!(!reason.as_str().is_empty());

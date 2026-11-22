@@ -57,7 +57,8 @@ use embedded_io_async::{Read, Write};
 use static_cell::StaticCell;
 
 use jbot_pico_core::control::{
-    to_command, BalanceController, BalanceInput, BalanceMode, SafetyState, WheelTorque,
+    to_command, BalanceController, BalanceInput, BalanceMode, SafeFallReference, SafetyState,
+    StopReason, WheelTorque, SAFE_FALL_RATE_RAD_S, SAFE_FALL_TARGET_RAD,
 };
 use jbot_pico_core::eferu::{Command, Feedback, FeedbackParser};
 use jbot_pico_core::filters::{LowPass, SlewLimiter};
@@ -297,6 +298,9 @@ async fn control_task(
     let mut torque_slew_right = SlewLimiter::new(TORQUE_SLEW_PER_S);
     let mut balance = BalanceController::new();
     let mut reference = PitchReference::new();
+    let mut safe_fall = SafeFallReference::new(SAFE_FALL_RATE_RAD_S, SAFE_FALL_TARGET_RAD);
+    let mut op_mode = BalanceMode::Balance;
+    let mut safe_fall_grace_s = 0.0_f32;
     let mut was_armed = false;
     let mut steps: u32 = 0;
     // Travel since arming, metres, from the wheel-speed feedback.
@@ -338,6 +342,19 @@ async fn control_task(
         state::set_imu_fresh(imu_fresh);
         let feedback_fresh = last_feedback_at.is_some_and(|at| at.elapsed() < FEEDBACK_MAX_AGE);
         state::set_link_fresh(feedback_fresh);
+
+        // A `fall` command is a one-shot request while armed. Disarming or an
+        // e-stop always hands control back to the operator.
+        if state::SAFE_FALL_REQUEST.try_take().is_some() && state::armed() {
+            safe_fall.reset();
+            op_mode = BalanceMode::SafeFall;
+            safe_fall_grace_s = op_mode.default_grace_s();
+        }
+        if op_mode == BalanceMode::SafeFall && (!state::armed() || state::estop()) {
+            op_mode = BalanceMode::Balance;
+            safe_fall_grace_s = 0.0;
+            safe_fall.reset();
+        }
 
         // The guard observes a separately filtered pitch tilt. It advances only
         // on fresh attitude samples, so an IMU gap cannot make the guard look
@@ -464,9 +481,24 @@ async fn control_task(
                     position_m = 0.0;
                     balance.reset(0.0);
                 }
-                let step = reference.update(CONTROL_PERIOD_S);
-                let applied_ref_rad = step.ref_rad;
-                ref_moving = step.moving;
+                let (applied_ref_rad, moving) = if op_mode == BalanceMode::SafeFall {
+                    (safe_fall.update(pitch_zero, CONTROL_PERIOD_S), true)
+                } else {
+                    let step = reference.update(CONTROL_PERIOD_S);
+                    (step.ref_rad, step.moving)
+                };
+                ref_moving = moving;
+                if op_mode == BalanceMode::SafeFall && safe_fall.done() {
+                    // The pillow angle is reached: latch off and drop torque
+                    // instead of continuing to push into the ground.
+                    state::set_armed(false);
+                    state::set_estop(true);
+                    state::set_stop(Some(StopReason::SafeFall));
+                    state::count(&state::FALL_EVENTS);
+                    op_mode = BalanceMode::Balance;
+                    safe_fall_grace_s = 0.0;
+                    safe_fall.reset();
+                }
                 let filtered_rate = rate_lp.update(attitude.pitch_rate_dps.to_radians());
 
                 if feedback_fresh {
@@ -503,11 +535,10 @@ async fn control_task(
                     position_m: tracking_error_m,
                     ..safety
                 };
-                // Mode-aware guard. Only Balance is selectable today; the
-                // mode enum and grace argument are the tested hook for a
-                // future deliberate Raise attempt.
+                // Mode-aware guard. SafeFall carries its own grace so the
+                // intentional lean is not latched as an accidental fall.
                 if let Some(reason) =
-                    guard.mode_guard_cause(&tuning, BalanceMode::Balance, guard_tilt_rad, 0.0)
+                    guard.mode_guard_cause(&tuning, op_mode, guard_tilt_rad, safe_fall_grace_s)
                 {
                     fell = true;
                     state::set_armed(false);
@@ -544,8 +575,8 @@ async fn control_task(
                         position_m,
                         mode: state::MODE_DISARMED,
                         guard_tilt_deg: guard_tilt_rad.to_degrees(),
-                        op_mode: BalanceMode::Balance.code(),
-                        raise_grace_s: 0.0,
+                        op_mode: op_mode.code(),
+                        raise_grace_s: safe_fall_grace_s,
                     };
                     to_command(WheelTorque { left, right })
                 }
@@ -572,6 +603,10 @@ async fn control_task(
                 Command::ZERO
             }
         };
+
+        if op_mode == BalanceMode::SafeFall && safe_fall_grace_s > 0.0 {
+            safe_fall_grace_s = (safe_fall_grace_s - CONTROL_PERIOD_S).max(0.0);
+        }
 
         // The mainboard expects exactly eight bytes between two idle gaps.
         let _ = tx.write_all(&command.encode()).await;

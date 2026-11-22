@@ -134,6 +134,8 @@ pub static TELEMETRY: Signal<CriticalSectionRawMutex, Telemetry> = Signal::new()
 pub static REINIT: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 /// Latest spin-test request, overwritten like every other command setpoint.
 pub static SPIN_REQUEST: Signal<CriticalSectionRawMutex, SpinPair> = Signal::new();
+/// One-shot request to begin a controlled fall while armed.
+pub static SAFE_FALL_REQUEST: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 
 /// Telemetry rate in hertz; zero disables the stream.
 static STREAM_HZ: AtomicU32 = AtomicU32::new(DEFAULT_STREAM_HZ);

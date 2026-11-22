@@ -252,7 +252,7 @@ async fn handle_command(class: &mut Console, flash: &mut Store, line: &[u8]) -> 
             reply(
                 class,
                 format_args!(
-                    "ok help: ping | stat | stream <hz> | speed <mps> | steer <deg/s> | trim <deg> | zero | level | pose [back|face|home] [deg] | mount <name> | home [deg] | vmax [deg/s] | pscale [0..2] | slew [units/s] | arm | disarm | test <units> [units] | reinit | estop | clear | save | forget | stats reset | reboot"
+                    "ok help: ping | stat | stream <hz> | speed <mps> | steer <deg/s> | trim <deg> | zero | level | pose [back|face|home] [deg] | mount <name> | home [deg] | vmax [deg/s] | pscale [0..2] | slew [units/s] | arm | disarm | fall | test <units> [units] | reinit | estop | clear | save | forget | stats reset | reboot"
                 ),
             )
             .await;
@@ -724,6 +724,14 @@ async fn handle_command(class: &mut Console, flash: &mut Store, line: &[u8]) -> 
         "reinit" => {
             state::REINIT.signal(());
             reply(class, format_args!("ok reinit")).await;
+        }
+        "fall" => {
+            if !state::armed() {
+                reply(class, format_args!("err fall needs an armed balance law")).await;
+            } else {
+                state::SAFE_FALL_REQUEST.signal(());
+                reply(class, format_args!("ok safe fall requested")).await;
+            }
         }
         "estop" => {
             state::set_estop(true);
