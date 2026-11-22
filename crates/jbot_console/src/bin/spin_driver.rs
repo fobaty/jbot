@@ -191,6 +191,7 @@ fn main() {
     let mut args = std::env::args().skip(1);
     let mut run = false;
     let mut clear_estop = false;
+    let mut steer = false;
     let mut port = None;
     let mut hold_ms = 1500_u64;
     let mut levels = DEFAULT_LEVELS.to_vec();
@@ -198,6 +199,7 @@ fn main() {
         match arg.as_str() {
             "--run" => run = true,
             "--clear-estop" => clear_estop = true,
+            "--steer" => steer = true,
             "--port" => port = args.next(),
             "--hold-ms" => {
                 if let Some(value) = args.next().and_then(|v| v.parse::<u64>().ok()) {
@@ -214,7 +216,7 @@ fn main() {
                 }
             }
             "--help" | "-h" => {
-                println!("usage: spin_driver --run [--clear-estop] [--port PATH] [--hold-ms 1500] [--levels 40,50,60,75,100,120,150]");
+                println!("usage: spin_driver --run [--clear-estop] [--steer] [--port PATH] [--hold-ms 1500] [--levels 40,50,60,75,100,120,150]");
                 return;
             }
             other => {
@@ -316,7 +318,13 @@ fn main() {
         }
 
         println!("level {level:.0}: apply for {} ms", hold_ms);
-        send(&mut serial, &format!("test {level:.0}"));
+        if steer {
+            // Counter-rotating wheels: with the corrected mixer inverse this
+            // reaches the wire as steer = 2*level, speed = 0.
+            send(&mut serial, &format!("test {level:.0} -{level:.0}"));
+        } else {
+            send(&mut serial, &format!("test {level:.0}"));
+        }
         pump(
             &mut serial,
             &mut buffer,
