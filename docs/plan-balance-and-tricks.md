@@ -53,12 +53,21 @@ and still excludes full side/upside-down recovery. It is simulation-only.
 
 ### WP0 — Measure the drive (bench, no control-law change)
 
-Add a slow open-loop torque ramp command (`test <u>`) to the console, holding
-the robot by hand on the bench. Log applied units, wheel RPM and pitch into
-`csv/` via `tools/bench_paths.py`. Derive the loaded dead zone and units/Nm
-with an uncertainty band; if possible cross-check with a known lever arm and
-force gauge. Reconcile `L`; update `config/robot.toml` and `PlantParams::NOMINAL`,
-then re-derive `Tuning` and record the result in the audit document.
+The open-loop commands already exist: `test <u> [u]` in
+`firmware/pico2w/src/console.rs` and the host driver
+`tools/pico/jbot_torque_id.py`, which spins the wheels free and derives
+`M = I*alpha` from the hall feedback. Hold the robot by hand on the bench and
+run that driver over several levels; it writes results into `csv/`. Derive the
+loaded dead zone and units/Nm with an uncertainty band; if possible cross-check
+with a known lever arm and force gauge. Reconcile `L`; update
+`config/robot.toml` and `PlantParams::NOMINAL`, then re-derive `Tuning` and
+record the result in the audit document.
+
+An offline pass over the four existing telemetry sessions was also made. The
+breakaway fit is inconclusive there: the drive was commanded while already
+rolling, giving overlapping brackets of 52-96 units (0.26-0.48 Nm nominal),
+and the fitted pitch gain depends on the `pscale` used in each run. Fresh
+spin-up data is therefore required rather than re-fitting old logs.
 
 **Gate:** a measured common-mode torque budget. If it differs from 5 Nm by
 more than 20 %, every gain and every fall threshold is re-derived before the
@@ -83,6 +92,11 @@ feasibility map with travel and peak speed, checked against the existing
 
 **Gate:** one strategy succeeds at the measured WP0 budget within the guards,
 or a documented negative result that closes Tier 1 self-righting.
+
+**Result:** `docs/wpi-simulation-results.md`. Neither strategy recovered from
+45 deg or more at any budget up to 40 Nm, so the gate is not met. The simulation
+used the nominal 5 Nm class as well as larger budgets; WP0 must still measure
+the real drive. No physical raise trial is authorised by this result.
 
 ### WP2 — Control code (development and unit tests, no flashing)
 
