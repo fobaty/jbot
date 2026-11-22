@@ -2164,34 +2164,62 @@ impl ConsoleApp {
                         let telemetry = self.telemetry.clone();
                         let stale = self.telemetry_stale();
                         let width = ui.available_width();
-                        let horizon_height = (ui.available_height() * 0.44).clamp(250.0, 390.0);
+                        // The attitude indicator now uses the same compact
+                        // footprint as the compass instead of dominating the
+                        // window. Numeric readouts move beside the two dials.
+                        let instrument_size = (width * 0.20).clamp(180.0, 230.0);
 
                         ui.horizontal(|ui| {
-                            let compass_width = (width * 0.26).clamp(190.0, 250.0);
-                            let horizon_width = (width - compass_width - 12.0).max(300.0);
                             ui.allocate_ui_with_layout(
-                                Vec2::new(horizon_width, horizon_height),
+                                Vec2::new(instrument_size, instrument_size),
                                 Layout::top_down(Align::Min),
                                 |ui| {
                                     attitude::horizon(
                                         ui,
                                         telemetry.as_ref(),
-                                        horizon_height,
+                                        instrument_size,
                                         stale,
+                                        true,
                                     );
                                 },
                             );
+                            ui.add_space(10.0);
                             ui.allocate_ui_with_layout(
-                                Vec2::new(compass_width, horizon_height),
+                                Vec2::new(instrument_size, instrument_size),
                                 Layout::top_down(Align::Center),
                                 |ui| {
                                     attitude::compass(
                                         ui,
                                         telemetry.as_ref(),
-                                        compass_width.min(horizon_height) * 0.88,
+                                        instrument_size * 0.88,
                                     );
+                                },
+                            );
+                            ui.add_space(14.0);
+                            ui.allocate_ui_with_layout(
+                                Vec2::new(
+                                    (width - 2.0 * instrument_size - 34.0).max(200.0),
+                                    instrument_size,
+                                ),
+                                Layout::top_down(Align::Min),
+                                |ui| {
                                     if let Some(telemetry) = &telemetry {
-                                        ui.add_space(4.0);
+                                        ui.add_space(8.0);
+                                        ui.label(
+                                            RichText::new(format!(
+                                                "PITCH {:+.1}° · ROLL {}",
+                                                telemetry.pitch_deg,
+                                                if telemetry.has_orientation {
+                                                    format!("{:+.1}°", telemetry.roll_deg)
+                                                } else {
+                                                    "--".to_owned()
+                                                }
+                                            ))
+                                            .monospace()
+                                            .size(12.0)
+                                            .color(theme::TEXT),
+                                        );
+                                        ui.add_space(6.0);
                                         ui.label(
                                             RichText::new(format!(
                                                 "HDG {:03.0}° · TILT {:.1}°",
@@ -2199,9 +2227,10 @@ impl ConsoleApp {
                                                 telemetry.max_tilt_deg()
                                             ))
                                             .monospace()
-                                            .size(10.0)
-                                            .color(theme::MUTED),
+                                            .size(12.0)
+                                            .color(theme::TEXT),
                                         );
+                                        ui.add_space(6.0);
                                         ui.label(
                                             RichText::new(format!(
                                                 "GYRO X {:+.1} Y {:+.1} Z {:+.1} °/s",
@@ -2210,7 +2239,7 @@ impl ConsoleApp {
                                                 telemetry.gyro_z_dps
                                             ))
                                             .monospace()
-                                            .size(10.0)
+                                            .size(11.0)
                                             .color(theme::MUTED),
                                         );
                                     }

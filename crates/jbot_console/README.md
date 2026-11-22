@@ -38,7 +38,8 @@ event log as an error.
 The layout is a fixed instrument board:
 
 - **Attitude** — artificial horizon with 5° pitch ladder, ±60° bank scale,
-  roll pointer, and a heading compass with cardinal marks.
+  roll pointer, and a heading compass with cardinal marks. Both dials use a
+  compact square footprint, with the HDG/TILT and gyro readouts beside them.
 - **Instruments** — `ATTITUDE` (pitch, roll, heading, rates, calibration),
   `BATTERY` (pack voltage, board temperature, feedback age), `WHEELS` (left and
   right rpm, average speed), and `CONTROL` (loop rate, steps, IMU state, e-stop

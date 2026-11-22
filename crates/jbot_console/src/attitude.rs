@@ -10,8 +10,16 @@ use crate::protocol::Telemetry;
 use crate::theme;
 
 /// Artificial horizon with pitch ladder and bank scale.
-pub fn horizon(ui: &mut egui::Ui, telemetry: Option<&Telemetry>, height: f32, stale: bool) {
-    let width = ui.available_width().max(280.0);
+pub fn horizon(
+    ui: &mut egui::Ui,
+    telemetry: Option<&Telemetry>,
+    height: f32,
+    stale: bool,
+    compact: bool,
+) {
+    // Callers may allocate a compact, compass-sized square; never widen it
+    // behind their back, or the row would grow taller than its neighbours.
+    let width = ui.available_width().max(160.0);
     let (rect, _) = ui.allocate_exact_size(egui::vec2(width, height), Sense::hover());
     let chrome = ui.painter_at(rect);
     chrome.rect_filled(rect, egui::CornerRadius::same(14), theme::CARD);
@@ -30,14 +38,14 @@ pub fn horizon(ui: &mut egui::Ui, telemetry: Option<&Telemetry>, height: f32, st
             inner.center(),
             Align2::CENTER_CENTER,
             "NO TELEMETRY",
-            FontId::proportional(20.0),
+            FontId::proportional(if compact { 14.0 } else { 20.0 }),
             theme::MUTED,
         );
         chrome.text(
-            inner.center() + egui::vec2(0.0, 26.0),
+            inner.center() + egui::vec2(0.0, if compact { 18.0 } else { 26.0 }),
             Align2::CENTER_CENTER,
             "connect to the Pico or enable demo mode",
-            FontId::proportional(12.0),
+            FontId::proportional(if compact { 9.0 } else { 12.0 }),
             theme::MUTED,
         );
         return;
@@ -101,13 +109,14 @@ pub fn horizon(ui: &mut egui::Ui, telemetry: Option<&Telemetry>, height: f32, st
             [corner(center.x + gap, y), corner(center.x + length, y)],
             stroke,
         );
-        if mark % 20 == 0 {
+        let label_step = if compact { 30 } else { 20 };
+        if mark % label_step == 0 {
             let label_at = corner(center.x - length - 6.0, y);
             world.text(
                 label_at,
                 Align2::RIGHT_CENTER,
                 format!("{mark}"),
-                FontId::monospace(11.0),
+                FontId::monospace(if compact { 9.0 } else { 11.0 }),
                 Color32::from_white_alpha(210),
             );
             let label_at = corner(center.x + length + 6.0, y);
@@ -115,7 +124,7 @@ pub fn horizon(ui: &mut egui::Ui, telemetry: Option<&Telemetry>, height: f32, st
                 label_at,
                 Align2::LEFT_CENTER,
                 format!("{mark}"),
-                FontId::monospace(11.0),
+                FontId::monospace(if compact { 9.0 } else { 11.0 }),
                 Color32::from_white_alpha(210),
             );
         }
@@ -133,54 +142,58 @@ pub fn horizon(ui: &mut egui::Ui, telemetry: Option<&Telemetry>, height: f32, st
     draw_bank_scale(&world, center, inner, roll);
     draw_aircraft_symbol(&world, center, inner);
 
-    chrome.text(
-        inner.left_top() + egui::vec2(10.0, 8.0),
-        Align2::LEFT_TOP,
-        format!("PITCH {:+.1}°", telemetry.pitch_deg),
-        FontId::monospace(12.0),
-        Color32::from_white_alpha(225),
-    );
-    chrome.text(
-        inner.right_top() + egui::vec2(-10.0, 8.0),
-        Align2::RIGHT_TOP,
-        if telemetry.has_orientation {
-            format!("ROLL {:+.1}°", telemetry.roll_deg)
-        } else {
-            "ROLL --".to_owned()
-        },
-        FontId::monospace(12.0),
-        Color32::from_white_alpha(225),
-    );
-    chrome.text(
-        inner.left_bottom() + egui::vec2(10.0, -8.0),
-        Align2::LEFT_BOTTOM,
-        if telemetry.has_orientation {
-            format!("HDG {:03.0}°", normalized_heading(telemetry.heading_deg))
-        } else {
-            "HDG ---".to_owned()
-        },
-        FontId::monospace(12.0),
-        Color32::from_white_alpha(225),
-    );
-    chrome.text(
-        inner.right_bottom() + egui::vec2(-10.0, -8.0),
-        Align2::RIGHT_BOTTOM,
-        "BNO055 / IMUPLUS",
-        FontId::monospace(11.0),
-        Color32::from_white_alpha(170),
-    );
+    // In the compact layout these values live beside the dial, so drawing them
+    // again in the corners would overlap the ladder and bank scale.
+    if !compact {
+        chrome.text(
+            inner.left_top() + egui::vec2(10.0, 8.0),
+            Align2::LEFT_TOP,
+            format!("PITCH {:+.1}°", telemetry.pitch_deg),
+            FontId::monospace(12.0),
+            Color32::from_white_alpha(225),
+        );
+        chrome.text(
+            inner.right_top() + egui::vec2(-10.0, 8.0),
+            Align2::RIGHT_TOP,
+            if telemetry.has_orientation {
+                format!("ROLL {:+.1}°", telemetry.roll_deg)
+            } else {
+                "ROLL --".to_owned()
+            },
+            FontId::monospace(12.0),
+            Color32::from_white_alpha(225),
+        );
+        chrome.text(
+            inner.left_bottom() + egui::vec2(10.0, -8.0),
+            Align2::LEFT_BOTTOM,
+            if telemetry.has_orientation {
+                format!("HDG {:03.0}°", normalized_heading(telemetry.heading_deg))
+            } else {
+                "HDG ---".to_owned()
+            },
+            FontId::monospace(12.0),
+            Color32::from_white_alpha(225),
+        );
+        chrome.text(
+            inner.right_bottom() + egui::vec2(-10.0, -8.0),
+            Align2::RIGHT_BOTTOM,
+            "BNO055 / IMUPLUS",
+            FontId::monospace(11.0),
+            Color32::from_white_alpha(170),
+        );
+    }
 
     if stale || !telemetry.imu_fresh {
         let badge = Rect::from_center_size(
-            inner.center_bottom() + egui::vec2(0.0, -18.0),
-            egui::vec2(78.0, 22.0),
+            inner.center_bottom() + egui::vec2(0.0, -14.0),
+            egui::vec2(if compact { 56.0 } else { 78.0 }, 18.0),
         );
         chrome.rect_filled(badge, egui::CornerRadius::same(6), theme::RED);
         chrome.text(
             badge.center(),
             Align2::CENTER_CENTER,
             "STALE",
-            FontId::monospace(12.0),
+            FontId::monospace(if compact { 10.0 } else { 12.0 }),
             Color32::WHITE,
         );
     }
@@ -189,8 +202,12 @@ pub fn horizon(ui: &mut egui::Ui, telemetry: Option<&Telemetry>, height: f32, st
         chrome.text(
             inner.center_top() + egui::vec2(0.0, 8.0),
             Align2::CENTER_TOP,
-            "ROLL / HEADING NOT REPORTED - UPDATE PICO FIRMWARE",
-            FontId::monospace(10.0),
+            if compact {
+                "NO ROLL / HDG"
+            } else {
+                "ROLL / HEADING NOT REPORTED - UPDATE PICO FIRMWARE"
+            },
+            FontId::monospace(if compact { 9.0 } else { 10.0 }),
             theme::AMBER,
         );
     }
