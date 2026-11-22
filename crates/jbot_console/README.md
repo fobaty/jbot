@@ -65,20 +65,20 @@ The layout is a fixed instrument board:
   trim slider, and `Reinit BNO055`. Arming is refused until zero and level
   are captured.
 - **System** — `Reboot` behind an explicit confirmation, and **Record session → CSV**:
-  writes two files with a shared millisecond clock to the working directory,
-  ready to overlay operator actions on robot state for post-incident analysis:
-  - `jbot-telemetry-<unix>.csv` — one row per telemetry sample: attitude, rates,
+  writes two files with a shared millisecond clock into `csv/` at the repository
+  root, ready to overlay operator actions on robot state for post-incident analysis:
+  - `csv/jbot-telemetry-<unix>.csv` — one row per telemetry sample: attitude, rates,
     wheel rpm, pack voltage, setpoints, applied balance torque (`torque_units`),
     the balance reference, outer-loop demand, learned slope trim, travel since
     arming, balance mode, spin-test torque, estop.
-  - `jbot-actions-<unix>.csv` — one row per operator-visible event: every command
+  - `csv/jbot-actions-<unix>.csv` — one row per operator-visible event: every command
     sent (`tx`/`tx-drop`/`tx-down`), every non-telemetry reply (`rx`), connection
     events (`sys`), and demo/recording toggles (`ui`).
   Recording is independent of demo mode, so the recorder can be exercised without
   hardware. Firmware telemetry `trq` (applied balance torque) appears in the
   recording after the next firmware flash.
 - **Always-on event log** — in addition to the in-window event panel, every line
-  the console logs is appended to `jbot-events.log` in the working directory
+  the console logs is appended to `logs/jbot-events.log` at the repository root
   (`unix_ms TAG text`, one line per event, flushed per line). No button required:
   post-incident analysis does not depend on remembering to press REC.
 - **Event log** — every reply, disconnect, and safety action with a timestamp.

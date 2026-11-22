@@ -2,9 +2,9 @@
 //!
 //! One recorder produces two CSV files with a shared millisecond clock:
 //!
-//! * `jbot-telemetry-<unix secs>.csv` — one row per `T ...` sample: attitude,
+//! * `csv/jbot-telemetry-<unix secs>.csv` — one row per `T ...` sample: attitude,
 //!   rates, wheel speeds, setpoints, applied torque. The machine signal.
-//! * `jbot-actions-<unix secs>.csv` — one row per operator-visible event:
+//! * `csv/jbot-actions-<unix secs>.csv` — one row per operator-visible event:
 //!   every command sent to the firmware, every non-telemetry reply received
 //!   (`ok`, `err`, `stat`, banner, garbage), connection state changes. The
 //!   human signal.
@@ -19,6 +19,31 @@ use std::path::{Path, PathBuf};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use crate::protocol::Telemetry;
+
+/// Repository-root directory for event logs.
+///
+/// The build-time manifest path keeps captures out of whichever directory the
+/// operator started the console from.
+pub fn logs_dir() -> PathBuf {
+    bench_dir("logs")
+}
+
+/// Repository-root directory for telemetry and action CSVs.
+pub fn csv_dir() -> PathBuf {
+    bench_dir("csv")
+}
+
+fn bench_dir(name: &str) -> PathBuf {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("jbot_console lives two levels below the workspace root");
+    let dir = root.join(name);
+    if let Err(error) = std::fs::create_dir_all(&dir) {
+        eprintln!("cannot create {}: {error}", dir.display());
+    }
+    dir
+}
 
 /// Header row for the telemetry file.
 pub const TELEMETRY_HEADER: &str = "t_ms,step,loop_hz,imu_fresh,pitch_deg,roll_deg,heading_deg,gy_dps,gx_dps,gz_dps,left_rpm,right_rpm,bat_v,age_ms,estop,vset,wset,torque_units,test_left_units,test_right_units,ref_deg,demand_deg,trim_deg,position_m,mode";

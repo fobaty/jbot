@@ -50,7 +50,7 @@ gain table and the inner law; this document is the record of what v2 is and why.
   because the whole law scales with `max_torque_nm`. Until then the law refuses to
   arm beyond the assumed lift budget and latches a safe state instead of attempting
   a violent raise.
-* Measured on the bench (2026-11-17, session `jbot-telemetry-1794961022.csv`, robot
+* Measured on the bench (2026-11-17, session `csv/jbot-telemetry-1794961022.csv`, robot
   disarmed): face-down rest at pitch ≈ **+87.5°**, on-back rest at ≈ **−98°**.
 * IMU behaviour past the stop: pitch is derived from the gravity vector
   (`atan2(x, -z)` in `pico_core::mount`) and stays valid to ±180°. Raw BNO055 Euler
@@ -326,7 +326,7 @@ requests that pass through `to_command`, so the two conventions have to be kept
 apart.
 
 Measured on the floor with the balance law disarmed (session
-`jbot-telemetry-1795141040.csv`, 2026-11-19):
+`csv/jbot-telemetry-1795141040.csv`, 2026-11-19):
 
 - `test 50 50` reaches the wire as `speed = 50, steer = 0`, rolls the machine
   forward, and the hall feedback reads `L = +8`, `R = -8` rpm.
@@ -359,8 +359,8 @@ armed behaviour silently.
 ### 8.3 Bench evidence (2026-11-18)
 
 All of the following is from recordings made with the console's recorder
-(`jbot-telemetry-1795042712.csv`, `jbot-actions-1795042712.csv`,
-`jbot-events.log`). Nothing here substitutes for §8 items 1 and 3-7, which
+(`csv/jbot-telemetry-1795042712.csv`, `csv/jbot-actions-1795042712.csv`,
+`logs/jbot-events.log`). Nothing here substitutes for §8 items 1 and 3-7, which
 remain open.
 
 * **Command path identification.** The armed segment (pscale 0.20, wheels
@@ -389,7 +389,7 @@ remain open.
   sweep. The IMU was still mounted sideways-vertical relative to the
   chassis at that time (superseded by §8.6).
 * **Backward-tip fall at pscale 0.2 (2026-11-18, session
-  `jbot-telemetry-1795045179.csv`).** From a stable hold the operator
+  `csv/jbot-telemetry-1795045179.csv`).** From a stable hold the operator
   nudged the body backward (pitch < 0). Breakaway followed: -2 deg at
   t=12.12 s, -5 deg at 12.87 s, -10 deg at 13.14 s, -16 deg at 13.24 s,
   -28 deg at 13.37 s (1.2 s tip-over). Wheels drove backward (sign
@@ -450,7 +450,7 @@ all 14 recordings. It confirms §8.3 from the files alone and adds three numbers
 the bench could not see:
 
 * **The falling run reproduces the compiled law.** On
-  `jbot-telemetry-1795045179.csv` the two-predictor fit over 235 unsaturated
+  `csv/jbot-telemetry-1795045179.csv` the two-predictor fit over 235 unsaturated
   armed samples gives `kp = 1201 units/rad = 6.0 Nm/rad` and
   `kd = 223 units/(rad/s) = 1.11 Nm/(rad/s)`, against the `stat` line's
   `kpnm=5.7`, `kdnm=1.4`. `R2 = 0.9996`, residual 3 units. The gain that was
@@ -470,7 +470,7 @@ the bench could not see:
   turned that common-mode torque into a pivot, so the wheels never produced the
   linear force the fit assumes.
 * **`mount 0` was visibly wrong before the re-solder (historical).** In the
-  sweep session (`jbot-telemetry-1795041000.csv`, `mount=0`) 99 % of the
+  sweep session (`csv/jbot-telemetry-1795041000.csv`, `mount=0`) 99 % of the
   angular variance sits in roll while pitch is flat, and the roll pair is
   unpaired: a tilt of the chassis did not reach the pitch channel at all. That
   was the pre-2026-11-19 module orientation; §8.6 supersedes it.
@@ -498,7 +498,7 @@ wants, so the Euler path is the correct one for this selector. The previous
 * The console's mount selector also defaults to `normal` before the first
   `stat`/telemetry frame arrives; previously it started at `flipx`.
 * The raw pitch rate is the **X** channel, not Y. Least squares on the
-  2026-11-19 session (`jbot-telemetry-1795141040.csv`, 1852 samples) gives
+  2026-11-19 session (`csv/jbot-telemetry-1795141040.csv`, 1852 samples) gives
   `d(pitch)/dt = 1.003·gx - 0.077·gy + 0.022·gz`, `R^2 = 0.94`. The
   gravity-derived mounts keep `gyro.y` because their pitch is a robot-frame
   rotation about Y. The old `Mount::Normal` fed `gyro.y` to the damper, so the

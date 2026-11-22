@@ -38,7 +38,9 @@ python3 tools/pico/jbot_console.py --no-ui                # plain text
 
 `--stream` is the telemetry rate requested on connect (`0..200` Hz, default
 10). The Pico starts at 1 Hz after a reset, so the application sets the rate
-itself on every connect. `--events file.log` mirrors the event log to disk.
+itself on every connect. Bare filenames are resolved by `tools/bench_paths.py`:
+`--csv run.csv` writes `csv/run.csv`, and `--events file.log` writes
+`logs/file.log`. An absolute path is used as given.
 
 The port name comes from the USB serial number `JBOT-PICO-01`, so it survives
 re-enumeration as `/dev/cu.usbmodemJBOT_PICO_011`. If several USB serial
@@ -87,7 +89,7 @@ t_s,step,loop_hz,imu,cal,pitch_deg,gyro_dps,sys_err,mainboard,rpm_left,rpm_right
 ```
 
 Rows are flushed as they are written, so a killed process loses nothing already
-on screen. `--events path` writes `unix_time level text` lines for the event log.
+on screen. `--events path` writes `unix_time level text` lines into `logs/`.
 
 ## Headless mode
 

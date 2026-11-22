@@ -46,8 +46,12 @@ python3 -m pip install --user pyserial   # only once
 ```bash
 python3 tools/hover/hover_drive.py                    # autodetect the port
 python3 tools/hover/hover_drive.py --port /dev/cu.usbmodem2101 --max 200
-python3 tools/hover/hover_drive.py --log run1.csv     # log from the start
+python3 tools/hover/hover_drive.py --log run1.csv     # -> csv/run1.csv
 ```
+
+Log names are resolved into `csv/` at the repository root by
+`tools/bench_paths.py`; an absolute path is used as given. `hover_menu.py` runs
+on the Pico itself, so its `hover_menu_log.csv` stays on the Pico filesystem.
 
 ```
   HOVERBOARD DRIVE   bridge:ok  link  98 fps  ok 4932   bad 0    log off

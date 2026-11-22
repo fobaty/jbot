@@ -489,7 +489,7 @@ event log, CSV recording, and the same commands from a keyboard. The native
 `jbot-console` (`crates/jbot_console`) speaks the same protocol and adds the
 attitude horizon and compass view.
 
-A recorded pair (`jbot-telemetry-*.csv` plus `jbot-actions-*.csv`) is read back
+A recorded pair (`csv/jbot-telemetry-*.csv` plus `csv/jbot-actions-*.csv`) is read back
 by `jbot-analyze` (`crates/jbot_analysis`), which reports the axis mapping, the
 applied pitch law, the drive breakaway bracket and any ringing; see
 `docs/telemetry-analysis.md`.

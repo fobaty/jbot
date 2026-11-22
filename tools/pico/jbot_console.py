@@ -8,7 +8,7 @@ section 8.1.
 Usage:
     python3 tools/pico/jbot_console.py                     # autodetect, TUI
     python3 tools/pico/jbot_console.py --port /dev/cu.usbmodemJBOT_PICO_011
-    python3 tools/pico/jbot_console.py --no-ui --csv run.csv
+    python3 tools/pico/jbot_console.py --no-ui --csv run.csv   # -> csv/run.csv
     python3 tools/pico/jbot_console.py --list
 
 Keys:
@@ -26,10 +26,16 @@ Keys:
 
 import argparse
 import curses
+import os
 import queue
 import sys
 import threading
 import time
+
+# Host tools live one level below the repository root; bench recordings go
+# into `logs/` and `csv/` there rather than into the current working directory.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from bench_paths import csv_path, log_path
 
 from jbot_link import (
     DEFAULT_STREAM_HZ,
@@ -97,8 +103,8 @@ class Session:
         self.port = port
         self.args = args
         self.link = Link(port, args.baud)
-        self.events = EventLog(args.events)
-        self.csv = CsvLog(args.csv) if args.csv else None
+        self.events = EventLog(log_path(args.events) if args.events else None)
+        self.csv = CsvLog(csv_path(args.csv)) if args.csv else None
         self.stream_hz = args.stream
         self.opened_at = time.monotonic()
         self.first_telemetry = True
@@ -145,7 +151,9 @@ class Session:
             self.csv = None
             self.log("info", "csv closed: %d rows in %s" % (rows, path))
             return
-        path = self.args.csv or time.strftime("jbot_telemetry_%Y%m%d_%H%M%S.csv")
+        path = csv_path(
+            self.args.csv or time.strftime("jbot_telemetry_%Y%m%d_%H%M%S.csv")
+        )
         try:
             self.csv = CsvLog(path)
         except OSError as error:
@@ -488,8 +496,8 @@ def parse_args(argv):
                         help="ignored by CDC, kept for familiarity")
     parser.add_argument("--stream", type=int, default=DEFAULT_STREAM_HZ,
                         help="telemetry rate requested on connect, 0..200 Hz")
-    parser.add_argument("--csv", help="telemetry CSV path")
-    parser.add_argument("--events", help="event log text path")
+    parser.add_argument("--csv", help="telemetry CSV name (written into csv/)")
+    parser.add_argument("--events", help="event log name (written into logs/)")
     parser.add_argument("--no-ui", action="store_true", help="plain text mode")
     parser.add_argument("--list", action="store_true", help="list serial ports")
     return parser.parse_args(argv)

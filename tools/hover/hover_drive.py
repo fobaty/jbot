@@ -30,8 +30,14 @@ Keys:
 import argparse
 import curses
 import glob
+import os
 import sys
 import time
+
+# Host tools live one level below the repository root; CSV captures belong in
+# `csv/` there, not in whatever directory the tool was started from.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from bench_paths import csv_path
 
 try:
     import serial
@@ -232,7 +238,7 @@ def toggle_log(session, path=None):
         session.log_file = None
         drive.say("log closed: %d rows in %s" % (session.log_rows, session.log_path))
         return
-    session.log_path = path or "hover_drive_log.csv"
+    session.log_path = csv_path(path or "hover_drive_log.csv")
     session.log_file = open(session.log_path, "a")
     if session.log_rows == 0:
         session.log_file.write(

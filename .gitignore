@@ -1,4 +1,10 @@
 # ---------------------------------------------------------------------------
+# Python tooling
+# ---------------------------------------------------------------------------
+__pycache__/
+*.pyc
+
+# ---------------------------------------------------------------------------
 # Rust / Cargo
 # ---------------------------------------------------------------------------
 # Build artifacts
@@ -137,7 +143,10 @@ config.local.*
 # Logs, dumps, and runtime data
 # ---------------------------------------------------------------------------
 *.log
-logs/
+/logs/*
+/csv/*
+!/logs/.gitkeep
+!/csv/.gitkeep
 *.pid
 *.sock
 core
@@ -173,7 +182,4 @@ opencode.jsonc
 .aider*
 continue/
 
-# Bench session recordings (written by jbot_console at runtime)
-jbot-events.log
-jbot-telemetry-*.csv
-jbot-actions-*.csv
+# Bench session recordings live in logs/ and csv/ (see tools/bench_paths.py)

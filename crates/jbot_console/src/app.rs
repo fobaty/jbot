@@ -297,9 +297,7 @@ impl ConsoleApp {
             event_log: None,
         };
 
-        if let Ok(event_log) =
-            EventLog::open(&std::env::current_dir().unwrap_or_else(|_| ".".into()))
-        {
+        if let Ok(event_log) = EventLog::open(&record::logs_dir()) {
             app.event_log = Some(event_log);
             let path = app.event_log.as_ref().map(|log| log.path().to_path_buf());
             if let Some(path) = path {
@@ -1327,17 +1325,7 @@ impl ConsoleApp {
             );
             return;
         }
-        let dir = match std::env::current_dir() {
-            Ok(dir) => dir,
-            Err(error) => {
-                self.log(
-                    Level::Error,
-                    format!("cannot determine the working directory: {error}"),
-                );
-                return;
-            }
-        };
-        match record::start(&dir) {
+        match record::start(&record::csv_dir()) {
             Ok(recorder) => {
                 self.log(
                     Level::Info,
@@ -1830,7 +1818,7 @@ impl ConsoleApp {
         }
         ui.label(
             RichText::new(
-                "Writes jbot-telemetry-*.csv (attitude, rates, rpm, torque) and jbot-actions-*.csv (every command sent, every reply, connect events) to the working directory.",
+                "Writes csv/jbot-telemetry-*.csv (attitude, rates, rpm, torque) and csv/jbot-actions-*.csv (every command sent, every reply, connect events) to the repository root.",
             )
             .size(10.0)
             .color(theme::MUTED),

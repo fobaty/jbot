@@ -12,9 +12,9 @@ console already writes and prints a report.
 ## Usage
 
 ```sh
-cargo run -p jbot_analysis --release -- jbot-telemetry-1795045179.csv
+cargo run -p jbot_analysis --release -- csv/jbot-telemetry-1795045179.csv
 cargo run -p jbot_analysis --release -- --actions other-actions.csv session.csv
-cargo run -p jbot_analysis --release -- jbot-telemetry-*.csv
+cargo run -p jbot_analysis --release -- csv/jbot-telemetry-*.csv
 ```
 
 * The telemetry file is the only required argument; several may be given.
