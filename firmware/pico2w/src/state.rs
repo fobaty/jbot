@@ -190,6 +190,17 @@ static REF_VMAX_BITS: AtomicU32 =
 /// stored as `f32` bits. Runtime-only: resets to 1.0 at boot so a bench
 /// session cannot leak a weakened law into the next power-up.
 static PSCALE_BITS: AtomicU32 = AtomicU32::new(1.0f32.to_bits());
+/// Default rate of change of the applied wheel torque, command units per
+/// second. The compiled value keeps the response snappy enough for balance.
+pub const DEFAULT_TORQUE_SLEW_PER_S: f32 = 3_000.0;
+/// Slowest torque ramp the console accepts, command units per second.
+pub const MIN_TORQUE_SLEW_PER_S: f32 = 100.0;
+/// Fastest torque ramp the console accepts, command units per second.
+pub const MAX_TORQUE_SLEW_PER_S: f32 = 10_000.0;
+/// Runtime torque slew rate stored as `f32` bits. Runtime-only, like
+/// [`PSCALE_BITS`]: a bench session cannot leak a softened ramp into the
+/// next power-up.
+static TORQUE_SLEW_BITS: AtomicU32 = AtomicU32::new(DEFAULT_TORQUE_SLEW_PER_S.to_bits());
 
 /// IMU samples delivered to the control task.
 pub static IMU_SAMPLES: AtomicU32 = AtomicU32::new(0);
@@ -326,6 +337,25 @@ pub fn set_pscale(value: f32) -> f32 {
 /// range and `PitchReference::set_v_max` clamps the rest.
 pub fn set_ref_v_max_rad_s(rad_s: f32) {
     REF_VMAX_BITS.store(rad_s.to_bits(), Ordering::Relaxed);
+}
+
+/// Runtime rate of change of the applied wheel torque, command units per
+/// second.
+pub fn torque_slew_per_s() -> f32 {
+    f32::from_bits(TORQUE_SLEW_BITS.load(Ordering::Relaxed))
+}
+
+/// Set the runtime torque slew rate, clamped to
+/// [`MIN_TORQUE_SLEW_PER_S`]..=[`MAX_TORQUE_SLEW_PER_S`]. Non-finite input
+/// resets to [`DEFAULT_TORQUE_SLEW_PER_S`]. Returns the stored value.
+pub fn set_torque_slew_per_s(value: f32) -> f32 {
+    let clamped = if value.is_finite() {
+        value.clamp(MIN_TORQUE_SLEW_PER_S, MAX_TORQUE_SLEW_PER_S)
+    } else {
+        DEFAULT_TORQUE_SLEW_PER_S
+    };
+    TORQUE_SLEW_BITS.store(clamped.to_bits(), Ordering::Relaxed);
+    clamped
 }
 
 /// Forward/backward speed setpoint in meters per second.

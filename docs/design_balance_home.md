@@ -35,10 +35,11 @@ gain table and the inner law; this document is the record of what v2 is and why.
   stabilises one unstable operating point.
 * The static lift limit follows from the identified plant: a full-torque command
   cancels gravity at `pitch = tau_max / (A1 / A2)`. With the nominal 5 Nm common-mode
-  budget and `A1 / A2 = 7.14 Nm/rad`, that is **40 degrees** at zero pitch rate.
-  Recovering from rest needs less, because the body must first be accelerated up to
-  the neutral point; simulation recovers from about 0.75 of the limit at 3 Nm and
-  about 0.63 at 8–12 Nm.
+  budget and `A1 / A2 = 5.39 Nm/rad` (bench-weighed plant, §10), that is **53 degrees**
+  at zero pitch rate. Recovering from rest needs less, because the body must first be
+  accelerated up to the neutral point; simulation recovers from about 0.75 of the limit
+  at 3 Nm and about 0.63 at 8–12 Nm. The fall guard caps the accepted pose error at
+  30 degrees regardless.
 * **Lying flat is beyond the currently assumed torque budget.** Lifting a body whose
   centre of mass is `L = 0.18 m` off the ground needs roughly `m g L ≈ 15–20 Nm`,
   while `PlantParams::NOMINAL` assumes 5 Nm of common-mode torque. That number is
@@ -74,7 +75,7 @@ Gains are derived once per boot from `PlantParams::NOMINAL` through
 A trapezoidal trajectory generator owning the pitch reference.
 
 * State: `ref_rad`, internal velocity; acceleration-limited with `a_max` (20 deg/s^2)
-  and rate-limited with `v_max` (default 10 deg/s, console-tunable, cap 40 deg/s).
+  and rate-limited with `v_max` (default 10 deg/s, console-tunable, cap 60 deg/s in `reference::V_MAX_CAP_RAD_S`).
 * `reset(at_rad)` anchors the reference to a measured pose and drops velocity, but
   **does not clear the target**: the ramp then walks to the target.
 * Target clamped to ±30 degrees; non-finite values reset to zero.
@@ -90,19 +91,25 @@ x ─► position loop ─► v_ref ─► speed loop ─► a_ref ─► a_ref 
 ```
 
 * **Position loop** (`kpos = 0.4 1/s`): base offset since arming becomes a speed
-  reference, capped at `v_lim = 0.4 m/s`.
+  reference, capped at `v_lim = 1.0 m/s`.
 * **Speed loop** (`kv = 1.8 1/s`): speed error becomes an acceleration reference,
   capped at `a_lim = 1.0 m/s²`.
 * **Demand stage**: `a_ref / accel_per_rad`, capped at ±8 degrees. `accel_per_rad`
   is the closed-loop base acceleration per radian of pitch demand,
-  `(b1·floor − b2)·margin/(margin−1) ≈ 6.47 m/s²/rad` at the design point — not the
+  `(b1·floor − b2)·margin/(margin−1) ≈ 7.33 m/s²/rad` at the design point — not the
   open-loop sensitivity.
 * **Trim integrator** (`ki = 0.01 rad/(m·s)`): learns the slope offset from the
   position error, saturating with anti-windup at ±20 degrees. This is the
   auto-correction the requirement asks for, and it is what makes a slope holdable.
-* **Inner pitch PD**: `kp = margin · floor = 28.5 Nm/rad` (margin 4), `kd = 7.0`
-  (damping ratio 1.6), both derived from the plant, not hand-set. The derivative term
-  runs on the measured rate after a 12 Hz low-pass — no derivative kick.
+* **Inner pitch PD**: `kp = margin · floor = 21.6 Nm/rad` (margin 4), `kd = 5.9`
+  (damping ratio 1.6), both derived from the plant, not hand-set. A slow pitch-error
+  integrator (`kp/20`, 1 Nm clamp, 3 degree window) removes the lean the drive dead
+  zone would otherwise leave behind. The derivative term runs on the measured rate
+  after a 12 Hz low-pass — no derivative kick.
+* **Operator speed** is a step setpoint, turned into an acceleration-limited
+  reference (`0.5 m/s²`); the position origin advances with it so the position loop
+  measures tracking error while driving and holds a fixed point when the command is
+  zero.
 * **Yaw** uses only the headroom left after the common-mode torque is reserved
   (`M3-13`), so steering can never starve balance.
 * Common-mode torque is clamped to the unit range and slew-limited before mixing.
@@ -121,16 +128,20 @@ Otherwise the reference is anchored to the measured pose only when the error is 
 `ARM_ANCHOR_RAD = 5°`. A larger error starts at the target, so the law actually lifts
 the body instead of slowly chasing it; the torque slew limiter is the soft start.
 
-Arming on a slope is possible but costs travel: the trim has to learn the offset while
-the machine rolls back. Simulation travel to settle is 0.54 m at 4°, 1.15 m at 6°,
-about 9 m at 10° and 17 m at 12°. The `RANGE_LIMIT_M = 3 m` guard therefore aborts
-arming on steep slopes by design.
+Arming on a slope with a **zero captured on flat ground** is possible only on the
+shallow slopes that fit the 3 m range guard: the trim has to learn the offset while
+the machine rolls back, and the required travel grows quickly with the angle. On
+steeper terrain, capture `zero`/`level` while standing on the surface: the commanded
+pose is then the local equilibrium and 10 and 12 degrees hold with under a metre of
+travel. This is the documented workflow; an on-flat-ground zero at 10 degrees is
+outside the envelope and is aborted by the range guard rather than chased.
 
 ### 3.4 Fall detection and guards
 
-* `fall_error_rad = min(0.70 · lift_limit, 30°)`: at the nominal budget ≈ 28°. The
-  threshold must stay below the static limit because lifting from rest needs torque
-  to accelerate the body first.
+* `fall_error_rad = min(0.70 · lift_limit, 30°)`: with the corrected plant the
+  uncapped value is ≈37°, so the 30° control-design cap binds. The threshold must
+  stay below the static limit because lifting from rest needs torque to accelerate
+  the body first.
 * `LYING_RAD = 45°`: on the ground.
 * `FALL_SPEED_MPS = 3.0`: a recovery from 30° peaks near 1.4 m/s, so this only
   catches a real runaway.
@@ -170,13 +181,16 @@ arming on steep slopes by design.
 
 | Name | Value | Source |
 |---|---|---|
-| `pitch_margin` | 4.0 | 4× the 7.14 Nm/rad stability floor |
-| `pitch_kp` | 28.5 Nm/rad | derived |
-| `pitch_kd` | 7.0 Nm/(rad/s) | derived, damping ratio 1.6 |
+| `pitch_margin` | 4.0 | 4× the 5.39 Nm/rad stability floor |
+| `pitch_kp` | 21.6 Nm/rad | derived |
+| `pitch_kd` | 5.9 Nm/(rad/s) | derived, damping ratio 1.6 |
+| `pitch_ki` | 1.08 Nm/(rad·s) | `kp/20`, removes the dead-zone lean |
+| `pitch integral clamp` | 1.0 Nm | above the estimated 0.5 Nm dead zone |
 | `kpos` | 0.4 1/s | decade below the pitch loop |
 | `kv` | 1.8 1/s | decade below the pitch loop |
 | `ki` (trim) | 0.01 rad/(m·s) | slow enough not to pump the stance |
-| `v_lim` / `a_lim` | 0.4 m/s / 1.0 m/s² | operator-smooth |
+| `v_lim` / `a_lim` | 1.0 m/s / 1.0 m/s² | operator-smooth |
+| speed slew | 0.5 m/s² | turns the operator step into a lean |
 | pitch demand limit | 8° | outer-loop authority |
 | pitch trim limit | 20° | slope offset budget |
 | `FALL_FRACTION` | 0.70 | sim: 0.75 works at 3 Nm, 0.63 at 8–12 Nm |
@@ -200,10 +214,13 @@ headline cases.
 
 | Scenario | Result |
 |---|---|
-| Hold level from 1° | settles, peak pitch 2.4°, travel 8 cm |
+| Hold level from 1° | settles, peak pitch 2.4°, travel 15 cm |
 | Recover from 20° | settles, peak travel 0.42 m, peak speed 0.62 m/s |
 | Recover from 30° | settles, peak travel 1.73 m, peak speed 1.39 m/s |
-| Hold 4°/6°/10°/12° slope (armed at equilibrium) | settles at ≈1.6α, speed → 0 |
+| Drive at ±0.3–0.4 m/s | tracks the command, stays upright, settles |
+| Hold 4°/6° slope (armed at equilibrium, flat-ground zero) | settles at ≈1.6α, speed → 0, travel < 2 m |
+| Hold 10°/12° slope (zero/level captured on the slope) | settles at ≈1.6α, speed → 0, travel < 1 m |
+| Hold 10°/12° slope (zero captured on flat ground) | outside the envelope; the 3 m range guard aborts |
 | Drive onto a 4°/6° ramp while balancing | settles, travel 0.45/0.89 m |
 | Drive onto a 10° ramp while balancing | runaway — outside the envelope |
 | Slope 8° | **fails**: holding torque ≈ 0.6 Nm sits on the edge of the 0.5 Nm drive dead zone |
@@ -311,10 +328,10 @@ apart.
 Measured on the floor with the balance law disarmed (session
 `jbot-telemetry-1795141040.csv`, 2026-11-19):
 
-- `test 50 -50` reaches the wire as `speed = 50, steer = 0`, rolls the machine
-  forward, and the hall feedback reads `L = +7..9`, `R = -7..-10` rpm.
-- `test 100 100` reaches the wire as `speed = 0, steer = 100`, pivots the
-  machine in place, and the hall feedback reads `L ≈ R ≈ +6..8` rpm.
+- `test 50 50` reaches the wire as `speed = 50, steer = 0`, rolls the machine
+  forward, and the hall feedback reads `L = +8`, `R = -8` rpm.
+- `test 100 -100` reaches the wire as `speed = 0, steer = 100`, pivots the
+  machine in place, and the gyro reads `gz ≈ -30 dps`.
 
 Firmware consequences:
 
@@ -509,8 +526,8 @@ session before any code changed.
 1. **The mixer sign was inverted.** `to_command` negated the right wheel before
    the EFeru mixer inverse. That maps common-mode `WheelTorque` to the wire
    `steer` channel, i.e. counter-rotation, so every balance output pivoted the
-   machine. The motor test separates the conventions cleanly: `test 50 -50`
-   (wire `speed=50`) rolls forward, `test 100 100` (wire `steer=100`) pivots.
+   machine. The motor test separates the conventions cleanly: `test 50 50`
+   (wire `speed=50`) rolls forward, `test 100 -100` (wire `steer=100`) pivots.
    The fix is the plain inverse `Command::from_wheel_torque(left, right)`.
 2. **The pitch damper read the wrong raw axis.** Under `mount normal` the law
    consumed BNO055 Euler pitch but the rate filter consumed raw gyro Y.
@@ -523,11 +540,13 @@ opposite-sign hall speeds, so `forward_speed_mps` is the half-difference. The
 old mean reported ~0 while the machine rolled and grew only during the pivot,
 which also corrupted `x` and the travel guard.
 
-Yaw is still out of the loop (`Tuning::from_plant` sets `yaw_kp_units = 0.0`),
-so the law cannot command a differential on its own; the spin came entirely
-from fault 1. If yaw is enabled later, note that the recorded heading rises at
-about `-gz` (the 2026-11-19 pivot turns ~+35 °/s of heading while `gz` reads
-−35), and the `steer` sign must be verified together with that pair.
+Yaw is now in the loop: `Tuning::from_plant` sets `yaw_kp_units = 0.5 · units_per_nm`,
+so a 1 rad/s yaw-rate error asks for 0.5 Nm per wheel, and the differential may only
+use the torque headroom balance leaves unused (`M3-13`). The sign is the bench-verified
+one: a positive yaw-rate error drives the right wheel forward and the left backward
+(counter-clockwise), which reaches the wire as a negative `steer` through the plain
+mixer inverse. If the steering direction is ever inverted on the bench, invert the
+yaw sign and the wire convention together.
 
 Open after this change: re-run the pscale ladder (start at 0.10-0.20) with the
 fixed mixer and rate axis before any claim about recovery margin, and flash the
@@ -549,3 +568,35 @@ torque request is not applied as a voltage command.
 4. Decide whether lying-down recovery is in scope. It needs a measured budget of
    ~25–40 Nm and a raise manoeuvre (momentum build-up plus catch), validated in
    simulation first; the current threshold logic cannot simply be widened.
+
+## 10. Plant correction (2026-11-20)
+
+`PlantParams::NOMINAL` now uses the bench-weighed `config/robot.toml` values, with
+the per-wheel entries doubled because the plant equations take the combined
+wheels: body 5.0 kg, combined wheels 4.6 kg, combined wheel inertia
+0.0156 kg·m², COM 0.25 m, radius 0.0825 m, and the total 5.0 Nm common-mode
+budget (2 × 2.5 Nm per wheel). The dead zone stays at the estimated 0.5 Nm. The
+resulting coefficients are:
+
+| Coefficient | Value |
+|---|---|
+| `A1` | 25.488 1/s² |
+| `A2` | 4.727 1/(kg·m) |
+| `B1` | 1.516 1/(kg·m) |
+| `B2` | 2.679 1/s² |
+| `S1` | 20.576 1/s² |
+| `S2` | 10.082 1/s² |
+| stability floor `A1/A2` | 5.392 Nm/rad |
+| lift limit at 5 Nm | 53.1° |
+
+The whole law re-derives from these numbers: `kp = 21.57 Nm/rad`,
+`kd = 5.92 Nm/(rad/s)`, `accel_per_rad = 7.33 m/s²/rad`, `pitch_ki = 1.08`.
+The level-ground hold, recovery, driving and turning simulations all pass with the
+corrected plant; the slope envelope is the one behaviour that changed, as recorded
+in §3.3 and §6.
+
+The corrected plant makes the machine *less* stiff per newton-metre than the old
+estimate (floor 5.39 vs 7.13 Nm/rad), so a given lean needs less holding torque,
+while the dead zone is a larger fraction of the useful range. That is why the
+pitch-error integrator, not a dead-zone feedforward, is the mechanism that removes
+the residual lean: the exact inverse acts like a relay and pumps the stance.

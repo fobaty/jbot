@@ -32,7 +32,9 @@ that decides what the robot does:
 
 It does **not** own the power stage. The STM32F103 mainboard keeps the 16 kHz FOC
 loop, the current limits, the hall capture, the pack measurement, and an
-independent 100 ms command timeout.
+independent serial command timeout. The current source sets `SERIAL_TIMEOUT` to
+160 main-loop ticks (~800 ms), so the 100 ms budget in `M3-38` is not yet met;
+see `docs/audit-2026-11-22.md`.
 
 ## 2. Platform facts that shape the code
 

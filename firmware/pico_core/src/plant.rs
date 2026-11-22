@@ -68,17 +68,28 @@ pub struct PlantParams {
 }
 
 impl PlantParams {
-    /// Nominal parameters used for control design. They are estimates from
-    /// the donor hardware and must be replaced by bench measurements before
-    /// the gains are trusted; only the resulting *ratios* matter, because the
-    /// tuning is expressed relative to them.
+    /// Nominal parameters used for control design. The mass, inertia and
+    /// geometry values come from `config/robot.toml` (`[mechanical]`), which is
+    /// the bench-weighed source of truth. That file lists the wheels one at a
+    /// time (a 2.3 kg hub motor, `0.5 m r^2 = 0.0078 kg m^2` for one disc), so
+    /// the combined values here are twice those entries: 4.6 kg and
+    /// 0.0156 kg m^2. This puts the platform at the documented ~10 kg.
+    ///
+    /// `max_torque_nm` is the *total* common-mode torque, twice the 2.5 Nm
+    /// per-wheel budget in `[drive]`, because the plant equations take the
+    /// axle torque summed over both wheels.
+    ///
+    /// These are estimates and must be replaced by a bench identification
+    /// before the gains are trusted; only the resulting *ratios* matter,
+    /// because the tuning is expressed relative to them.
     pub const NOMINAL: Self = Self {
-        body_mass_kg: 8.0,
-        wheel_mass_kg: 2.5,
+        body_mass_kg: 5.0,
+        wheel_mass_kg: 4.6,
         body_inertia_kgm2: 0.30,
-        wheel_inertia_kgm2: 0.05,
-        com_height_m: 0.18,
+        wheel_inertia_kgm2: 0.0156,
+        com_height_m: 0.25,
         wheel_radius_m: 0.0825,
+        // 2 x 2.5 Nm per wheel.
         max_torque_nm: 5.0,
         deadband_nm: 0.5,
     };
@@ -310,13 +321,13 @@ mod tests {
     fn nominal_coefficients_match_the_lagrangian() {
         let p = PlantParams::NOMINAL;
         // Values derived from the Lagrangian in the module header.
-        assert!((p.a1() - 31.8).abs() < 0.5, "a1 = {}", p.a1());
-        assert!((p.a2() - 4.46).abs() < 0.05, "a2 = {}", p.a2());
-        assert!((p.b1() - 1.04).abs() < 0.02, "b1 = {}", p.b1());
-        assert!((p.b2() - 2.57).abs() < 0.05, "b2 = {}", p.b2());
-        // 5 Nm total against a 7.13 Nm/rad stability floor.
-        assert!((p.pitch_gain_floor_nm() - 7.13).abs() < 0.1);
-        assert!((p.lift_limit_rad().to_degrees() - 40.2).abs() < 0.5);
+        assert!((p.a1() - 25.49).abs() < 0.5, "a1 = {}", p.a1());
+        assert!((p.a2() - 4.73).abs() < 0.05, "a2 = {}", p.a2());
+        assert!((p.b1() - 1.52).abs() < 0.05, "b1 = {}", p.b1());
+        assert!((p.b2() - 2.68).abs() < 0.05, "b2 = {}", p.b2());
+        // 5 Nm total against a stability floor.
+        assert!((p.pitch_gain_floor_nm() - 5.39).abs() < 0.1);
+        assert!((p.lift_limit_rad().to_degrees() - 53.1).abs() < 0.5);
     }
 
     #[test]
@@ -362,8 +373,7 @@ mod tests {
         // Solve the static equilibrium of
         //   pitch_dd = A1*(pitch - slope) - A2*torque + S1*slope
         //   x_dd     = B1*torque - B2*(pitch - slope) - S2*slope
-        // for the torque and the pitch that make both zero. Without the drive
-        // dead zone the state must then stay put.
+        // for the torque and the pitch that make both zero.
         let mut params = PlantParams::NOMINAL;
         params.deadband_nm = 0.0;
         let p = params;
@@ -373,9 +383,21 @@ mod tests {
         let relative = (p.a2() * torque - p.s1() * slope) / p.a1();
         assert!(torque > 0.0);
 
+        // Check the residual accelerations directly. The open-loop pitch mode
+        // is an unstable saddle, so integrating the equilibrium for ten
+        // seconds would amplify f32 round-off and drift no matter how exact
+        // the pose is.
+        let pitch = slope + relative;
+        let pitch_dd = p.a1() * relative - p.a2() * torque + p.s1() * slope;
+        let x_dd = p.b1() * torque - p.b2() * relative - p.s2() * slope;
+        assert!(pitch_dd.abs() < 1e-3, "pitch_dd {pitch_dd}");
+        assert!(x_dd.abs() < 1e-3, "x_dd {x_dd}");
+
+        // A short integration from the equilibrium stays near it, before the
+        // unstable mode has time to grow out of the f32 round-off.
         let mut plant = Plant::new(params);
-        plant.reset(slope + relative, slope);
-        for _ in 0..2000 {
+        plant.reset(pitch, slope);
+        for _ in 0..100 {
             plant.step(torque, DT);
         }
         assert!(
@@ -383,11 +405,11 @@ mod tests {
             "{}",
             plant.state().speed_mps
         );
-        assert!((plant.state().pitch_rad - (slope + relative)).abs() < 0.02);
+        assert!((plant.state().pitch_rad - pitch).abs() < 0.02);
 
         // The same slope with no torque must slide downhill.
         let mut drifting = Plant::new(params);
-        drifting.reset(slope + relative, slope);
+        drifting.reset(pitch, slope);
         for _ in 0..2000 {
             drifting.step(0.0, DT);
         }

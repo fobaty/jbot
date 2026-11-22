@@ -223,7 +223,7 @@ async fn handle_command(class: &mut Console, flash: &mut Store, line: &[u8]) -> 
             reply(
                 class,
                 format_args!(
-                    "ok help: ping | stat | stream <hz> | speed <mps> | steer <deg/s> | trim <deg> | zero | level | mount <name> | home [deg] | vmax [deg/s] | pscale [0..2] | arm | disarm | test <units> [units] | reinit | estop | clear | save | forget | stats reset | reboot"
+                    "ok help: ping | stat | stream <hz> | speed <mps> | steer <deg/s> | trim <deg> | zero | level | mount <name> | home [deg] | vmax [deg/s] | pscale [0..2] | slew [units/s] | arm | disarm | test <units> [units] | reinit | estop | clear | save | forget | stats reset | reboot"
                 ),
             )
             .await;
@@ -495,6 +495,42 @@ async fn handle_command(class: &mut Console, flash: &mut Store, line: &[u8]) -> 
                     }
                     _ => {
                         reply(class, format_args!("err vmax needs degrees/s in 0..60")).await;
+                    }
+                },
+            }
+        }
+        "slew" => {
+            // Runtime rate limit on the applied wheel torque, in command
+            // units per second. Lower values give a softer, slower torque
+            // build-up without weakening the balance law itself; the gain is
+            // set by `pscale`. Runtime-only, like `pscale`.
+            match argument {
+                None => {
+                    reply(
+                        class,
+                        format_args!("ok slew {:.0}", state::torque_slew_per_s()),
+                    )
+                    .await;
+                }
+                Some(value) => match parse_f32(value) {
+                    Some(units_per_s)
+                        if units_per_s.is_finite()
+                            && (state::MIN_TORQUE_SLEW_PER_S..=state::MAX_TORQUE_SLEW_PER_S)
+                                .contains(&units_per_s) =>
+                    {
+                        let applied = state::set_torque_slew_per_s(units_per_s);
+                        reply(class, format_args!("ok slew {:.0}", applied)).await;
+                    }
+                    _ => {
+                        reply(
+                            class,
+                            format_args!(
+                                "err slew needs units/s in {:.0}..={:.0}",
+                                state::MIN_TORQUE_SLEW_PER_S,
+                                state::MAX_TORQUE_SLEW_PER_S
+                            ),
+                        )
+                        .await;
                     }
                 },
             }

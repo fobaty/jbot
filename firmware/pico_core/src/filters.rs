@@ -111,6 +111,17 @@ impl SlewLimiter {
         self.value
     }
 
+    /// Replace the maximum change per second without dropping the state, so a
+    /// bench session can soften the ramp on the fly. A non-finite or
+    /// non-positive rate degenerates to "no movement".
+    pub fn set_rate(&mut self, max_rate_per_s: f32) {
+        self.max_rate_per_s = if max_rate_per_s.is_finite() && max_rate_per_s > 0.0 {
+            max_rate_per_s
+        } else {
+            0.0
+        };
+    }
+
     /// The currently applied value.
     pub fn value(&self) -> f32 {
         self.value
@@ -227,5 +238,31 @@ mod tests {
         assert_eq!(limiter.update(1_000.0, DT), 0.0);
         limiter.reset();
         assert_eq!(limiter.value(), 0.0);
+    }
+
+    #[test]
+    fn slew_limiter_set_rate_keeps_state_and_softens_ramp() {
+        let mut limiter = SlewLimiter::new(3_000.0);
+        for _ in 0..20 {
+            limiter.update(1_000.0, DT);
+        }
+        let before = limiter.value();
+        // A slower rate must not drop the already applied value.
+        limiter.set_rate(400.0);
+        assert!((limiter.value() - before).abs() < 1e-4);
+        // Two units per tick at 400 units/s and a 5 ms period.
+        let next = limiter.update(1_000.0, DT);
+        assert!((next - before - 2.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn slew_limiter_set_rate_rejects_non_positive() {
+        let mut limiter = SlewLimiter::new(3_000.0);
+        limiter.update(500.0, DT);
+        let held = limiter.value();
+        limiter.set_rate(0.0);
+        assert_eq!(limiter.update(1_000.0, DT), held);
+        limiter.set_rate(f32::NAN);
+        assert_eq!(limiter.update(1_000.0, DT), held);
     }
 }

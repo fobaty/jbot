@@ -238,7 +238,7 @@ actuator/jitter/latency/E-stop protocols.
 | ID | Task | Priority | Depends on | Acceptance criterion |
 |---|---|---|---|---|
 | [ ] M3-17 | Implement the 200 Hz balance task on a hardware timer, with a fixed period and no dynamic memory allocation | P1 | M3-05, M3-07, M3-13 | Period is stable; jitter measured on GP10; no heap or blocking in the loop |
-| [ ] M3-18 | Implement the selected balance controller in the Pico firmware; take parameters from configuration | P1 | M3-17 | Behaviour on the bench matches the documented design targets |
+| [ ] M3-18 | Implement the selected balance controller in the Pico firmware; take parameters from configuration | P1 | M3-17 | Behaviour on the bench matches the documented design targets | Partial: cascade and guards are implemented and unit-tested; no recorded run has held balance (all used `pscale` below the 0.25 stability floor). See `docs/audit-2026-11-22.md` |
 | [ ] M3-19 | Implement the state machine `BOOT → SELF_TEST → IDLE → BALANCE → DAMPING → FAULT → E_STOP → SHUTDOWN` on the Pico | P1 | M3-03 | Transitions are validated; invalid commands do not change state |
 | [ ] M3-20 | Implement tilt/roll limiting, fall detection and transition to `DAMPING` | P1 | M3-17, M3-19 | Configurable tilt threshold 25–35° and roll limit; transition before the dangerous angle |
 | [ ] M3-21 | Implement torque distribution between the two wheels, and in stage 2 the hip height/roll allocation, with saturation and balance priority | P1 | M3-18 | When saturated, balance is preserved; yaw and roll degrade predictably |

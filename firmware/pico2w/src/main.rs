@@ -82,7 +82,7 @@ const CONTROL_PERIOD_S: f32 = 0.005;
 /// derivative term.
 const D_FILTER_CUTOFF_HZ: f32 = 12.0;
 /// Maximum rate of change of the applied wheel torque, command units per second.
-const TORQUE_SLEW_PER_S: f32 = 3_000.0;
+const TORQUE_SLEW_PER_S: f32 = state::DEFAULT_TORQUE_SLEW_PER_S;
 /// IMU sampling period: 10 ms, that is 100 Hz.
 const IMU_PERIOD: Duration = Duration::from_millis(10);
 /// An IMU sample older than this is not used for control.
@@ -107,7 +107,9 @@ const FEEDBACK_MAX_AGE: Duration = Duration::from_millis(300);
 const PACK_NOMINAL_V: f32 = 36.0;
 /// Pose error below which arming anchors the reference to the measured pose,
 /// radians (5 degrees). A larger error starts at the target so the law lifts
-/// the body instead of slowly chasing it.
+/// the body instead of slowly chasing it. On steep terrain, capture
+/// `zero`/`level` on the surface first: the pose error is then small and the
+/// machine holds the local equilibrium instead of being treated as a fall.
 const ARM_ANCHOR_RAD: f32 = 5.0 * core::f32::consts::PI / 180.0;
 
 /// Capacity of the buffered UART transmit ring.
@@ -298,6 +300,12 @@ async fn control_task(
         // the fall guards see the floor, not the scaled gains.
         let tuning = base_tuning.scaled_by(state::pscale());
 
+        // Softness knob, applied per tick like `pscale`: a console change to
+        // the torque ramp takes effect on the very next step.
+        let slew_rate = state::torque_slew_per_s();
+        torque_slew_left.set_rate(slew_rate);
+        torque_slew_right.set_rate(slew_rate);
+
         if let Some(sample) = IMU_SIGNAL.try_take() {
             last_imu = sample;
             last_imu_at = Some(Instant::now());
@@ -449,6 +457,7 @@ async fn control_task(
                     pitch_ref_rad: applied_ref_rad,
                     position_m,
                     speed_mps: measured_speed,
+                    speed_setpoint_mps: state::speed_setpoint_mps(),
                     yaw_rate_error_rad_s: state::steer_setpoint_rps()
                         - attitude.yaw_rate_dps.to_radians(),
                     battery_scale: battery_scale(last_feedback.battery_voltage_v()),
@@ -457,10 +466,13 @@ async fn control_task(
 
                 // Pose and range guards. A control error outside the lift
                 // budget has to stop the attempt instead of feeding it, and a
-                // runaway is aborted before it hurts anything.
+                // runaway is aborted before it hurts anything. The range guard
+                // watches the tracking error, not the total travel, so a
+                // commanded drive does not look like a runaway.
+                let tracking_error_m = position_m - balance.origin_m();
                 let guard = SafetyState {
                     reference_rad: applied_ref_rad,
-                    position_m,
+                    position_m: tracking_error_m,
                     ..safety
                 };
                 if let Some(reason) = guard.fall_cause(&tuning) {

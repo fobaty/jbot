@@ -20,4 +20,5 @@ pub mod session;
 
 pub use session::{Action, Error, Sample, Segment, Session};
 
+pub mod balancer_model;
 pub mod plant;

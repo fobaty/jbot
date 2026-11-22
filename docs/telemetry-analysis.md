@@ -152,7 +152,15 @@ rather than oscillated, which is a different fault than ringing.
   confirm pitch, not roll, responds) and then verified here by the motion share
   and the axis check.
 * The nominal Nm conversion assumes 200 EFeru units/Nm and a 5 Nm plant. The
-  plant has not been identified; treat newton-metre figures as a scale aid.
+  plant has not been identified; treat newton-metre figures as a scale aid. The
+  2026-11-22 audit records the measurement needed to replace that assumption
+  (`docs/audit-2026-11-22.md`, phase 1).
+* A `law_fit` from a run with `pscale < 0.25` measures an unstable loop: the
+  stability floor is `A1/A2 = 5.39 Nm/rad` against `kp_base = 21.57 Nm/rad`.
+  Such a fit is valid evidence for the command path, not for the recovery margin.
+* Before the working-tree fix the `vset` column recorded a setpoint that the
+  balance law never consumed; `wset` likewise produced no yaw torque because
+  `yaw_kp_units` was zero.
 * The law fit measures what the firmware commanded, not the torque the motors
   delivered. A dead zone, a slipping wheel or a saturated drive hides in the
   residual, not in the gains.

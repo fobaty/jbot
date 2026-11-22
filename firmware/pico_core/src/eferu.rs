@@ -213,10 +213,10 @@ impl Feedback {
     /// `INVERT_R_DIRECTION`, mirror-mounted hub motors): a straight forward
     /// roll reads opposite-sign hall speeds (`speedL ~= -speedR`), so linear
     /// speed is half the difference. Measured in session
-    /// `jbot-telemetry-1795141040.csv` (2026-11-19): `test 50 -50` rolled the
-    /// machine forward and read `L = +7..9`, `R = -7..-10` rpm. The mean reads
-    /// about zero while rolling and only grows when the machine pivots; it
-    /// would stall the position loop and the range guard.
+    /// `jbot-telemetry-1795141040.csv` (2026-11-19): `test 50 50` (wire
+    /// `speed = 50`, a straight roll) read `L = +7..9`, `R = -7..-10` rpm. The
+    /// mean reads about zero while rolling and only grows when the machine
+    /// pivots; it would stall the position loop and the range guard.
     pub fn forward_speed_mps(self, wheel_radius_m: f32) -> f32 {
         let scale = core::f32::consts::TAU * wheel_radius_m / 60.0;
         0.5 * (f32::from(self.speed_left_rpm) - f32::from(self.speed_right_rpm)) * scale
