@@ -62,11 +62,24 @@ place. The same `test 60 -60` command was repeated:
   rotate measurably: a two-handed grip still constrains the machine enough to
   absorb the roughly 0.7 Nm reaction torque. This is an operator/setup limit,
   not a failure of the yaw fix, which is already confirmed at the wheel.
-- A free-suspension setup (single sling or pendant) would be needed to observe
-  body yaw; it was not attempted in this session.
+- A setup that leaves the body free to rotate was needed; the ground-contact
+  pivot in session 4 provided it.
+
+## Session 4 — ground-contact pivot, body yaw confirmed
+
+The operator placed the wheels on the floor and used the rope only to arrest a
+fall or runaway, leaving the body free to rotate; zone at most 0.5 m. The same
+`test 60 -60` command was repeated: `csv/jbot-spin-1795391494838.csv`.
+
+- During the 0.9 s plateau the heading changed by **+103.6 degrees** (unwrapped
+  from `0.75` to `104.38`), with `gz` peaking near `-250 dps`. The body kept
+  rotating after the command was released while the wheels coasted.
+- Wheel hall speeds stayed modest (`+42 / +58 rpm` late in the plateau), so
+  this was a controlled low-torque pivot, not a runaway.
+- This confirms the yaw-authority fix at body level: the corrected inverse
+  produces a real in-place turn from the same 60-unit differential command.
 
 ## Gate
 
-The link check and the wheel-level yaw check pass. Body-yaw verification is
-unconfirmed because the test setup constrained the body; it needs a free-hanging
-setup and fresh step-by-step approval before any further trial.
+Link check, wheel-level yaw and body-level pivot all pass. Further Tier 1 work
+(controlled fall, higher-rate spin) still needs fresh step-by-step approval.
