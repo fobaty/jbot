@@ -47,10 +47,26 @@ the flashed firmware has no electric brake. Evidence:
   old unit-coefficient inverse the differential command would have produced
   roughly half that. The yaw-authority fix is therefore confirmed at the wheel.
 - `gz` stays within +/-2.25 dps and heading is unchanged: the body is
-  mechanically fixed, so it cannot yaw. Body-yaw verification needs a session
-  where the operator holds the machine by hand.
+  mechanically fixed, so it cannot yaw. A hand-held attempt is recorded in
+  session 3 below.
+
+## Session 3 — hand-held body-yaw attempt (inconclusive)
+
+The operator held the body with both hands, wheels in the air and the rope in
+place. The same `test 60 -60` command was repeated:
+`csv/jbot-spin-1795391348038.csv`.
+
+- Wheels counter-rotated as expected (about `+170 / +185 rpm` 0.6 s into the
+  plateau), so the command path was active.
+- `gz` stayed within +/-0.8 dps and heading did not change. The body did not
+  rotate measurably: a two-handed grip still constrains the machine enough to
+  absorb the roughly 0.7 Nm reaction torque. This is an operator/setup limit,
+  not a failure of the yaw fix, which is already confirmed at the wheel.
+- A free-suspension setup (single sling or pendant) would be needed to observe
+  body yaw; it was not attempted in this session.
 
 ## Gate
 
-Both the link check and the wheel-level yaw check pass. Body-yaw verification
-under hand-held conditions still needs fresh step-by-step approval.
+The link check and the wheel-level yaw check pass. Body-yaw verification is
+unconfirmed because the test setup constrained the body; it needs a free-hanging
+setup and fresh step-by-step approval before any further trial.
