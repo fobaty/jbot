@@ -240,7 +240,7 @@ async fn handle_command(class: &mut Console, flash: &mut Store, line: &[u8]) -> 
             reply(
                 class,
                 format_args!(
-                    "stat up={:.1} loop={} stream={} trim={:.2} estop={} steps={} imu={} imu_err={} imu_code={} fb={} fb_drop={} rx={} fb_ok={} stop={} zero={:.2} zroll={:.2} level={:.2} mount={} nvm={} kpnm={:.1} kdnm={:.1} kpos={:.2} kv={:.2} ki={:.3} pdem={:.1} ptrm={:.1} armed={} zcapt={} lcapt={} home={:.2} fall={} vmax={:.2} pscale={:.2}",
+                    "stat up={:.1} loop={} stream={} trim={:.2} estop={} steps={} imu={} imu_err={} imu_code={} fb={} fb_drop={} rx={} fb_ok={} stop={} zero={:.2} zroll={:.2} level={:.2} mount={} nvm={} kpnm={:.1} kdnm={:.1} kpos={:.2} kv={:.2} ki={:.3} pdem={:.1} ptrm={:.1} armed={} zcapt={} lcapt={} home={:.2} fall={} vmax={:.2} pscale={:.2} slew={:.0}",
                     uptime_s,
                     state::loop_hz(),
                     state::stream_hz(),
@@ -277,6 +277,7 @@ async fn handle_command(class: &mut Console, flash: &mut Store, line: &[u8]) -> 
                     state::read(&state::FALL_EVENTS),
                     state::ref_v_max_rad_s().to_degrees(),
                     pscale,
+                    state::torque_slew_per_s(),
                 ),
             )
             .await;
