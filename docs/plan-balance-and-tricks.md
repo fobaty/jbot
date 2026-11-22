@@ -120,7 +120,10 @@ place with unit tests. The guard now reads a separate 4 Hz filtered tilt while
 the control path keeps its 12 Hz rate filter. Nothing has been flashed, so the
 active firmware still has the old half-authority inverse; a Pico reflash is
 required before bench use, and the guard filter's effect on fall latency must be
-observed in the first armed trial.
+observed in the first armed trial. The same reflash carries a USB console fix:
+`console_task` now watches DTR instead of parking in a write after the host
+closes the port, so USB re-enumeration should no longer be needed between
+sessions (to be confirmed on the bench).
 
 ### WP3 — Bench trials (each session needs fresh step-by-step approval)
 

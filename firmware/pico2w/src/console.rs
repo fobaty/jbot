@@ -14,7 +14,9 @@
 //!   rejected, plus a banner on connect.
 //!
 //! Nothing here is on the control path: a missing host only means lines are
-//! dropped, and a slow host cannot stall the 200 Hz loop.
+//! dropped, and a slow host cannot stall the 200 Hz loop. The console task
+//! survives a host closing the port: DTR is used to detect the disconnect, so
+//! the next session resumes without re-enumerating USB.
 
 use core::fmt::{self, Write};
 
@@ -115,6 +117,23 @@ async fn write_bytes(class: &mut Console, bytes: &[u8]) -> Result<(), ()> {
         class.write_packet(chunk).await.map_err(|_| ())?;
     }
     Ok(())
+}
+
+/// Wait for a host that is actually using the port.
+///
+/// `wait_connection` only observes that the USB endpoint is enabled. A host
+/// that closes the serial port leaves the endpoint enabled and DTR deasserted;
+/// without this check the console resumes writing into an endpoint nobody
+/// drains and parks forever in `write_packet`. Polling DTR keeps the task
+/// alive across host sessions without a USB re-enumeration.
+async fn wait_host(class: &mut Console) {
+    loop {
+        class.wait_connection().await;
+        if class.dtr() {
+            return;
+        }
+        Timer::after(IDLE_POLL).await;
+    }
 }
 
 /// Format one line into `buffer` and return the used slice.
@@ -833,7 +852,7 @@ pub async fn console_task(mut class: Console, mut flash: Store) {
     let mut telemetry_buffer = [0u8; REPLY_BUFFER];
 
     loop {
-        class.wait_connection().await;
+        wait_host(&mut class).await;
         let _ = write_bytes(&mut class, BANNER).await;
 
         // Say what the flash record contains. This is the first thing the
@@ -869,6 +888,12 @@ pub async fn console_task(mut class: Console, mut flash: Store) {
             let event = select(Timer::after(period), class.read_packet(&mut packet)).await;
             match event {
                 Either::First(()) => {
+                    // A host that closed the port drops DTR before the USB
+                    // endpoint is disabled. Leaving now avoids parking the
+                    // task in write_packet with nobody draining the endpoint.
+                    if !class.dtr() {
+                        break;
+                    }
                     if hz != 0 {
                         if let Some(telemetry) = state::TELEMETRY.try_take() {
                             let text = format_telemetry(&mut telemetry_buffer, &telemetry);
@@ -878,6 +903,7 @@ pub async fn console_task(mut class: Console, mut flash: Store) {
                         }
                     }
                 }
+                Either::Second(Ok(0)) => break,
                 Either::Second(Ok(len)) => {
                     for &byte in &packet[..len] {
                         if byte == b'\n' || byte == b'\r' {

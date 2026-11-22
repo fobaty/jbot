@@ -52,11 +52,13 @@ torque-speed envelope already reduces the available torque there.
 
 ## Tooling note
 
-Closing the host serial port terminates the Pico's USB CDC console task
-(`firmware/pico2w/src/console.rs`, write error break at line 872). Each later
-host connection then sees no telemetry until the Pico USB cable is
-re-enumerated. Fixing that in firmware is a separate change and needs explicit
-approval; it was not part of WP0.
+During WP0, closing the host serial port left the Pico's USB CDC console task
+unable to resume: the write into an undrained endpoint blocked and each later
+host session saw no telemetry until the Pico USB cable was re-enumerated.
+This was not part of WP0. A later change makes `console_task` watch DTR and
+wait for a real host before writing, so a session can be closed and reopened
+without re-enumeration; that fix is pending the Pico reflash and still needs
+bench confirmation.
 
 Quality gates after the tooling changes: `cargo fmt --all -- --check`,
 `cargo check --workspace --all-targets`, `cargo test --workspace` and
