@@ -26,7 +26,7 @@ When the mainboard is reflashed, update both files in the same commit.
 | Debug serial | Not enabled in this build | The `DEBUG_SERIAL_USART2` line added by the patch is inside `VARIANT_PWM` and does not apply to `VARIANT_USART` |
 | Inputs | `PRI_INPUT1/2 = 3, -1000, 0, 1000, 0` | Serial input, no deadband |
 | `FLASH_WRITE_KEY` | `0x1002` | `VARIANT_USART`, no dual inputs |
-| `FILTER` | `6553` | 0.1 |
+| `FILTER` | `19661` | 0.3 (α), tau ~14 ms; reflashed 2026-11-23, previously 6553 / 0.1 |
 | `SPEED_COEFFICIENT` | `16384` | 1.0 |
 | `STEER_COEFFICIENT` | `8192` | 0.5 from `DEFAULT_STEER_COEFFICIENT`; `VARIANT_USART` has no override. The Pico mixer inverse now compensates for 0.5 (WP2, not yet flashed); differential saturates at +/-1000 units. Do not change this without revisiting the Pico side. |
 | `TANK_STEERING`, `INVERT_L/R_DIRECTION` | Not defined | Stock mixer and motor directions |

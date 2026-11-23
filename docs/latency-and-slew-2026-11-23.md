@@ -121,11 +121,38 @@ raise gains or disable guards to force a pass.
   the ~200 ms mainboard lag makes that gain oscillatory. Raising `slew` only
   makes the divergence faster (see the table above).
 
-**Prepared change (not flashed):** `FILTER=19661` (α=0.3, τ≈14 ms) in the
-`VARIANT_USART` block of `firmware/stm32f103/eferu/Inc/config.h` and in the
-reference snapshot. This is a mainboard reflash, needs its own approval, and
-must not be pushed to upstream EFeru. After measuring the new dead time the
-`pscale` ladder can be repeated on a sound basis.
+## Mainboard filter change (flashed 2026-11-23)
+
+`FILTER=19661` (α=0.3, τ≈14 ms) was applied in the `VARIANT_USART` block of
+`firmware/stm32f103/eferu/Inc/config.h`, the reference snapshot was updated and
+the mainboard was reflashed with `make -e VARIANT=VARIANT_USART && make flash`.
+The nested EFeru repository was not pushed.
+
+With the robot back in the same upright, wheels-supported pose, the
+command-to-wheel dead time fell from 180–190 ms to **115–145 ms**
+(`csv/jbot-latency-1795452335958.csv`). The first-order fit remains noisy
+(L 145–245 ms, τ about 295 ms) because the wheel spin-up is not a pure first
+order response, but the first-motion metric is consistent.
+
+The gain ladder was repeated with the faster filter:
+
+| Profile | Result | Peak torque | Wheel activity |
+|---|---|---|---|
+| `pscale 0.30 / slew 300` | fall | 98 u | yes |
+| `pscale 0.40 / slew 300` | fall | 88 u | yes |
+| `pscale 0.25 / slew 300` | fall | 112 u | yes |
+
+All three genuinely drove the wheels (unlike the earlier supported PASS), but
+none held for 10 s. The robot left the hand at a large angle and reached the
+fall guard within a few seconds. Repeating the release several times produced
+the same result.
+
+**Final diagnosis:** the Pico 200 Hz loop, IMU freshness and the mainboard
+filter are now measured and none is a 200 Hz-class bottleneck. The remaining
+blockers are the loaded dead zone (~54 u) combined with an operator-held rope
+release that starts each trial with a several-degree swing, plus a ~5.5 Nm
+torque budget. A repeatable release fixture is required before any further
+gain claim. Do not change guards or the 200 Hz law to force a pass.
 
 Both tools stop the telemetry stream before closing the port. Quality gates
 (`fmt`, `check`, `test`, `clippy -D warnings`) pass for the workspace and the
