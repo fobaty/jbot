@@ -42,7 +42,24 @@ condition is stable and repeatable. The driver then:
 The robot stays disarmed throughout. Only the existing `test` command moves the
 motors, so the 200 Hz balance loop is never touched and no reflash is needed.
 
-## Driver
+## Why lifting from a lying pose fails
+
+The first `lift_cal` trial (`csv/jbot-lift-<timestamp>.csv`, 2026-11-22) settled
+the question. The robot lay at -98.7 degrees, the driver ramped the common-mode
+`test` command from -50 to -200 units, and the body only rocked between -66 and
+-101 degrees. Individual jerks reached -47 degrees at 139 dps, then fell back.
+At that tilt the body rests on its shell and the wheels are off the floor, so
+the motor torque has no ground reaction to pivot against. The body cannot be
+held at an intermediate lying angle regardless of torque magnitude. This is the
+same physical limit recorded in `docs/wp1-simulation-results.md`: self-righting
+from supine is unreachable with this drive.
+
+A wheeled inverted pendulum regulates pitch only while its wheels touch the
+floor. The useful operating range for maneuver corrections is the small band
+around upright, roughly +/-5 degrees, where the `home` reference and the balance
+law work together. The feedforward curve must be measured there.
+
+## Driver (superseded by the reference-hold method)
 
 `crates/jbot_console/src/bin/lift_cal.rs`:
 
@@ -66,19 +83,42 @@ cargo run -q -p jbot_console --bin lift_cal --release -- \
   `jbot-analyze`) and `csv/jbot-lift-<timestamp>.json` (the recorded
   angle-to-torque points and fit).
 
+## Reference-hold driver (current method)
+
+`crates/jbot_console/src/bin/ref_hold_cal.rs` measures the holding torque in the
+range that actually matters:
+
+```sh
+cd /Users/fobaty/dev/jbot
+cargo run -q -p jbot_console --bin ref_hold_cal --release -- \
+  --run --pscale 0.25 --slew 100 \
+  --angles -5,-4,-3,-2,-1,0,1,2,3,4,5 \
+  --settle-ms 1500 --hold-ms 800 --tol 1.0
+```
+
+It arms the balance law on the safe profile with `ff off`, steps the `home`
+reference through each angle, waits for the body to settle (pitch span within
+`tol`, rate below 8 dps), then records the mean applied balance torque `trq`
+over `hold-ms`. A least-squares fit gives `T(pitch)`, which is the feedforward
+that offloads the integral term the law currently uses to hold these angles.
+Output: `csv/jbot-refhold-<timestamp>.csv` and `.json`.
+
+The robot stays on its wheels throughout, so no reflash is needed and the
+200 Hz balance loop is untouched. Every run ends with `home 0` and `estop`.
+Aborts on guard/latch, 120 dps body rate or 0.4 m travel.
+
 ## What the driver computes
 
-For each hold point it stores `(pitch, torque)` where `torque` is the mean
-common-mode command that kept the body still at that pitch. A least-squares fit
-gives the holding-torque line `T(pitch) = slope*pitch + intercept`. The
-feedforward correction added by the balance law is the torque needed to cancel
-gravity, which is the negative of the holding torque measured here:
+For each hold point the reference-hold driver stores `(pitch, torque)` where
+`torque` is the mean balance command that kept the body still at that pitch.
+A least-squares fit gives the holding-torque line `T(pitch) = slope*pitch +
+intercept`. The law currently supplies this torque through its pitch integral;
+a feedforward that supplies the same torque lets that integral stay near zero:
 
-    ff(pitch) = -(T(pitch) - T(home))
+    ff(pitch) = T(pitch) = slope*pitch + intercept
 
-The sign matters: a positive `test` command drives the body negative, so the
-correction that holds a negative pitch is negative. The driver prints both the
-measured `T(pitch)` and the recommended `ff(pitch)` so the constants in
+The sign comes from the measurement itself: a negative pitch needs a negative
+holding torque. The driver prints the fitted `ff(pitch)` so the constants in
 `jbot_pico_core::control::feedforward_units` can be updated from real data
 instead of a guess.
 

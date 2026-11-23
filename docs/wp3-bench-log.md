@@ -257,3 +257,8 @@ very smoothly a few degrees at a time under closed-loop pitch control. The
 torque that holds each angle gives a measured feedforward curve without relying
 on a repeatable hand release. `crates/jbot_console/src/bin/lift_cal.rs`
 implements this and needs no firmware change.
+
+The first lift trial showed the body cannot be held at a lying angle: with the
+wheels off the floor the motor torque only rocks the shell. The live method is
+now `ref_hold_cal`, which measures the holding torque around upright (where the
+wheels are down) instead. See `docs/lever-calibration.md`.
