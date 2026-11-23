@@ -1,5 +1,5 @@
 diff --git a/Inc/config.h b/Inc/config.h
-index 8f697f4..8c4d29b 100644
+index 8f697f4..2b6c546 100644
 --- a/Inc/config.h
 +++ b/Inc/config.h
 @@ -155,13 +155,15 @@
@@ -22,7 +22,7 @@ index 8f697f4..8c4d29b 100644
  
  // Field Weakening / Phase Advance
  #define FIELD_WEAK_ENA  0               // [-] Field Weakening / Phase Advance enable flag: 0 = Disabled (default), 1 = Enabled
-@@ -347,6 +349,11 @@
+@@ -347,6 +349,16 @@
    // #define TANK_STEERING              // use for tank steering, each input controls each wheel 
    // #define SUPPORT_BUTTONS_LEFT       // use left sensor board cable for button inputs.  Disable DEBUG_SERIAL_USART2!
    // #define SUPPORT_BUTTONS_RIGHT      // use right sensor board cable for button inputs. Disable DEBUG_SERIAL_USART3!
@@ -31,10 +31,15 @@ index 8f697f4..8c4d29b 100644
 +  // dominates the measured 190-230 ms command-to-wheel dead time; 0.3 gives
 +  // tau ~14 ms while keeping the current loop damped.
 +  #define FILTER 19661
++
++  // Bench debug serial on USART3 (right cable). USART2 carries the control
++  // link and feedback, so debug must not share it. The Pico bridges GP12/GP13
++  // to this port and forwards the text to its USB console.
++  #define DEBUG_SERIAL_USART3
  #endif
  // ######################## END OF VARIANT_USART SETTINGS #########################
  
-@@ -448,6 +455,10 @@
+@@ -448,6 +460,10 @@
      #define PRI_INPUT2            3, -1000, 0, 1000, 100  // TYPE, MIN, MID, MAX, DEADBAND. See INPUT FORMAT section
    #endif
  

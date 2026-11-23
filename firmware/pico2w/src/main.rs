@@ -35,6 +35,7 @@
 #![no_main]
 
 mod console;
+mod debug_bridge;
 mod imu;
 mod nvm;
 mod state;
@@ -138,6 +139,11 @@ async fn main(spawner: Spawner) {
 
     // Scope marker; also the hardware proof that the control loop runs.
     let marker = Output::new(p.PIN_10, Level::Low);
+
+    // Optional bench bridge to the STM32 debug serial on USART3 (right cable):
+    // GP12 RX, GP13 TX, 115200. It is a separate PIO UART so it never touches
+    // the mainboard control link on UART0.
+    debug_bridge::init(p.PIO0, p.PIN_12, p.PIN_13, &spawner);
 
     let mut uart_config = embassy_rp::uart::Config::default();
     uart_config.baudrate = LINK_BAUD;

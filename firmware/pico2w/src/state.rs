@@ -239,6 +239,17 @@ pub const MAX_TORQUE_SLEW_PER_S: f32 = 10_000.0;
 /// [`PSCALE_BITS`]: a bench session cannot leak a softened ramp into the
 /// next power-up.
 static TORQUE_SLEW_BITS: AtomicU32 = AtomicU32::new(DEFAULT_TORQUE_SLEW_PER_S.to_bits());
+/// Whether the STM32 debug bridge is forwarded to the USB console. Bench only.
+static DEBUG_BRIDGE: AtomicBool = AtomicBool::new(false);
+
+/// Enable or disable forwarding of the debug UART to the USB console.
+pub fn set_debug_bridge(enabled: bool) {
+    DEBUG_BRIDGE.store(enabled, Ordering::Relaxed);
+}
+
+pub fn debug_bridge_enabled() -> bool {
+    DEBUG_BRIDGE.load(Ordering::Relaxed)
+}
 
 /// IMU samples delivered to the control task.
 pub static IMU_SAMPLES: AtomicU32 = AtomicU32::new(0);

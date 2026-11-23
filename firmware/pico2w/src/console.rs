@@ -689,6 +689,40 @@ async fn handle_command(class: &mut Console, flash: &mut Store, line: &[u8]) -> 
                 },
             }
         }
+        "dbg" => {
+            // Bench-only bridge to the STM32 debug serial on USART3. `dbg on`
+            // forwards its output to this console; any other argument is sent
+            // verbatim as a debug command line.
+            match argument {
+                None => {
+                    reply(
+                        class,
+                        format_args!(
+                            "ok dbg {}",
+                            if state::debug_bridge_enabled() {
+                                "on"
+                            } else {
+                                "off"
+                            }
+                        ),
+                    )
+                    .await;
+                }
+                Some("on") => {
+                    state::set_debug_bridge(true);
+                    reply(class, format_args!("ok dbg on")).await;
+                }
+                Some("off") => {
+                    state::set_debug_bridge(false);
+                    reply(class, format_args!("ok dbg off")).await;
+                }
+                Some(text) => {
+                    crate::debug_bridge::push_tx(text.as_bytes());
+                    crate::debug_bridge::push_tx(b"\r");
+                    reply(class, format_args!("ok dbg tx {}", text.len())).await;
+                }
+            }
+        }
         "ff" => {
             // Runtime gate for the calibrated feedforward term. Off at boot,
             // so an empirical bench curve never leaks into a fresh session.
@@ -1002,6 +1036,26 @@ pub async fn console_task(mut class: Console, mut flash: Store) {
                 Either::First(()) => {
                     if dtr_at_start && !class.dtr() {
                         break;
+                    }
+                    if state::debug_bridge_enabled() {
+                        let mut count = 0;
+                        while count < telemetry_buffer.len() {
+                            match crate::debug_bridge::poll_rx() {
+                                Some(byte) => {
+                                    telemetry_buffer[count] = byte;
+                                    count += 1;
+                                }
+                                None => break,
+                            }
+                        }
+                        if count > 0 {
+                            let _ = write_bounded(
+                                &mut class,
+                                &telemetry_buffer[..count],
+                                TELEMETRY_WRITE_TIMEOUT,
+                            )
+                            .await;
+                        }
                     }
                     if hz != 0 {
                         if let Some(telemetry) = state::TELEMETRY.try_take() {
