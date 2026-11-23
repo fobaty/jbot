@@ -285,14 +285,63 @@ cannot close that gap.
 
 ### What remains
 
-1. Reduce the mainboard command-to-torque delay below roughly 80 ms, or move
-   the inner torque loop onto the mainboard, so the 200 Hz law sees fresh
-   actuation within the pendulum time constant.
+1. ~~Reduce the mainboard command-to-torque delay below roughly 80 ms.~~
+   Re-assessed below: the mainboard firmware contributes only about 20-30 ms;
+   the rest of the measured delay is the Pico torque ramp, the loaded dead zone
+   and wheel mechanics. Runtime `slew`/`db` are the right knobs; a mainboard
+   reflash for the remaining ~7 ms is not justified. Moving the inner torque
+   loop onto the mainboard stays a larger, separate option.
 2. ~~Restore `zero_pitch_rad` from NVM at boot even without `pose_home`.~~ Done
-   in code: a `zero captured` flag in the NVM flags byte lets boot restore the
-   stored pitch zero; legacy records fall back to `pose_home`. Needs a reflash
-   and one fresh `zero` capture.
+   and flashed: a `zero captured` flag in the NVM flags byte lets boot restore
+   the stored pitch zero; legacy records fall back to `pose_home`. Verified
+   end to end after `reboot` (`zcapt=1`, `zero=-5.06 deg` restored).
 3. Build the vertical release fixture from `docs/release-fixture.md`; hand
    releases still dominate every scored window.
 4. Only then repeat the gain ladder. Do not treat any current PASS as WP3
    acceptance.
+
+## Third bench session: latency re-measured (2026-11-23)
+
+### Link health artefact
+
+A `latency_cal` run was followed by a stale feedback link: `fb` froze, `age`
+grew past 170 s and `fb_ok=0`, while `rx` kept rising at exactly 1600 B/s,
+which is 200 command frames/s times the 8-byte frame length. A Pico `reboot`
+did not recover it. The cause was external: the mainboard had been
+disconnected. After reconnection `fb_ok=1`, `fb_drop=0`, `age=0` and the
+feedback cadence was normal. No firmware or parser change was needed.
+
+### Free-wheel re-measurement
+
+`csv/jbot-latency-1795463791282.*` repeats the earlier probe with the wheels
+on a stand, which removes floor friction from the breakaway threshold:
+
+| Applied spin torque | Now | Earlier session | Pico 600 u/s ramp |
+|---|---|---|---|
+| 40 u | 185 ms | 190 ms | 67 ms |
+| 60 u | 155 ms | 180 ms | 100 ms |
+| 80 u | 155 ms | - | 133 ms |
+
+Host command to applied `tsl` still resolves to 0 ms at 5 ms telemetry
+resolution, `loop` stayed 199-200 Hz and feedback `age` stayed at 0-10 ms
+throughout both sessions. The filter change to `FILTER=19661` therefore helped
+by about 25 ms at 60 u and almost nothing at 40 u. A second run with the wheels
+on the floor (`csv/jbot-latency-1795461821436.*`) measured 160-170 ms at 80 and
+120 u and is not comparable to the free-wheel numbers because of the loaded
+breakaway.
+
+These are spin-path numbers: they include the fixed 600 u/s ramp. The balance
+law applies torque through the `slew` knob (3000 u/s by default, five times
+faster), so its command-to-wheel delay is correspondingly shorter.
+
+### Source-level lag budget
+
+The mainboard control loop runs every 5 ms (200 Hz), `readCommand()` consumes
+DMA frames on each idle gap at the same rate, and `rateLimiter16` with
+`RATE=480` fixdt allows about 6000 u/s, which does not limit our steps. The
+`FILTER=19661` low pass has a time constant near 14 ms; raising it to the
+maximum useful 0.5 would only reach about 7 ms. Feedback frames are sent every
+10 ms (100 Hz). The remaining delay in the historical 115-190 ms figure is the
+Pico torque ramp, the roughly 54 u loaded dead zone, the FOC current loop and
+wheel mechanics. Runtime `slew` and `db` address those without a reflash, and
+the release fixture remains the gate before any control conclusion.
