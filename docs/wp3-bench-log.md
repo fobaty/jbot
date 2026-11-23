@@ -100,6 +100,7 @@ upright on the floor, rope and hands on the body, zone at most 0.5 m. Evidence:
 
 ## Gate
 
-Link check, wheel-level yaw and body-level pivot pass. SafeFall is implemented
-and flashed but does not produce a soft landing; further work needs an
-Architect decision on the fall definition, plus fresh step-by-step approval.
+Link check, wheel-level yaw and body-level pivot pass. After session 5 the fall
+definition was changed to a guided tip-over (12-degree controllable lean, 1.5 s
+linear torque fade, no abrupt cut). That revision is implemented and unit-tested
+but not flashed; repeating the bench run needs fresh step-by-step approval.

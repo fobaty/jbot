@@ -139,10 +139,11 @@ fall and no latch.
 ### WP4 — Tricks rollout, in this order
 
 1. Spin/pivot - needs the WP2 yaw fix.
-2. Controlled soft fall - needs the `SafeFall` mode. Implemented, tested and
-   flashed, but the first bench attempt (WP3 session 5) showed it cannot produce
-   a soft landing: gravity exceeds the 5.7 Nm budget beyond about 25 degrees.
-   Needs an Architect decision on the fall definition before further trials.
+2. Controlled soft fall - redefined as a **guided tip-over** after WP3 session 5
+   showed a soft landing is physically impossible at 5.7 Nm. The reference now
+   stops at a controllable 12 degrees and the balance torque fades linearly to
+   zero over 1.5 s, so there is no abrupt torque cut. Implemented and tested but
+   not yet flashed; a repeat bench run is needed.
 3. Dynamic self-righting - needs WP1 and WP3.
 4. Backflip - only if WP0 measures enough torque and WP1 confirms it in the
    nonlinear model.

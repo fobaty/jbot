@@ -57,8 +57,9 @@ use embedded_io_async::{Read, Write};
 use static_cell::StaticCell;
 
 use jbot_pico_core::control::{
-    to_command, BalanceController, BalanceInput, BalanceMode, SafeFallReference, SafetyState,
-    StopReason, WheelTorque, SAFE_FALL_RATE_RAD_S, SAFE_FALL_TARGET_RAD,
+    to_command, BalanceController, BalanceInput, BalanceMode, FadeGain, SafeFallReference,
+    SafetyState, StopReason, WheelTorque, SAFE_FALL_FADE_S, SAFE_FALL_RATE_RAD_S,
+    SAFE_FALL_TARGET_RAD,
 };
 use jbot_pico_core::eferu::{Command, Feedback, FeedbackParser};
 use jbot_pico_core::filters::{LowPass, SlewLimiter};
@@ -299,6 +300,7 @@ async fn control_task(
     let mut balance = BalanceController::new();
     let mut reference = PitchReference::new();
     let mut safe_fall = SafeFallReference::new(SAFE_FALL_RATE_RAD_S, SAFE_FALL_TARGET_RAD);
+    let mut safe_fall_fade = FadeGain::new(SAFE_FALL_FADE_S);
     let mut op_mode = BalanceMode::Balance;
     let mut safe_fall_grace_s = 0.0_f32;
     let mut was_armed = false;
@@ -347,6 +349,7 @@ async fn control_task(
         // e-stop always hands control back to the operator.
         if state::SAFE_FALL_REQUEST.try_take().is_some() && state::armed() {
             safe_fall.reset();
+            safe_fall_fade.reset();
             op_mode = BalanceMode::SafeFall;
             safe_fall_grace_s = op_mode.default_grace_s();
         }
@@ -354,6 +357,7 @@ async fn control_task(
             op_mode = BalanceMode::Balance;
             safe_fall_grace_s = 0.0;
             safe_fall.reset();
+            safe_fall_fade.reset();
         }
 
         // The guard observes a separately filtered pitch tilt. It advances only
@@ -488,7 +492,7 @@ async fn control_task(
                     (step.ref_rad, step.moving)
                 };
                 ref_moving = moving;
-                if op_mode == BalanceMode::SafeFall && safe_fall.done() {
+                if op_mode == BalanceMode::SafeFall && safe_fall_fade.done() {
                     // The pillow angle is reached: latch off and drop torque
                     // instead of continuing to push into the ground.
                     state::set_armed(false);
@@ -498,6 +502,7 @@ async fn control_task(
                     op_mode = BalanceMode::Balance;
                     safe_fall_grace_s = 0.0;
                     safe_fall.reset();
+                    safe_fall_fade.reset();
                 }
                 let filtered_rate = rate_lp.update(attitude.pitch_rate_dps.to_radians());
 
@@ -522,7 +527,12 @@ async fn control_task(
                         - attitude.yaw_rate_dps.to_radians(),
                     battery_scale: battery_scale(last_feedback.battery_voltage_v()),
                 };
-                let torque = balance.update(&input, &tuning, CONTROL_PERIOD_S);
+                let mut torque = balance.update(&input, &tuning, CONTROL_PERIOD_S);
+                if op_mode == BalanceMode::SafeFall {
+                    let gain = safe_fall_fade.update(CONTROL_PERIOD_S);
+                    torque.left *= gain;
+                    torque.right *= gain;
+                }
 
                 // Pose and range guards. A control error outside the lift
                 // budget has to stop the attempt instead of feeding it, and a

@@ -371,9 +371,12 @@ pub const RAISE_GRACE_S: f32 = 0.8;
 /// About 60 degrees: enough for a deliberate lean, short of a full lie-down.
 pub const RAISE_GRACE_ERROR_RAD: f32 = 1.05;
 
-/// Target pitch of a controlled fall, radians (about 60 degrees). Chosen to
-/// leave a margin before a full lie-down, which the guard still reports.
-pub const SAFE_FALL_TARGET_RAD: f32 = 1.05;
+/// Controlled-lean target of a guided tip-over, radians (about 12 degrees).
+/// This is the angle the reduced torque budget can still shape, not a resting
+/// angle: beyond it gravity takes over and the body lands on its own.
+pub const SAFE_FALL_TARGET_RAD: f32 = 0.21;
+/// Time over which the balance torque fades to zero during a guided tip-over.
+pub const SAFE_FALL_FADE_S: f32 = 1.5;
 /// Rate at which the controlled-fall reference leans away, radians per second
 /// (about 15 degrees per second). Slow enough for the operator to abort.
 pub const SAFE_FALL_RATE_RAD_S: f32 = 0.262;
@@ -838,6 +841,57 @@ impl SafeFallReference {
         self.direction = 1.0;
         self.angle_rad = 0.0;
         self.started = false;
+    }
+}
+
+/// Smoothly decaying torque multiplier for a guided tip-over.
+///
+/// Cutting balance torque in one step makes the body drop from whatever angle
+/// it happens to hold. Fading it linearly lets the operator see the loss of
+/// support coming and keeps the commanded torque continuous until zero.
+#[derive(Clone, Copy, Debug)]
+pub struct FadeGain {
+    value: f32,
+    rate_per_s: f32,
+}
+
+impl FadeGain {
+    /// Build a gain that decays from 1.0 to zero over `duration_s`.
+    /// A non-finite or non-positive duration freezes the gain at 1.0.
+    pub fn new(duration_s: f32) -> Self {
+        let rate = if duration_s.is_finite() && duration_s > 0.0 {
+            1.0 / duration_s
+        } else {
+            0.0
+        };
+        Self {
+            value: 1.0,
+            rate_per_s: rate,
+        }
+    }
+
+    /// Advance one tick and return the current multiplier.
+    pub fn update(&mut self, period_s: f32) -> f32 {
+        if !period_s.is_finite() || period_s <= 0.0 {
+            return self.value;
+        }
+        self.value = (self.value - self.rate_per_s * period_s).max(0.0);
+        self.value
+    }
+
+    /// Current multiplier, in `0.0..=1.0`.
+    pub fn value(&self) -> f32 {
+        self.value
+    }
+
+    /// True once the torque has fully faded out.
+    pub fn done(&self) -> bool {
+        self.value <= 0.0
+    }
+
+    /// Restore the gain to 1.0 for a fresh mode entry.
+    pub fn reset(&mut self) {
+        self.value = 1.0;
     }
 }
 
@@ -1923,6 +1977,31 @@ mod tests {
         let held = ramp.update(0.10, DT);
         assert_eq!(ramp.update(f32::NAN, DT), held);
         assert_eq!(ramp.update(0.10, 0.0), held);
+    }
+
+    #[test]
+    fn fade_gain_decays_linearly_to_zero() {
+        let mut gain = FadeGain::new(SAFE_FALL_FADE_S);
+        assert_eq!(gain.value(), 1.0);
+        let first = gain.update(DT);
+        assert!((first - (1.0 - DT / SAFE_FALL_FADE_S)).abs() < 1e-6);
+        for _ in 0..400 {
+            gain.update(DT);
+        }
+        assert!(gain.done());
+        assert_eq!(gain.update(DT), 0.0);
+        gain.reset();
+        assert_eq!(gain.value(), 1.0);
+    }
+
+    #[test]
+    fn fade_gain_rejects_invalid_arguments() {
+        let mut gain = FadeGain::new(0.0);
+        assert_eq!(gain.update(DT), 1.0);
+        assert!(!gain.done());
+        let mut gain = FadeGain::new(SAFE_FALL_FADE_S);
+        assert_eq!(gain.update(f32::NAN), 1.0);
+        assert_eq!(gain.update(-DT), 1.0);
     }
 
     #[test]
