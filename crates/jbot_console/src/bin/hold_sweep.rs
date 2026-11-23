@@ -44,6 +44,12 @@ const RELEASE_WINDOW_SAMPLES: usize = 30;
 /// A hand release swings the body far faster than a fixed-anchor drop. Above
 /// this opening rate the trial cannot attribute its outcome to the control law.
 const RELEASE_GY_LIMIT_DPS: f64 = 25.0;
+/// A fixture is only qualified when the opening is effectively impulse-free.
+/// This is stricter than the VOID gate: a release between these thresholds is
+/// informative for control but still not a repeatable fixture.
+const FIXTURE_GY_LIMIT_DPS: f64 = 2.0;
+/// Number of identical releases required by the fixture acceptance test.
+const FIXTURE_RUNS: usize = 3;
 const QUIET_GY: f64 = 8.0;
 const QUIET_PITCH: f64 = 5.0;
 const MAX_FB_AGE_MS: f64 = 100.0;
@@ -328,7 +334,17 @@ fn wait_for_release(
     true
 }
 
-fn write_json(path: &PathBuf, gates: &[Gate], abort: Option<&str>) {
+/// Grade the release fixture, not the control law. Every run must be present,
+/// free of the VOID flag and open below the fixture rate limit. A missing run
+/// is a failure: three releases are required by `docs/release-fixture.md`.
+fn fixture_acceptable(gates: &[Gate]) -> bool {
+    gates.len() == FIXTURE_RUNS
+        && gates
+            .iter()
+            .all(|gate| !gate.release_void() && gate.release_gy_peak <= FIXTURE_GY_LIMIT_DPS)
+}
+
+fn write_json(path: &PathBuf, gates: &[Gate], abort: Option<&str>, fixture: Option<bool>) {
     let mut file = match File::create(path) {
         Ok(file) => BufWriter::new(file),
         Err(error) => {
@@ -342,6 +358,9 @@ fn write_json(path: &PathBuf, gates: &[Gate], abort: Option<&str>) {
         "  \"abort\": {},",
         abort.map_or_else(|| "null".to_owned(), |reason| format!("\"{reason}\""))
     );
+    if let Some(acceptable) = fixture {
+        let _ = writeln!(file, "  \"fixture_acceptable\": {},", acceptable);
+    }
     let _ = writeln!(file, "  \"profiles\": [");
     for (index, gate) in gates.iter().enumerate() {
         let comma = if index + 1 == gates.len() { "" } else { "," };
@@ -372,6 +391,7 @@ fn write_json(path: &PathBuf, gates: &[Gate], abort: Option<&str>) {
 fn main() {
     let mut args = std::env::args().skip(1);
     let mut run = false;
+    let mut fixture_qual = false;
     let mut port = None;
     let mut pscale = 0.25_f64;
     let mut db = 0.0_f64;
@@ -385,6 +405,7 @@ fn main() {
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--run" => run = true,
+            "--fixture-qual" => fixture_qual = true,
             "--release-file" => release_file = args.next(),
             "--ready-file" => ready_file = args.next(),
             "--quiet-pitch" => {
@@ -428,7 +449,7 @@ fn main() {
                 }
             }
             "--help" | "-h" => {
-                println!("usage: hold_sweep --run [--port PATH] [--pscale 0.25] [--db 0.00] [--slews 100,200,300] [--hold-ms 10000] [--release-file PATH] [--ready-file PATH] [--quiet-pitch 5] [--quiet-gy 8] [--release-timeout-ms 5000]");
+                println!("usage: hold_sweep --run [--fixture-qual] [--port PATH] [--pscale 0.25] [--db 0.00] [--slews 100,200,300] [--hold-ms 10000] [--release-file PATH] [--ready-file PATH] [--quiet-pitch 5] [--quiet-gy 8] [--release-timeout-ms 5000]");
                 return;
             }
             other => {
@@ -436,6 +457,13 @@ fn main() {
                 return;
             }
         }
+    }
+    if fixture_qual {
+        // Fixture grading only needs the release opening, so use three
+        // identical short profiles instead of the full gain ladder.
+        let slew = slews.first().copied().unwrap_or(100.0);
+        slews = vec![slew; FIXTURE_RUNS];
+        hold_ms = 2_000;
     }
     if let Some(path) = &ready_file {
         let _ = std::fs::remove_file(path);
@@ -672,7 +700,23 @@ fn main() {
         "done",
     );
     let _ = csv.flush();
-    write_json(&json_path, &gates, abort);
+    let fixture = if fixture_qual {
+        let acceptable = fixture_acceptable(&gates);
+        println!(
+            "FIXTURE {} — {} of {} releases below {:.1} dps",
+            if acceptable { "PASS" } else { "FAIL" },
+            gates
+                .iter()
+                .filter(|gate| !gate.release_void() && gate.release_gy_peak <= FIXTURE_GY_LIMIT_DPS)
+                .count(),
+            FIXTURE_RUNS,
+            FIXTURE_GY_LIMIT_DPS
+        );
+        Some(acceptable)
+    } else {
+        None
+    };
+    write_json(&json_path, &gates, abort, fixture);
     println!("csv: {}", csv_path.display());
     println!("json: {}", json_path.display());
 }
@@ -731,5 +775,42 @@ mod tests {
         }
         assert!(!gate.release_void());
         assert!(gate.pass());
+    }
+
+    fn gate_with_peak(peak: f64) -> Gate {
+        let line = format!("t_ms=1000 pitch=0.2 lvl=0.0 gy={peak} L=3 R=-4 age=5 mb=ok bat=38 estop=0 arm=1 mode=2 opm=0 x=0 trq=10");
+        let mut gate = Gate::new(0.25, 100.0, 0.0);
+        for _ in 0..RELEASE_WINDOW_SAMPLES {
+            gate.observe(&line, 0.0);
+        }
+        gate
+    }
+
+    #[test]
+    fn three_clean_releases_qualify_the_fixture() {
+        let gates: Vec<Gate> = (0..FIXTURE_RUNS).map(|_| gate_with_peak(1.0)).collect();
+        assert!(fixture_acceptable(&gates));
+    }
+
+    /// Between the fixture limit and the VOID gate a trial still carries
+    /// control information, but the fixture is not yet repeatable.
+    #[test]
+    fn a_release_above_fixture_limit_fails_fixture_qualification() {
+        let gates: Vec<Gate> = (0..FIXTURE_RUNS).map(|_| gate_with_peak(8.0)).collect();
+        assert!(gates.iter().all(|gate| !gate.release_void()));
+        assert!(!fixture_acceptable(&gates));
+    }
+
+    #[test]
+    fn a_missing_or_violent_release_fails_fixture_qualification() {
+        assert!(!fixture_acceptable(&[
+            gate_with_peak(1.0),
+            gate_with_peak(1.0)
+        ]));
+        assert!(!fixture_acceptable(&[
+            gate_with_peak(1.0),
+            gate_with_peak(120.0),
+            gate_with_peak(1.0)
+        ]));
     }
 }

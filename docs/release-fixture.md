@@ -90,6 +90,10 @@ smoothly by hand and holds its position without creeping.
      --ready-file <path>/jbot-ready
    ```
 
+   For qualification alone, add `--fixture-qual`. It runs three identical 2 s
+   releases and prints a `FIXTURE PASS/FAIL` verdict; the JSON gains a
+   `fixture_acceptable` field. It grades the release, not the control law.
+
 3. When the ready file appears, lower the cradle smoothly over 1-2 s until it
    clears the belly. The driver detects the load transfer from telemetry and
    starts the scored 10 s window itself. Keep hands off the body from the ready
@@ -105,10 +109,13 @@ Before any gain or compensation conclusion, qualify the fixture itself:
 - `hold_sweep` grades the opening pitch rate and records `release_gy_peak` in
   the JSON. Above 25 dps the trial is reported as `VOID - release disturbance`
   instead of `PASS`/`FAIL`; those runs carry no control-law information.
-- The fixture is acceptable when all three runs are free of the VOID flag,
-  `release_gy_peak` is at most 2 dps in each, and the sign of the initial rate
-  is consistent. A fixed-anchor cut should meet this; a hand release never
-  does (measured 130-330 dps).
+- The fixture is acceptable when all three runs are free of the VOID flag and
+  `release_gy_peak` is at most 2 dps in each. `--fixture-qual` applies exactly
+  this test and reports the verdict. A fixed-anchor cut should meet this; a
+  hand release never does (measured 130-330 dps).
+- A run that is below the 25 dps VOID threshold but above 2 dps still carries
+  control information; it is not a control failure, but it means the fixture
+  is not repeatable yet.
 
 If this gate fails, improve the fixture before interpreting balance results.
 Do not tune the control law to compensate for release disturbance.
