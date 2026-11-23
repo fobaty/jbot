@@ -1,153 +1,143 @@
 # Inverted-lever calibration
 
 Software-only identification of the torque a wheeled inverted pendulum needs
-at each pitch angle. No new hardware, no manual pushes: the driver raises the
-commanded torque in small steps and watches where the body settles.
+at each pitch angle. No new hardware, no manual pushes. The robot starts lying
+on its back or face, and a closed-loop driver lifts it very smoothly, holding
+for a moment at every few degrees. The torque that holds each angle is recorded
+and becomes the feedforward correction used during maneuvers.
 
-## Physics
+## Poses stored in NVM
 
-With the wheels on the floor, a common-mode torque `tau` on the two motors
-produces a reaction torque on the body and a traction force at the contact
-patch. At quasi-static pitch `theta` the balance of moments is approximately
+Three poses are captured once and saved with `pose ...; save`. They survive
+power cycles and do not need to be re-entered for every session:
 
-    tau = A * sin(theta) + B * sign(tau) + C
+| Pose | Stored pitch | Meaning |
+|---|---|---|
+| `back` | -80.4 deg | lying on the back, wheels up |
+| `face` | +83.5 deg | lying face down |
+| `home` | -2.5 deg | captured vertical zero |
 
-where `A = m*g*L` is the gravity lever, `B` is the loaded dead zone and `C` is
-a static bias. Using the WP0 scale of 175 command units per Nm, `A/175` should
-be close to the 23.5 Nm estimated from the COM height of 0.25 m. The available
-budget is about 1000 units (5.7 Nm), so the statically holdable range ends near
-14 degrees; the driver reports where the body actually reaches a lying pose.
+The `home` value is also the pitch zero offset (`zof=-2.50 deg`). A construction
+change invalidates all three; clear them with `forget` and recapture.
+
+## The lift-from-lying algorithm
+
+The disturbance-based trials in `docs/wp3-bench-log.md` were dominated by the
+way the body was released, not by the control law. Starting from a lying pose
+removes that problem: the body is supported by the floor, so the initial
+condition is stable and repeatable. The driver then:
+
+1. Reads the three stored poses with the `pose` command.
+2. Classifies the current pose from pitch telemetry (within 25 degrees of a
+   stored pose, otherwise it refuses to run).
+3. If lying, raises the pitch target a few degrees toward home at a time.
+4. Drives the common-mode `test` torque with a PI controller plus rate damping.
+   The integral term grows until it overcomes the loaded dead zone (~50 units),
+   then settles at the torque that holds the current angle. This is the moment
+   the body is "carried" from one angle to the next, very smoothly.
+5. At each target it waits for the body to be still (pitch within 0.6 steps and
+   rate below 8 dps) for `hold-ms`, then records the mean holding torque.
+6. Stops when the body is within 6 degrees of home. Every run ends with `estop`.
+
+The robot stays disarmed throughout. Only the existing `test` command moves the
+motors, so the 200 Hz balance loop is never touched and no reflash is needed.
 
 ## Driver
 
-`crates/jbot_console/src/bin/lever_cal.rs`:
+`crates/jbot_console/src/bin/lift_cal.rs`:
 
 ```sh
 cd /Users/fobaty/dev/jbot
-cargo run -q -p jbot_console --bin lever_cal --release -- \
-  --run --direction back --max-units 120 --step 10 \
-  --hold-ms 250 --settle-ms 250
+cargo run -q -p jbot_console --bin lift_cal --release -- \
+  --run --from auto --step 5 --hold-ms 900 \
+  --kp 1.5 --ki 3.0 --kd 0.4 --max-units 200
 ```
 
-- Direction `back` uses positive torque, `face` negative.
-- `--hold-ms` is short on purpose: a sustained command would drive the robot
-  out of the 0.5 m zone. The driver aborts on 0.4 m of travel, on a body rate
-  above 400 dps, or when 65 degrees of tilt is reached.
-- Every run ends with `estop`. The robot must be upright, still, disarmed and
-  linked before the ladder starts.
-- `--commit-poses` writes the learned `back`/`face`/`home` pitches to NVM with
-  the `pose` command and `save`; without it the run is a dry run.
-- The CSV is compatible with `jbot-analyze` and adds `phase`, `level` and
-  `commit` columns.
+- `--from back|face|auto` overrides pose detection when the body rests between
+  poses. `auto` uses the stored poses and pitch.
+- `--step` is the pitch increment per hold, degrees. `--hold-ms` is how long
+  the body must stay still before a point is accepted.
+- `--kp`, `--ki`, `--kd` tune the lift servo. `--ki` is what finds the holding
+  torque; increasing it makes the lift more eager, decreasing it makes it
+  gentler. `--max-units` is the torque ceiling (firmware limit is 300).
+- Aborts on 0.4 m of travel, a body rate above 250 dps, an armed/guarded law or
+  an estop latch.
+- Output: `csv/jbot-lift-<timestamp>.csv` (per-sample telemetry, readable by
+  `jbot-analyze`) and `csv/jbot-lift-<timestamp>.json` (the recorded
+  angle-to-torque points and fit).
 
 ## What the driver computes
 
-1. Quiet, upright baseline pitch, offered as the `home` pose.
-2. For each torque level, the mean pitch of the quasi-static part of the hold
-   window (samples with `|gy| < 30 dps`).
-3. A least-squares fit of `tau = A*sin(theta) + B*sign(tau) + C`.
-4. `A/175` as the gravity lever in Nm, `B/175` as the loaded dead zone in Nm.
-5. A feedforward table for 2, 4, 6, 8, 10 and 12 degrees.
-6. The largest observed pitch, offered as the `back` or `face` pose.
+For each hold point it stores `(pitch, torque)` where `torque` is the mean
+common-mode command that kept the body still at that pitch. A least-squares fit
+gives the holding-torque line `T(pitch) = slope*pitch + intercept`. The
+feedforward correction added by the balance law is the torque needed to cancel
+gravity, which is the negative of the holding torque measured here:
 
-## How to use the result
+    ff(pitch) = -(T(pitch) - T(home))
 
-The fit is an identification, not a control-law change. Feedforward torque can
-later be added to the balance controller so the feedback loop only has to
-correct the residual; the fitted `A` also replaces the current `m*g*L`
-assumption when re-deriving gains. Do not enable dead-zone compensation or
-change `PlantParams::NOMINAL` until the same curve has been reproduced on both
-directions and the fit is stable across runs.
+The sign matters: a positive `test` command drives the body negative, so the
+correction that holds a negative pitch is negative. The driver prints both the
+measured `T(pitch)` and the recommended `ff(pitch)` so the constants in
+`jbot_pico_core::control::feedforward_units` can be updated from real data
+instead of a guess.
 
-## First results (2026-11-22)
+## Firmware feedforward
 
-Two dry runs at `max-units 80`, `step 10`, `hold 200 ms`:
-
-- `csv/jbot-lever-1795395400911.csv` (`back`): commands 10-50 units produced no
-  wheel rotation and almost no pitch change; 60 units gave about -15 degrees,
-  70 about -21 degrees and 80 about -32 degrees.
-- `csv/jbot-lever-1795395510038.csv` (`face`): commands -10 to -50 again stayed
-  inside the dead zone; -60 gave about +9 degrees, -70 about +23 degrees and
-  -80 about +42 degrees.
-
-The combined offline tool produced `csv/lever-calibration.json`:
-
-```sh
-cargo run -q -p jbot_analysis --bin lever-fit -- \
-  csv/jbot-lever-1795395400911.csv csv/jbot-lever-1795395510038.csv
-```
-
-It reports a loaded dead zone of 50 units (0.29 Nm at 175 units/Nm), a home
-pitch of -2.4 degrees and an empirical angle-to-torque table from -12 to +12
-degrees. The table is a measurement of the dynamic response with wheels on the
-floor; it is **not** the static gravity lever `m*g*L`, which this setup cannot
-identify because there is no static equilibrium at a nonzero pitch. Do not
-interpret the per-run fit coefficient as the gravity lever.
-
-Two further runs at `max-units 120` reached the lying poses:
-`csv/jbot-lever-1795395641356.csv` (`face`, +83.5 degrees) and
-`csv/jbot-lever-1795395651406.csv` (`back`, -80.4 degrees). Combining all four
-recordings gives:
-
-- dead zone 50 units (0.29 Nm),
-- home -2.5 degrees,
-- back -80.4 degrees, face +83.5 degrees,
-- an empirical angle-to-torque table from -12 to +12 degrees in
-  `csv/lever-calibration.json`.
-
-The learned pose values were committed to NVM on 2026-11-22 with
-`pose back -80.4`, `pose face 83.5`, `pose home -2.5` and `save`. Telemetry
-confirmed the new zero offset (`zof=-2.50 deg`). As with any pose change, the
-values must be invalidated with `forget` and recaptured after a construction
-change.
-
-## Firmware feedforward (not flashed yet)
-
-`jbot_pico_core::control::feedforward_units` computes a bounded holding torque
-from the measured slope: -3.23 units per degree relative to the home pitch of
--2.5 degrees, clamped to +/-60 units. It is added to the common-mode balance
-torque before the SafeFall fade.
+`jbot_pico_core::control::feedforward_units` currently uses a bounded slope of
++3.23 units/degree relative to home -2.5 degrees, clamped to +/-60 units, added
+to the common-mode balance torque before the SafeFall fade.
 
 The feature is **off at boot** and enabled only with the console command
 `ff on` (`ff off` disables, `ff` queries). Runtime-only, like `pscale` and
-`slew`, so it cannot leak into a fresh session. Telemetry reports the applied
-value in the `ff` field. The code and unit tests are in place; flashing and a
-The firmware was flashed on 2026-11-22 (`picotool load -u -v -x -t elf`,
-verified OK); boot telemetry shows `ff=0` and the persisted `zof=-2.50 deg`.
+`slew`. Telemetry reports the applied value in the `ff` field. The firmware with
+this feature was flashed on 2026-11-22 (`picotool load -u -v -x -t elf`,
+verified OK); boot telemetry shows `ff=0` and `zof=-2.50 deg`. Once the lift
+calibration produces a stable curve, these constants are updated from the
+measured slope and reflashed.
 
-### A/B hold test and sign correction
+### Earlier A/B hold result
 
-`csv/jbot-recovery-1795396331682.csv` (`ff off`) and
-`csv/jbot-recovery-1795396373463.csv` (`ff on`) are two 10 s hold gates at
-`pscale 0.25 / slew 100`. With the first, negative slope the result was worse:
+An initial A/B at `pscale 0.25 / slew 100` used a negative slope and was worse
+than no feedforward: `csv/jbot-recovery-1795396331682.csv` (`ff off`) had pitch
+p2p 1.9 degrees and no oscillation, while `csv/jbot-recovery-1795396373463.csv`
+(`ff on`) had p2p 3.4 degrees and a 3.93 s period. The ladder torque is what
+*caused* a lean, so returning home needs the opposite sign. The corrected
++3.23 units/degree firmware was re-tested in
+`csv/jbot-recovery-1795396542330.csv`: p2p 1.2 degrees, no oscillation, 0.000 m
+travel. The lift calibration replaces this guessed slope with a measured one.
 
-- `ff off`: pitch p2p 1.9 degrees, no oscillation, kp 6.6 Nm/rad, R2 0.75.
-- `ff on`: pitch p2p 3.4 degrees, a 3.93 s period, kp 0.9 Nm/rad, R2 negative.
+## Historical: upright torque ladder (superseded)
 
-The ladder curve is the torque that *caused* a lean (+60 units gave -15
-degrees). Returning the body home needs the opposite sign, so the corrective
-slope was changed to +3.23 units per degree. The corrected firmware was
-reflashed and re-tested: `csv/jbot-recovery-1795396542330.csv` shows pitch
-p2p 1.2 degrees, no oscillation and 0.000 m travel, against 1.9 degrees for
-the `ff off` baseline. The lower law-fit R2 is expected because the offline
-fit does not model the added feedforward term. The feature stays off at boot
-and is enabled only with `ff on`.
+The earlier `lever_cal` driver applied a torque ladder from upright and watched
+where the body settled. Four runs gave two useful facts even though the method
+was not repeatable enough for a control law:
 
-The feedforward is an empirical correction, not the gravity lever `m*g*L`.
-Verify with the gain ladder that enabling it does not change the stability
-floor before relying on it.
+- A loaded dead zone around 50 units (0.29 Nm at 175 units/Nm): commands up to
+  +/-50 produced no wheel motion; 60 units gave about -15 degrees and 80 about
+  -32 degrees (`csv/jbot-lever-1795395400911.csv`,
+  `csv/jbot-lever-1795395510038.csv`).
+- The lying poses used for NVM: `csv/jbot-lever-1795395641356.csv` reached
+  +83.5 degrees and `csv/jbot-lever-1795395651406.csv` reached -80.4 degrees.
+
+The combined `lever-fit` tool wrote `csv/lever-calibration.json`. These results
+are kept as a record only; the lift-from-lying method above is now the source
+of the feedforward curve. The ladder cannot identify the static gravity lever
+`m*g*L` because there is no static equilibrium at a nonzero pitch with wheels
+on the floor.
 
 ## Safety
 
 - Rope attached, hands on or immediately above the body, zone at most 0.5 m.
 - Fresh step-by-step approval for every run.
-- Start at 120 units or less; the driver never exceeds the requested maximum.
+- Start at 200 units or less; the driver never exceeds the requested maximum.
 - No manual pushes; all excitation is command-driven.
-- The pose commit is explicit: `pose home` changes the pitch zero offset and
-  disarms the machine, so it is only sent with `--commit-poses`.
+- Pose values are read from NVM, never rewritten by the lift driver.
+- The run always ends with `estop`; use `clear` before the next trial.
 
 ## Related
 
 - `docs/wp0-torque-identification.md` for the units-per-Nm scale.
 - `docs/wp1-simulation-results.md` for the negative supine-recovery result.
+- `docs/wp3-bench-log.md` for the disturbance trials that motivated this method.
 - `docs/pscale-ladder.md` for the currently blocked gain ladder.

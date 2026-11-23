@@ -227,7 +227,18 @@ trial peaked at 36.8 degrees and the guard latched. The offline score reports
 a 42.7 degree peak-to-peak excursion over the whole run and one latch.
 
 This is an improvement from 0/3 before feedforward, but the WP3 gate requires
-every trial to recover: it is still not met.
+every trial to recover: it is still not met. Two later repetitions confirmed
+that the result is setup noise, not a stable gain improvement:
+
+- `csv/jbot-recovery-1795396741702.csv`: the first 1 degree trial latched at
+  37.3 degrees; 0/3 passed. The start position was already 0.085 m from the
+  origin, so the machine had drifted before the baseline was captured.
+- `csv/jbot-recovery-1795396789228.csv`: with a stricter baseline (0.03 m and
+  5 dps), the driver refused to start: after `arm` the body oscillated up to
+  207 dps with no disturbance command at all.
+
+The failure is in the release and start conditions, not in the disturbance logic.
+The WP3 disturbance gate cannot be closed with the hand-held rope setup.
 
 ## Gate
 
@@ -236,3 +247,13 @@ Link check, wheel-level yaw, body-level pivot and the 10 s hold gate at
 disturbances recover, but the commanded-disturbance gate is not met. The gain
 ladder is blocked at 0.25 and controlled fall remains blocked on test-rig
 quality.
+
+## Pivot to lift-from-lying calibration
+
+Because the disturbance results are dominated by how the body is released, the
+next work uses the procedure in `docs/lever-calibration.md` instead: read the
+three poses stored in NVM, detect the lying pose from pitch, and lift the body
+very smoothly a few degrees at a time under closed-loop pitch control. The
+torque that holds each angle gives a measured feedforward curve without relying
+on a repeatable hand release. `crates/jbot_console/src/bin/lift_cal.rs`
+implements this and needs no firmware change.
