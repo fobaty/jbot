@@ -5,10 +5,12 @@
 //! and gyro rate. The first level at which the wheels clearly turn and the
 //! body starts to respond is the loaded dead zone. No static placement.
 //!
-//! Phase 2 — torque null. From just above the measured dead zone, a short
-//! torque probe measures `alpha = d(gy)/dt`. The torque grows gradually until
-//! `alpha` crosses zero. That torque holds the current pitch against gravity
-//! and friction. A gentle nudge moves the body a few degrees and the search
+//! Phase 2 — torque null. The body is first allowed to settle: every probe
+//! waits for an at-rest gyro before applying torque, so `alpha = d(gy)/dt`
+//! measures the response to the probe rather than an ongoing swing. From just
+//! above the measured dead zone, the torque grows gradually until `alpha`
+//! crosses zero. That torque holds the current pitch against gravity and
+//! friction. A gentle nudge moves the body a few degrees and the search
 //! repeats, building the angle-to-torque curve dynamically.
 //!
 //! No reflash: only `test` commands and telemetry. Every probe is short, starts
@@ -37,6 +39,10 @@ const TRAVEL_LIMIT_M: f64 = 0.4;
 const BREAKAWAY_RPM: f64 = 12.0;
 /// Gyro response above which the body is considered to have reacted, dps.
 const RESPONSE_GY: f64 = 3.0;
+/// Gyro rate below which the body is considered at rest before a probe, dps.
+const QUIET_GY: f64 = 8.0;
+/// How long the body must stay quiet before a probe, milliseconds.
+const QUIET_HOLD_MS: u64 = 400;
 
 fn field<'a>(line: &'a str, key: &str) -> Option<&'a str> {
     line.split_whitespace()
@@ -90,9 +96,11 @@ fn csv_row(line: &str, t_ms: u64, ctx: RowCtx<'_>) -> String {
     values.join(",")
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct Sample {
     t_ms: f64,
+    t_ms_u: u64,
+    line: String,
     pitch: f64,
     gyro: f64,
     x: f64,
@@ -100,13 +108,14 @@ struct Sample {
     rpm: f64,
 }
 
-fn pump(
+/// Read telemetry for `duration` without writing CSV. Callers that compute a
+/// derived value (for example `alpha`) use this, then call `record` once the
+/// value is known so every row carries it.
+fn collect(
     serial: &mut Box<dyn SerialPort>,
     buffer: &mut Vec<u8>,
-    csv: &mut BufWriter<File>,
     started: &Instant,
     duration: Duration,
-    ctx: RowCtx<'_>,
 ) -> Vec<Sample> {
     let mut out = Vec::new();
     let deadline = Instant::now() + duration;
@@ -120,15 +129,22 @@ fn pump(
                     if let Ok(text) = std::str::from_utf8(buffer) {
                         let text = text.trim_end().to_owned();
                         if is_telemetry(&text) {
-                            let t_ms = started.elapsed().as_millis() as u64;
-                            let _ = writeln!(csv, "{}", csv_row(&text, t_ms, ctx));
+                            let (pitch, gyro, x, mode, rpm) = (
+                                num(&text, "pitch"),
+                                num(&text, "gy"),
+                                num(&text, "x"),
+                                num(&text, "mode"),
+                                num(&text, "L").abs().max(num(&text, "R").abs()),
+                            );
                             out.push(Sample {
                                 t_ms: started.elapsed().as_secs_f64() * 1000.0,
-                                pitch: num(&text, "pitch"),
-                                gyro: num(&text, "gy"),
-                                x: num(&text, "x"),
-                                mode: num(&text, "mode"),
-                                rpm: num(&text, "L").abs().max(num(&text, "R").abs()),
+                                t_ms_u: started.elapsed().as_millis() as u64,
+                                line: text,
+                                pitch,
+                                gyro,
+                                x,
+                                mode,
+                                rpm,
                             });
                         }
                     }
@@ -139,6 +155,71 @@ fn pump(
         }
     }
     out
+}
+
+fn record(csv: &mut BufWriter<File>, samples: &[Sample], ctx: RowCtx<'_>) {
+    for sample in samples {
+        let _ = writeln!(csv, "{}", csv_row(&sample.line, sample.t_ms_u, ctx));
+    }
+}
+
+fn pump(
+    serial: &mut Box<dyn SerialPort>,
+    buffer: &mut Vec<u8>,
+    csv: &mut BufWriter<File>,
+    started: &Instant,
+    duration: Duration,
+    ctx: RowCtx<'_>,
+) -> Vec<Sample> {
+    let samples = collect(serial, buffer, started, duration);
+    record(csv, &samples, ctx);
+    samples
+}
+
+/// Wait until the body is quiet, then return the last sample. A quiet body is
+/// required before each torque probe: `alpha` measured on a swinging body is
+/// just the slope of an ongoing oscillation, not the response to the probe.
+fn wait_quiet(
+    serial: &mut Box<dyn SerialPort>,
+    buffer: &mut Vec<u8>,
+    csv: &mut BufWriter<File>,
+    started: &Instant,
+    max_wait: Duration,
+    phase: &str,
+) -> Option<Sample> {
+    let deadline = Instant::now() + max_wait;
+    let mut quiet_since: Option<Instant> = None;
+    while Instant::now() < deadline {
+        let samples = pump(
+            serial,
+            buffer,
+            csv,
+            started,
+            Duration::from_millis(50),
+            RowCtx {
+                phase,
+                probe_units: 0.0,
+                alpha: 0.0,
+                pitch_at_probe: 0.0,
+                hold_torque: 0.0,
+                rpm_abs: 0.0,
+            },
+        );
+        if let Some(sample) = samples.last() {
+            if sample.gyro.abs() <= QUIET_GY && sample.pitch.abs() <= 15.0 {
+                if quiet_since.is_none() {
+                    quiet_since = Some(Instant::now());
+                }
+                if quiet_since.is_some_and(|t| t.elapsed() >= Duration::from_millis(QUIET_HOLD_MS))
+                {
+                    return Some(sample.clone());
+                }
+            } else {
+                quiet_since = None;
+            }
+        }
+    }
+    None
 }
 
 fn timestamp_ms() -> u128 {
@@ -355,48 +436,23 @@ fn main() {
     );
 
     // Quiet upright baseline: start from rest with a known zero travel origin.
-    let mut quiet_since: Option<Instant> = None;
-    let mut pitch = 0.0_f64;
-    let mut origin_x = 0.0_f64;
-    let place_deadline = Instant::now() + Duration::from_secs(30);
-    while Instant::now() < place_deadline {
-        let samples = pump(
-            &mut serial,
-            &mut buffer,
-            &mut csv,
-            &started,
-            Duration::from_millis(50),
-            RowCtx {
-                phase: "baseline",
-                probe_units: 0.0,
-                alpha: 0.0,
-                pitch_at_probe: 0.0,
-                hold_torque: 0.0,
-                rpm_abs: 0.0,
-            },
-        );
-        if let Some(last) = samples.last() {
-            pitch = last.pitch;
-            origin_x = last.x;
-            if last.gyro.abs() <= 8.0 && pitch.abs() <= 15.0 {
-                if quiet_since.is_none() {
-                    quiet_since = Some(Instant::now());
-                }
-                if quiet_since.is_some_and(|t| t.elapsed() >= Duration::from_millis(400)) {
-                    break;
-                }
-            } else {
-                quiet_since = None;
-            }
-        }
-    }
-    if !quiet_since.is_some_and(|t| t.elapsed() >= Duration::from_millis(400)) {
+    let baseline = wait_quiet(
+        &mut serial,
+        &mut buffer,
+        &mut csv,
+        &started,
+        Duration::from_secs(30),
+        "baseline",
+    );
+    let Some(baseline) = baseline else {
         println!("no quiet upright baseline; estop sent");
         send(&mut serial, "estop");
         let _ = csv.flush();
         write_json(&json_path, 0.0, &[], Some("no baseline"));
         return;
-    }
+    };
+    let mut pitch = baseline.pitch;
+    let mut origin_x = baseline.x;
     println!("baseline pitch {pitch:.2} deg");
 
     let mut abort: Option<String> = None;
@@ -408,25 +464,28 @@ fn main() {
     let mut magnitude = start_units;
     while magnitude <= max_units {
         send(&mut serial, &format!("test {magnitude:.1}"));
-        let samples = pump(
+        let samples = collect(
             &mut serial,
             &mut buffer,
-            &mut csv,
             &started,
             Duration::from_millis(probe_ms),
-            RowCtx {
-                phase: "deadzone",
-                probe_units: magnitude,
-                alpha: 0.0,
-                pitch_at_probe: pitch,
-                hold_torque: 0.0,
-                rpm_abs: 0.0,
-            },
         );
         send(&mut serial, "test 0");
         let max_rpm = samples.iter().map(|s| s.rpm).fold(0.0, f64::max);
         let max_gy = samples.iter().map(|s| s.gyro.abs()).fold(0.0, f64::max);
         let alpha = angular_acceleration(&samples).unwrap_or(0.0);
+        record(
+            &mut csv,
+            &samples,
+            RowCtx {
+                phase: "deadzone",
+                probe_units: magnitude,
+                alpha,
+                pitch_at_probe: pitch,
+                hold_torque: 0.0,
+                rpm_abs: max_rpm,
+            },
+        );
         if let Some(last) = samples.last() {
             pitch = last.pitch;
             if last.gyro.abs() > RUNAWAY_DPS
@@ -463,6 +522,32 @@ fn main() {
     }
     println!("dynamic dead zone: {dead_zone:.1} units");
 
+    // The dead-zone search leaves the body swinging. Wait for it to come to
+    // rest before the first torque-null probe, otherwise `alpha` measures the
+    // slope of an ongoing oscillation and every null is false.
+    let Some(settled) = wait_quiet(
+        &mut serial,
+        &mut buffer,
+        &mut csv,
+        &started,
+        Duration::from_secs(10),
+        "resettle",
+    ) else {
+        println!("body did not settle after dead-zone search; estop sent");
+        send(&mut serial, "estop");
+        let _ = csv.flush();
+        write_json(
+            &json_path,
+            dead_zone,
+            &[],
+            Some("no resettle after dead zone"),
+        );
+        return;
+    };
+    pitch = settled.pitch;
+    origin_x = settled.x;
+    println!("resettled at pitch {pitch:.2} deg before torque null");
+
     // ---- Phase 2: gyro torque-null above the dead zone ------------------
     let mut points: Vec<Point> = Vec::new();
     for _ in 0..steps {
@@ -476,25 +561,43 @@ fn main() {
             if magnitude > max_units {
                 break;
             }
-            let tau = sign * magnitude;
-            send(&mut serial, &format!("test {tau:.1}"));
-            let samples = pump(
+            // Each probe must start from rest: `alpha` on a moving body is the
+            // slope of the existing swing, not the response to this torque.
+            let Some(quiet) = wait_quiet(
                 &mut serial,
                 &mut buffer,
                 &mut csv,
                 &started,
+                Duration::from_secs(5),
+                "preprobe",
+            ) else {
+                abort = Some("body not quiet before torque probe".to_owned());
+                break;
+            };
+            pitch = quiet.pitch;
+            let tau = sign * magnitude;
+            send(&mut serial, &format!("test {tau:.1}"));
+            let samples = collect(
+                &mut serial,
+                &mut buffer,
+                &started,
                 Duration::from_millis(probe_ms),
-                RowCtx {
-                    phase: "probe",
-                    probe_units: tau,
-                    alpha: 0.0,
-                    pitch_at_probe: pitch,
-                    hold_torque: 0.0,
-                    rpm_abs: 0.0,
-                },
             );
             send(&mut serial, "test 0");
             let alpha = angular_acceleration(&samples).unwrap_or(0.0);
+            let max_rpm = samples.iter().map(|s| s.rpm).fold(0.0, f64::max);
+            record(
+                &mut csv,
+                &samples,
+                RowCtx {
+                    phase: "probe",
+                    probe_units: tau,
+                    alpha,
+                    pitch_at_probe: pitch,
+                    hold_torque: 0.0,
+                    rpm_abs: max_rpm,
+                },
+            );
             if let Some(last) = samples.last() {
                 pitch = last.pitch;
                 if last.gyro.abs() > RUNAWAY_DPS
@@ -604,6 +707,8 @@ mod tests {
     fn sample(t: f64, gyro: f64) -> Sample {
         Sample {
             t_ms: t,
+            t_ms_u: t as u64,
+            line: String::new(),
             pitch: 0.0,
             gyro,
             x: 0.0,

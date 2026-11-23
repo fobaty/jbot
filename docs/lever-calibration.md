@@ -94,9 +94,13 @@ result: the loaded dead zone can be auto-identified without manual placement.
 The subsequent gyro-null phase in that run is not valid. The dead-zone search
 left the body already swinging (gyro -109..+43 dps), so fitting `alpha` over a
 140 ms window returned ~0 and reported false nulls. The torque-null needs a
-quiet body before each probe; the current driver does not re-settle between
-the dead-zone search and the first null. The dead-zone measurement itself is
-sound and is the part to keep.
+quiet body before each probe. The driver was therefore updated: after the
+dead-zone search it waits for `|gy| <= 8 dps` (held for 400 ms) before phase 2,
+and repeats that wait before every individual probe. Telemetry rows for probe
+windows now store the computed `alpha` instead of a hardcoded zero, so the CSV
+shows whether the fit is trustworthy. This re-settle change is implemented and
+passes build/lint/tests, but has not yet been validated on hardware; the
+dead-zone measurement from the earlier run remains the sound, reusable result.
 
 ## Driver (superseded by the reference-hold method)
 
