@@ -349,6 +349,11 @@
   // #define TANK_STEERING              // use for tank steering, each input controls each wheel 
   // #define SUPPORT_BUTTONS_LEFT       // use left sensor board cable for button inputs.  Disable DEBUG_SERIAL_USART2!
   // #define SUPPORT_BUTTONS_RIGHT      // use right sensor board cable for button inputs. Disable DEBUG_SERIAL_USART3!
+
+  // Faster input response for the balance link. The default 0.1 (tau ~47 ms)
+  // dominates the measured 190-230 ms command-to-wheel dead time; 0.3 gives
+  // tau ~14 ms while keeping the current loop damped.
+  #define FILTER 19661
 #endif
 // ######################## END OF VARIANT_USART SETTINGS #########################
 

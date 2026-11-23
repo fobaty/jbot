@@ -20,7 +20,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use serialport::SerialPort;
 
 const BAUD: u32 = 115200;
-const HEADER: &str = "t_ms,step,loop_hz,pitch_deg,gy_dps,left_rpm,right_rpm,bat_v,age_ms,estop,arm,tsl_units,tsr_units,trq_units,ref_deg,demand_deg,position_m,mode,opm,profile";
+const HEADER: &str = "t_ms,step,loop_hz,pitch_deg,lvl_deg,gy_dps,left_rpm,right_rpm,bat_v,age_ms,estop,arm,tsl_units,tsr_units,trq_units,ref_deg,demand_deg,position_m,mode,opm,profile";
 const PITCH_LIMIT_DEG: f64 = 2.0;
 const TRAVEL_LIMIT_M: f64 = 0.1;
 const TORQUE_LIMIT_UNITS: f64 = 900.0;
@@ -95,6 +95,7 @@ fn listen(
                                 (n("step") as u64).to_string(),
                                 (n("loop") as u64).to_string(),
                                 format!("{:.4}", n("pitch")),
+                                format!("{:.4}", n("lvl")),
                                 format!("{:.4}", n("gy")),
                                 n("L").to_string(),
                                 n("R").to_string(),
@@ -135,6 +136,7 @@ struct Gate {
     final_pitch: f64,
     travel: f64,
     peak_torque: f64,
+    wheel_active_samples: usize,
     estop: bool,
     disarmed: bool,
     fall: bool,
@@ -151,6 +153,7 @@ impl Gate {
             final_pitch: 0.0,
             travel: 0.0,
             peak_torque: 0.0,
+            wheel_active_samples: 0,
             estop: false,
             disarmed: false,
             fall: false,
@@ -160,11 +163,17 @@ impl Gate {
 
     fn observe(&mut self, line: &str, origin_x: f64) {
         self.samples += 1;
-        let pitch = num(line, "pitch");
+        // Telemetry `pitch` is relative to `zero`; `level` adds a trim that is
+        // the real vertical for this session. Score the control error, not the
+        // raw sensor angle.
+        let pitch = num(line, "pitch") - num(line, "lvl");
         self.max_pitch = self.max_pitch.max(pitch.abs());
         self.final_pitch = pitch;
         self.travel = self.travel.max((num(line, "x") - origin_x).abs());
         self.peak_torque = self.peak_torque.max(num(line, "trq").abs());
+        if num(line, "L").abs() > 2.0 || num(line, "R").abs() > 2.0 {
+            self.wheel_active_samples += 1;
+        }
         self.estop |= num(line, "estop") > 0.5;
         self.disarmed |= num(line, "arm") < 0.5;
         self.fall |= num(line, "mode") > 3.5 || num(line, "opm") > 0.5;
@@ -245,7 +254,7 @@ fn write_json(path: &PathBuf, gates: &[Gate], abort: Option<&str>) {
         let comma = if index + 1 == gates.len() { "" } else { "," };
         let _ = writeln!(
             file,
-            "    {{\"pscale\": {:.2}, \"slew\": {:.0}, \"pass\": {}, \"samples\": {}, \"max_pitch_deg\": {:.2}, \"final_pitch_deg\": {:.2}, \"travel_m\": {:.3}, \"peak_torque\": {:.0}, \"estop\": {}, \"fall\": {}}}{comma}",
+            "    {{\"pscale\": {:.2}, \"slew\": {:.0}, \"pass\": {}, \"samples\": {}, \"max_pitch_deg\": {:.2}, \"final_pitch_deg\": {:.2}, \"travel_m\": {:.3}, \"peak_torque\": {:.0}, \"wheel_active_samples\": {}, \"estop\": {}, \"fall\": {}}}{comma}",
             gate.pscale,
             gate.slew,
             gate.pass(),
@@ -254,6 +263,7 @@ fn write_json(path: &PathBuf, gates: &[Gate], abort: Option<&str>) {
             gate.final_pitch,
             gate.travel,
             gate.peak_torque,
+            gate.wheel_active_samples,
             u8::from(gate.estop),
             u8::from(gate.fall)
         );
@@ -427,7 +437,13 @@ fn main() {
                 send(&mut serial, "estop");
                 continue;
             }
-            println!("profile {profile}: armed, recording {} ms", hold_ms);
+            let trim = armed.last().map_or(0.0, |sample| num(&sample.line, "lvl"));
+            println!(
+                "profile {profile}: baseline pitch {:.2} deg, level trim {:.2} deg, armed, recording {} ms",
+                num(&baseline.line, "pitch"),
+                trim,
+                hold_ms
+            );
             let (held, _) = listen(
                 &mut serial,
                 &mut buffer,
@@ -444,15 +460,17 @@ fn main() {
                 }
             }
             println!(
-                "profile {profile}: {} samples, pitch max {:.2} final {:.2}, travel {:.3} m, torque {:.0} u, estop {} fall {} => {}",
+                "profile {profile}: {} samples, pitch max {:.2} final {:.2}, travel {:.3} m, torque {:.0} u, wheel-active {} samples, estop {} fall {} => {} (authority {})",
                 gate.samples,
                 gate.max_pitch,
                 gate.final_pitch,
                 gate.travel,
                 gate.peak_torque,
+                gate.wheel_active_samples,
                 u8::from(gate.estop),
                 u8::from(gate.fall),
-                if gate.pass() { "PASS" } else { "FAIL" }
+                if gate.pass() { "PASS" } else { "FAIL" },
+                if gate.wheel_active_samples > 20 { "yes" } else { "NO - externally supported" }
             );
             gates.push(gate);
             send(&mut serial, "estop");

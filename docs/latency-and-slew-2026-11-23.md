@@ -71,6 +71,62 @@ is therefore the next controlled experiment, not raising `pscale`.
   change. Not yet run; it needs mainboard feedback, wheels on the floor and a
   fresh safety confirmation.
 
+## Hold sweep results
+
+All runs used `hold_sweep` with runtime settings only; `level` was captured at
+the quiet baseline and every profile ended with `estop`.
+
+| Profile | Result | Peak torque | Wheel activity |
+|---|---|---|---|
+| `pscale 0.25 / slew 100` | PASS (10 s, pitch error ≤1.31°, travel 0) | 33 u | none |
+| `pscale 0.25 / slew 300` | fall | 80 u | short burst |
+| `pscale 0.25 / slew 1000` | fall | 219 u | short burst |
+| `pscale 0.30 / slew 300` | fall | 111 u | short burst |
+| `pscale 0.40 / slew 300` | fall | 89 u | short burst |
+
+The passing run is **not a balance demonstration**: hall feedback stayed at
+zero for the whole 10 s and travel was 0, so the body was supported externally
+(rope/hands). Peak torque of 33 units is below the loaded breakaway, so the
+wheels could not have corrected anything. The audit's hold gate alone cannot
+distinguish this from real balance; `hold_sweep` now reports a separate
+`wheel_active_samples` authority metric.
+
+When the body was genuinely free, even briefly, every profile fell within a
+few seconds. The rope-held body swings by ±10° before `arm`, and tightening the
+quiet gate to 3°/5 dps made the driver find no baseline at all. Raising `slew`
+at fixed `pscale` increases the torque but makes the divergence faster. The
+gain ladder cannot be climbed with this release setup.
+
+**Conclusion:** `pscale 0.25 / slew 100` satisfies the numeric 10 s gate with
+external support, but no profile has demonstrated self-balancing. A repeatable
+release fixture and a loaded breakaway measurement are the blockers. Do not
+raise gains or disable guards to force a pass.
+
+## Root-cause pass (offline telemetry fits)
+
+* Hall step fit on `csv/jbot-latency-1795450047466.csv`: after the Pico applies
+  torque there is a **190 ms (40 u) / 230 ms (60 u) dead time** before hall
+  feedback moves, followed by a first-order settle with **τ ≈ 250 ms**. The
+  EFeru input filter (`FILTER=6553`, α=0.1 at 200 Hz, τ≈47 ms, ~140 ms to 95 %)
+  plus the 100 Hz feedback frame and wheel mechanics account for that dead
+  time. This is the dominant dynamic lag, not the 5 ms Pico tick.
+* Cross-correlation of `gy` against `d(pitch)/dt` on `csv/jbot-hold-1795451188996.csv`:
+  best lag 0 ms, correlation 0.93. BNO055 fusion lag is not the bottleneck here.
+* Loaded breakaway bracket from the hold runs: 33 u gave `rpm=0` for the whole
+  10 s, 69 u turned the wheels (peak 71 rpm). Together with the dynamic search
+  (53.8 u), the loaded dead zone is about **34–69 u**, near 54 u. At `pscale
+  0.25` a 2° error commands only ~34 u, i.e. below breakaway — below this gain
+  the law cannot correct small errors at all.
+* Combined failure mode: dead zone forces a gain high enough to cross it, while
+  the ~200 ms mainboard lag makes that gain oscillatory. Raising `slew` only
+  makes the divergence faster (see the table above).
+
+**Prepared change (not flashed):** `FILTER=19661` (α=0.3, τ≈14 ms) in the
+`VARIANT_USART` block of `firmware/stm32f103/eferu/Inc/config.h` and in the
+reference snapshot. This is a mainboard reflash, needs its own approval, and
+must not be pushed to upstream EFeru. After measuring the new dead time the
+`pscale` ladder can be repeated on a sound basis.
+
 Both tools stop the telemetry stream before closing the port. Quality gates
 (`fmt`, `check`, `test`, `clippy -D warnings`) pass for the workspace and the
 Pico firmware.
