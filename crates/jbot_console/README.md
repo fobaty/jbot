@@ -46,6 +46,33 @@ cargo run -q -p jbot_console --bin axis_check --release -- --run
 cargo run -q -p jbot_console --bin hold_sweep --release -- --run --pscale 0.25 --slews 100
 ```
 
+`hold_sweep --fixture-qual` runs three identical short releases and grades the
+release fixture itself (see `docs/release-fixture.md`). `recovery_driver`
+applies a software `home` disturbance instead of a manual release, so gain
+comparisons are not contaminated by the operator's hand:
+
+```bash
+cargo run -q -p jbot_console --bin recovery_driver --release -- \
+  --run --snap-ref --trials 1 --angle 1 --hold-ms 1000 \
+  --settle-ms 2000 --pscale 0.30 --slew 100
+```
+
+## Runtime firmware knobs
+
+| Command | Meaning |
+|---|---|
+| `pscale <0..2>` | Scale on all angular-output gains; runtime-only |
+| `dscale <0..2>` | Scale on the pitch derivative gain only; runtime-only |
+| `db <Nm\|off>` | Drive dead-zone compensation; runtime-only |
+| `slew <100..10000>` | Torque ramp rate in command units per second |
+| `dbg on\|off` | Bridge the STM32 debug serial (USART3) to this console |
+| `dbg <text>` | Send a line to the STM32 debug serial |
+
+`stat` reports `pscale`, `dscale`, `db`, `slew`. The debug bridge uses a PIO
+UART on GP12 (RX) and GP13 (TX); wire them to STM32 PB10/PB11 on the right
+cable with a common ground. It is a bench tool and never touches the control
+link on UART0. See `docs/drive-diagnosis-2026-11-23.md`.
+
 ## Window
 
 The layout is a fixed instrument board:

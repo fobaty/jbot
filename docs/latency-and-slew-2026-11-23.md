@@ -345,3 +345,8 @@ maximum useful 0.5 would only reach about 7 ms. Feedback frames are sent every
 Pico torque ramp, the roughly 54 u loaded dead zone, the FOC current loop and
 wheel mechanics. Runtime `slew` and `db` address those without a reflash, and
 the release fixture remains the gate before any control conclusion.
+
+A later session verified the STM32 command path directly through the new debug
+bridge and showed that `cmdL/cmdR` track the Pico request exactly; the loaded
+breakaway is a stick-slip nonlinearity in the drive, not a command-path
+parameter. See `docs/drive-diagnosis-2026-11-23.md`.
