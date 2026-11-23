@@ -73,7 +73,11 @@ stable period is a control loop fighting itself, not an external disturbance.
 2. **If the hold gate fails, stop.** Do not raise the gain. Score the recording:
    a stable oscillation period points to loop tuning, growing position drift
    points to the outer loop, and a large dead zone points to the unmeasured
-   loaded breakaway. Fix the identified cause first.
+   loaded breakaway. Fix the identified cause first. `hold_sweep` reports a
+   trial as `VOID - release disturbance` when the opening pitch rate exceeds
+   25 deg/s: a hand release swings the body before the loop can react, so that
+   run says nothing about the control law. Re-run on the fixture instead of
+   treating a VOID as a tuning failure.
 3. **Commanded disturbance.** If the hold gate passes, run the same profile
    with `--angle 3 --trials 3 --hold-ms 500 --settle-ms 2500`. Record the CSV
    and score it. Require all three trials to recover with no fall and no latch.

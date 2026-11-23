@@ -6,7 +6,9 @@
 //! stays open for the whole sweep so the USB console is not parked by DTR.
 //!
 //! A quiet body is not enough: the gate also requires wheel motion, otherwise
-//! a rope still carrying the weight would score as a successful balance.
+//! a rope still carrying the weight would score as a successful balance. An
+//! opening pitch-rate spike marks the release as `VOID`: a hand swing invalidates
+//! the trial before the control law can respond, so it is not a FAIL either.
 //!
 //! Usage: hold_sweep --run [--port PATH] [--pscale 0.25] [--db 0.00]
 //!                   [--slews 100,200,300] [--hold-ms 10000] [--release]
@@ -36,6 +38,12 @@ const TRAVEL_LIMIT_M: f64 = 0.1;
 const TORQUE_LIMIT_UNITS: f64 = 900.0;
 /// A hold without wheel motion is a rope-supported stance, not a balance.
 const MIN_WHEEL_ACTIVE_SAMPLES: usize = 20;
+/// Opening hold-window samples used to grade the release. At the 100 Hz stream
+/// this is about 300 ms; the fixture targets |gy| <= 2 dps over that span.
+const RELEASE_WINDOW_SAMPLES: usize = 30;
+/// A hand release swings the body far faster than a fixed-anchor drop. Above
+/// this opening rate the trial cannot attribute its outcome to the control law.
+const RELEASE_GY_LIMIT_DPS: f64 = 25.0;
 const QUIET_GY: f64 = 8.0;
 const QUIET_PITCH: f64 = 5.0;
 const MAX_FB_AGE_MS: f64 = 100.0;
@@ -150,6 +158,7 @@ struct Gate {
     travel: f64,
     peak_torque: f64,
     wheel_active_samples: usize,
+    release_gy_peak: f64,
     estop: bool,
     disarmed: bool,
     fall: bool,
@@ -168,6 +177,7 @@ impl Gate {
             travel: 0.0,
             peak_torque: 0.0,
             wheel_active_samples: 0,
+            release_gy_peak: 0.0,
             estop: false,
             disarmed: false,
             fall: false,
@@ -188,14 +198,24 @@ impl Gate {
         if num(line, "L").abs() > 2.0 || num(line, "R").abs() > 2.0 {
             self.wheel_active_samples += 1;
         }
+        if self.samples <= RELEASE_WINDOW_SAMPLES {
+            self.release_gy_peak = self.release_gy_peak.max(num(line, "gy").abs());
+        }
         self.estop |= num(line, "estop") > 0.5;
         self.disarmed |= num(line, "arm") < 0.5;
         self.fall |= num(line, "mode") > 3.5 || num(line, "opm") > 0.5;
         self.other_mode |= num(line, "mode") > 2.5;
     }
 
+    /// A violent release injects a several-degree swing before the loop can
+    /// react, so the outcome says nothing about the control law.
+    fn release_void(&self) -> bool {
+        self.release_gy_peak > RELEASE_GY_LIMIT_DPS
+    }
+
     fn pass(&self) -> bool {
         self.samples > 200
+            && !self.release_void()
             && !self.estop
             && !self.disarmed
             && !self.fall
@@ -327,11 +347,13 @@ fn write_json(path: &PathBuf, gates: &[Gate], abort: Option<&str>) {
         let comma = if index + 1 == gates.len() { "" } else { "," };
         let _ = writeln!(
             file,
-            "    {{\"pscale\": {:.2}, \"slew\": {:.0}, \"db\": {:.2}, \"pass\": {}, \"samples\": {}, \"max_pitch_deg\": {:.2}, \"final_pitch_deg\": {:.2}, \"travel_m\": {:.3}, \"peak_torque\": {:.0}, \"wheel_active_samples\": {}, \"estop\": {}, \"fall\": {}}}{comma}",
+            "    {{\"pscale\": {:.2}, \"slew\": {:.0}, \"db\": {:.2}, \"pass\": {}, \"release_void\": {}, \"release_gy_peak\": {:.1}, \"samples\": {}, \"max_pitch_deg\": {:.2}, \"final_pitch_deg\": {:.2}, \"travel_m\": {:.3}, \"peak_torque\": {:.0}, \"wheel_active_samples\": {}, \"estop\": {}, \"fall\": {}}}{comma}",
             gate.pscale,
             gate.slew,
             gate.db,
             gate.pass(),
+            u8::from(gate.release_void()),
+            gate.release_gy_peak,
             gate.samples,
             gate.max_pitch,
             gate.final_pitch,
@@ -609,16 +631,23 @@ fn main() {
                 }
             }
             println!(
-                "profile {profile}: {} samples, pitch max {:.2} final {:.2}, travel {:.3} m, torque {:.0} u, wheel-active {} samples, estop {} fall {} => {} (authority {})",
+                "profile {profile}: {} samples, pitch max {:.2} final {:.2}, travel {:.3} m, torque {:.0} u, wheel-active {} samples, release gy {:.0} dps, estop {} fall {} => {} (authority {})",
                 gate.samples,
                 gate.max_pitch,
                 gate.final_pitch,
                 gate.travel,
                 gate.peak_torque,
                 gate.wheel_active_samples,
+                gate.release_gy_peak,
                 u8::from(gate.estop),
                 u8::from(gate.fall),
-                if gate.pass() { "PASS" } else { "FAIL" },
+                if gate.release_void() {
+                    "VOID - release disturbance"
+                } else if gate.pass() {
+                    "PASS"
+                } else {
+                    "FAIL"
+                },
                 if gate.wheel_active_samples >= MIN_WHEEL_ACTIVE_SAMPLES {
                     "yes"
                 } else {
@@ -677,6 +706,30 @@ mod tests {
         for _ in 0..MIN_WHEEL_ACTIVE_SAMPLES {
             gate.observe(rolling, 0.0);
         }
+        assert!(gate.pass());
+    }
+
+    /// A hand release swings the body before the loop can react. The trial is
+    /// invalid, not a control-law failure.
+    #[test]
+    fn a_violent_release_voids_the_trial() {
+        let swinging = "t_ms=1000 pitch=0.2 lvl=0.0 gy=120 L=3 R=-4 age=5 mb=ok bat=38 estop=0 arm=1 mode=2 opm=0 x=0 trq=10";
+        let mut gate = Gate::new(0.60, 1000.0, 0.0);
+        for _ in 0..RELEASE_WINDOW_SAMPLES {
+            gate.observe(swinging, 0.0);
+        }
+        assert!(gate.release_void());
+        assert!(!gate.pass());
+    }
+
+    #[test]
+    fn a_gentle_release_does_not_void_the_trial() {
+        let line = "t_ms=1000 pitch=0.2 lvl=0.0 gy=8 L=3 R=-4 age=5 mb=ok bat=38 estop=0 arm=1 mode=2 opm=0 x=0 trq=10";
+        let mut gate = Gate::new(0.60, 1000.0, 0.0);
+        for _ in 0..300 {
+            gate.observe(line, 0.0);
+        }
+        assert!(!gate.release_void());
         assert!(gate.pass());
     }
 }

@@ -268,6 +268,13 @@ does **not** demonstrate self-balancing. No run in the repository does.
 | `0.60 / 1000`, auto release | torque 205 u, wheel authority yes, fell in 0.6 s | `jbot-hold-1795460015877` |
 | `0.60 / 3000`, auto release | fell within 0.25 s of arm | `jbot-hold-1795460077000` |
 
+All three auto-release trials start their scored windows at 130-330 deg/s of
+opening pitch rate, injected by the operator's hand before the loop can react.
+`hold_sweep` now grades the opening rate and labels such trials
+`VOID - release disturbance` instead of `FAIL`, so they are not mistaken for a
+control-law result. A usable trial needs a fixed-anchor release; see
+`docs/release-fixture.md`.
+
 The `0.60 / 1000` recording shows the control law sign is correct: torque rises
 with `pitch` and reverses when `gy` changes sign. The failure is timing. At
 `slew=1000` a torque reversal from -105 to +10 units takes about 0.1 s; with
