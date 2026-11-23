@@ -157,3 +157,131 @@ gain claim. Do not change guards or the 200 Hz law to force a pass.
 Both tools stop the telemetry stream before closing the port. Quality gates
 (`fmt`, `check`, `test`, `clippy -D warnings`) pass for the workspace and the
 Pico firmware.
+
+## Dead-zone compensation experiment (2026-11-23, afternoon)
+
+### Changes
+
+* Pico firmware flashed with a runtime `db <Nm|off>` knob stored in
+  `state.rs`. It defaults to zero, is runtime-only, and is applied through
+  `Tuning::with_deadband()` on every control tick. Guards, e-stop, the torque
+  budget and the structure of the 200 Hz law are unchanged. `stat` reports
+  `db=`; `db off` reverts instantly without reflashing.
+* `PlantParams::NOMINAL.deadband_nm` corrected from 0.5 to 0.27 Nm to match the
+  loaded bench measurement. A unit test confirms the override survives power
+  scaling and produces no torque at zero effort.
+* `hold_sweep` gained `--db`, `--release-file`, `--ready-file`,
+  `--quiet-pitch`, `--quiet-gy` and `--release-timeout-ms`. The release marker
+  starts the scored window only after the arm succeeded, and a missing marker
+  ends the profile with `estop` instead of leaving the robot armed.
+* `gyro_null_cal::angular_acceleration()` was missing the milliseconds-to-
+  seconds conversion. Its `alpha` column is now in dps² as declared, so the
+  `tol_alpha` quiet gate is effective. The earlier 53.8 u dynamic search was
+  taken with a gate that was almost always satisfied.
+
+### Re-measured dead zone
+
+With the corrected `alpha`: first wheel motion at **+41.4 u**, a stable signal
+at **53.8 u**, and a torque null of **56.5 u** with zero pitch slope
+(`T(pitch) = -0.00 * pitch + 56.5`). The holding torque is stiction, not
+gravity. See `csv/jbot-gyronull-1795454459188.*`.
+
+### Hold results
+
+| Profile | Result | Notes | Recording |
+|---|---|---|---|
+| `db 0.00`, body supported | PASS, authority NO | peak torque 4-11 u, wheels never turned | `jbot-hold-1795454483436`, `...4501882` |
+| `db 0.00`, wheels loaded, hand release | FAIL | pitch 39.93 deg, wheel-active 194 | `jbot-hold-1795454604294` |
+| `db 0.27`, wheels loaded, hand release | FAIL at 1.2 s | torque injected at 1.4 deg error, pumping | `jbot-hold-1795454698802` |
+| `db 0.00`, 80 s release wait | void | robot fell while armed, 1 recorded sample | `jbot-hold-1795454968091` |
+| `db 0.00`, cued release, 3 deg / 3 dps | **PASS, authority YES** | 1599 samples, pitch max 1.38 deg, travel 0.011 m, torque 39 u, wheel-active 83 | `jbot-hold-1795455254278` |
+| `db 0.10`, cued release | FAIL at 1.4 s | `gy` jumped to 8.5 dps 0.2 s after arm | `jbot-hold-1795455284671` |
+| `db 0.00`, 2 deg / 2 dps gate | skipped | no quiet baseline in 10 s | `jbot-hold-1795455447727` |
+| `db 0.00`, cued release repeat | FAIL | calm to 9 s, then `gy` 5.9 -> 134 dps, pitch 25 deg | `jbot-hold-1795455497614` |
+
+### Conclusion
+
+One full 10 s hold with real wheel authority was recorded at `db 0.00`,
+`pscale 0.30`, `slew 300`. It is evidence that the existing law can stand the
+machine, but it is **not repeatable yet**: the successful and the failed
+baseline runs differ only in an operator disturbance at the release instant.
+`db 0.10` and `db 0.27` did not help and showed the relay-like pumping the
+original `Tuning::from_plant` comment warned about, so dead-zone compensation
+stays disabled. No gain, guard or fail-safe change was made to force a pass.
+
+A repeatable release fixture is still required before claiming the WP3 gate.
+Two designs are described in `docs/release-fixture.md`: a screw-driven cradle
+and a cut-the-thread release using the existing rope and a fixed anchor. The
+operator declined to build either, so no further trials were run. Do not treat
+the single PASS as a closed bench gate.
+
+All quality gates pass after the experiment. No push was made.
+
+## Second bench session (2026-11-23, after IMU remount)
+
+### Axis and sign verification
+
+`csv/jbot-axes-1795458719581.csv` (6786 samples) confirms the remounted IMU is
+correctly paired: forward lean raises `pitch` to +23.9 deg, backward lean lowers
+it to -28.9 deg, and `d(pitch)/dt` correlates with the reported pitch rate at
++0.896 with slope +0.838. The cross-axis fit against the roll rate is +0.376
+with slope +0.023. `mount=0` (Normal) is therefore the right selector and no
+`mount.rs` change is needed.
+
+`csv/jbot-spintest-1795459715266.csv` resolves the yaw sign: `test 100 -100`
+gives `gz` of -460 to -700 dps. With `+steer` mapped to left-wheel-forward and
+right-wheel-backward, the physical turn is clockwise, so a negative `gz` is the
+correct reading. The yaw damper sign is not inverted.
+
+### Calibration and driver fixes
+
+- Re-captured `zero` and `level` and saved NVM: `zero=0.12 deg`,
+  `zroll=0.88 deg`, `level=-0.06 deg`, `zcapt=1`, `lcapt=1`.
+- Found and worked around an NVM restore gap: boot restores the pitch zero only
+  from `pose_home`, so `forget` followed by `zero`/`level` leaves `zcapt=0`
+  after the next reboot and the arm gate refuses. `hold_sweep` now captures
+  `zero` and `level` at its own quiet baseline before arming. A firmware fix
+  restoring `zero_pitch_rad` directly is still pending.
+- `hold_sweep` now requires wheel motion: a body held still by the rope was
+  scoring `pass: true` with `wheel_active_samples=0`. The authority threshold
+  is 20 samples and is covered by two unit tests.
+- `hold_sweep` can detect the release from telemetry (pitch jump or wheel
+  motion) when no sentinel file is supplied, removing dependence on operator
+  terminal access and chat latency.
+
+### Re-examination of the earlier "PASS"
+
+`csv/jbot-hold-1795455254278.csv` was re-read sample by sample. The common
+torque stayed between -21 and +12 units during the whole window and the wheel
+speeds were at or near zero. The recorded "authority YES" came from a few
+isolated 5 rpm encoder samples, not from sustained wheel corrections. That run
+does **not** demonstrate self-balancing. No run in the repository does.
+
+### New gain trials and the limiting mechanism
+
+| Profile | Result | Recording |
+|---|---|---|
+| `0.25 / 100` | rope-supported, torque 33 u, wheels never moved | `jbot-hold-1795459088188` |
+| `0.25 / 100`, support removed | fell, torque 18 u, below the ~54 u breakaway | `jbot-hold-1795459204773` |
+| `0.40 / 300` | fell during release wait, torque 25 u | `jbot-hold-1795459471937` |
+| `1.00 / 1000` | torque reached 177 u, body tumbled | `jbot-hold-1795459672170` |
+| `0.60 / 1000`, auto release | torque 205 u, wheel authority yes, fell in 0.6 s | `jbot-hold-1795460015877` |
+| `0.60 / 3000`, auto release | fell within 0.25 s of arm | `jbot-hold-1795460077000` |
+
+The `0.60 / 1000` recording shows the control law sign is correct: torque rises
+with `pitch` and reverses when `gy` changes sign. The failure is timing. At
+`slew=1000` a torque reversal from -105 to +10 units takes about 0.1 s; with
+the measured 115-190 ms mainboard delay the total loop lag is near 0.25 s,
+against an inverted-pendulum time constant near 0.3 s. Raising the gain alone
+cannot close that gap.
+
+### What remains
+
+1. Reduce the mainboard command-to-torque delay below roughly 80 ms, or move
+   the inner torque loop onto the mainboard, so the 200 Hz law sees fresh
+   actuation within the pendulum time constant.
+2. Restore `zero_pitch_rad` from NVM at boot even without `pose_home`.
+3. Build the vertical release fixture from `docs/release-fixture.md`; hand
+   releases still dominate every scored window.
+4. Only then repeat the gain ladder. Do not treat any current PASS as WP3
+   acceptance.

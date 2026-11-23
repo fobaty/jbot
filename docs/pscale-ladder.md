@@ -41,6 +41,10 @@ stable period is a control loop fighting itself, not an external disturbance.
 
 ## Preconditions
 
+- Sign and axis check passed after the last IMU or wiring change
+  (`docs/axis-sign-check.md`): forward lean raises `pitch`, the pitch rate
+  matches `d(pitch)/dt`, counter-clockwise gives positive `gz`, and the wheel
+  signs are the bench-verified ones. A failed check is a hard stop.
 - Mainboard awake: telemetry `mb=ok`, `age < 300 ms`, fresh battery voltage.
 - Zero and level captured (`zcapt=1`, `lcapt=1`). Recapture `level` only while
   the body is still, and `forget` after any construction change.
@@ -93,4 +97,5 @@ precondition. Closing the WP3 gate requires both this ladder and that fixture.
 - `docs/audit-2026-11-22.md` sections 3 and 5 for the stability floor and the
   original Phase 3/4 wording.
 - `docs/wp3-bench-log.md` session 7 for the observed failure modes.
+- `docs/release-fixture.md` for the fixture needed to make the baseline repeatable.
 - `docs/plan-balance-and-tricks.md` for the WP3 gate and the Tier plan.

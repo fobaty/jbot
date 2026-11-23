@@ -319,7 +319,9 @@ async fn control_task(
         // Bench power scale, applied per tick so a console change takes
         // effect on the very next step. Only the angular-output gains move;
         // the fall guards see the floor, not the scaled gains.
-        let tuning = base_tuning.scaled_by(state::pscale());
+        let tuning = base_tuning
+            .scaled_by(state::pscale())
+            .with_deadband(state::deadband_nm());
 
         // Softness knob, applied per tick like `pscale`: a console change to
         // the torque ramp takes effect on the very next step.

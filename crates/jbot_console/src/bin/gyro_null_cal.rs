@@ -241,7 +241,9 @@ fn pick_port(explicit: Option<String>) -> String {
         .unwrap_or_else(|| "/dev/cu.usbmodemJBOT_PICO_011".to_owned())
 }
 
-/// Angular acceleration from a least-squares fit of gyro rate against time.
+/// Angular acceleration in degrees per second squared from a least-squares fit
+/// of gyro rate against time; sample timestamps are milliseconds, so the slope
+/// needs a unit conversion before it can be compared with `alpha_dps2`.
 fn angular_acceleration(samples: &[Sample]) -> Option<f64> {
     if samples.len() < 5 {
         return None;
@@ -258,7 +260,7 @@ fn angular_acceleration(samples: &[Sample]) -> Option<f64> {
     if det.abs() < 1e-9 {
         return None;
     }
-    Some((n * sxy - sx * sy) / det)
+    Some(1000.0 * (n * sxy - sx * sy) / det)
 }
 
 #[derive(Clone, Copy)]

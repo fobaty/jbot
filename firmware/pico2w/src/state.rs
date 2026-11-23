@@ -219,6 +219,12 @@ static REF_VMAX_BITS: AtomicU32 =
 /// stored as `f32` bits. Runtime-only: resets to 1.0 at boot so a bench
 /// session cannot leak a weakened law into the next power-up.
 static PSCALE_BITS: AtomicU32 = AtomicU32::new(1.0f32.to_bits());
+/// Runtime inverse of the measured drive dead zone, newton-metres, stored as
+/// `f32` bits. Off at boot like the feedforward gate: an empirical bench value
+/// must never change the compiled law on a fresh power-up.
+static DEADBAND_NM_BITS: AtomicU32 = AtomicU32::new(0);
+/// Largest dead-zone compensation the console accepts, newton-metres.
+pub const MAX_DEADBAND_NM: f32 = 0.6;
 /// Default rate of change of the applied wheel torque, command units per
 /// second. The compiled value keeps the response snappy enough for balance.
 pub const DEFAULT_TORQUE_SLEW_PER_S: f32 = 3_000.0;
@@ -358,6 +364,24 @@ pub fn set_pscale(value: f32) -> f32 {
         1.0
     };
     PSCALE_BITS.store(clamped.to_bits(), Ordering::Relaxed);
+    clamped
+}
+
+/// Runtime dead-zone compensation in newton-metres; zero disables it.
+pub fn deadband_nm() -> f32 {
+    f32::from_bits(DEADBAND_NM_BITS.load(Ordering::Relaxed))
+}
+
+/// Set the runtime dead-zone compensation, clamped to
+/// `0..=[`MAX_DEADBAND_NM`]`. Non-finite input disables it. Returns the
+/// stored value.
+pub fn set_deadband_nm(value: f32) -> f32 {
+    let clamped = if value.is_finite() {
+        value.clamp(0.0, MAX_DEADBAND_NM)
+    } else {
+        0.0
+    };
+    DEADBAND_NM_BITS.store(clamped.to_bits(), Ordering::Relaxed);
     clamped
 }
 

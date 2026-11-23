@@ -282,6 +282,16 @@ impl Tuning {
             ..self
         }
     }
+
+    /// Override the drive dead-zone compensation, in newton-metres.
+    ///
+    /// The dead zone is a property of the drive, not of the bench power scale,
+    /// so this value survives [`Tuning::scaled_by`] unchanged. Zero keeps the
+    /// original law with only the pitch integrator removing the lean.
+    pub fn with_deadband(mut self, deadband_nm: f32) -> Self {
+        self.deadband_nm = deadband_nm.max(0.0);
+        self
+    }
 }
 
 /// Largest [`Tuning::scaled_by`] factor; the USB console polices the same
@@ -1011,6 +1021,19 @@ mod tests {
         assert_eq!(half.velocity_gain_per_s, base.velocity_gain_per_s);
         assert_eq!(half.units_per_nm, base.units_per_nm);
         assert_eq!(half.pitch_demand_limit_rad, base.pitch_demand_limit_rad);
+    }
+
+    #[test]
+    fn deadband_override_survives_power_scale_and_zero_effort_stays_inert() {
+        let base = tuning();
+        let compensated = base.with_deadband(0.27).scaled_by(0.25);
+        assert_eq!(compensated.deadband_nm, 0.27);
+        assert_eq!(base.with_deadband(-1.0).deadband_nm, 0.0);
+        assert_eq!(
+            deadband_compensation(0.0, compensated.deadband_nm),
+            0.0,
+            "no effort means no injected breakaway torque"
+        );
     }
 
     #[test]

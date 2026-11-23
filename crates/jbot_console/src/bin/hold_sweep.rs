@@ -1,12 +1,22 @@
 //! Undisturbed 10 s hold gate with the slew knob isolated.
 //!
-//! Each profile applies runtime `pscale` and `slew` (no firmware changes),
+//! Each profile applies runtime `pscale`, `slew` and `db` (no firmware changes),
 //! waits for a quiet, healthy baseline, arms the existing law, records a hold
 //! window, scores it with the audit's gate and finishes with `estop`. The port
 //! stays open for the whole sweep so the USB console is not parked by DTR.
 //!
-//! Usage: hold_sweep --run [--port PATH] [--pscale 0.25]
-//!                   [--slews 100,200,300] [--hold-ms 10000]
+//! A quiet body is not enough: the gate also requires wheel motion, otherwise
+//! a rope still carrying the weight would score as a successful balance.
+//!
+//! Usage: hold_sweep --run [--port PATH] [--pscale 0.25] [--db 0.00]
+//!                   [--slews 100,200,300] [--hold-ms 10000] [--release]
+//!
+//! After arming, the driver keeps draining telemetry until the support is
+//! removed and then starts the scored hold window. Without `--release-file`,
+//! release is detected from telemetry (a pitch jump or wheel motion), so no
+//! operator terminal is needed. With `--release-file PATH`, the operator
+//! creates that file at the release cue instead. `--ready-file PATH` is
+//! written once the arm succeeded. Neither mechanism relies on harness stdin.
 //!
 //! Safety: blocks under the body, rope attached, hands on the body, e-stop
 //! reachable, test zone at most 0.5 m. Any guard, fall latch or disarm ends the
@@ -14,7 +24,7 @@
 
 use std::fs::File;
 use std::io::{BufWriter, Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serialport::SerialPort;
@@ -24,6 +34,8 @@ const HEADER: &str = "t_ms,step,loop_hz,pitch_deg,lvl_deg,gy_dps,left_rpm,right_
 const PITCH_LIMIT_DEG: f64 = 2.0;
 const TRAVEL_LIMIT_M: f64 = 0.1;
 const TORQUE_LIMIT_UNITS: f64 = 900.0;
+/// A hold without wheel motion is a rope-supported stance, not a balance.
+const MIN_WHEEL_ACTIVE_SAMPLES: usize = 20;
 const QUIET_GY: f64 = 8.0;
 const QUIET_PITCH: f64 = 5.0;
 const MAX_FB_AGE_MS: f64 = 100.0;
@@ -131,6 +143,7 @@ fn listen(
 struct Gate {
     pscale: f64,
     slew: f64,
+    db: f64,
     samples: usize,
     max_pitch: f64,
     final_pitch: f64,
@@ -144,10 +157,11 @@ struct Gate {
 }
 
 impl Gate {
-    fn new(pscale: f64, slew: f64) -> Self {
+    fn new(pscale: f64, slew: f64, db: f64) -> Self {
         Self {
             pscale,
             slew,
+            db,
             samples: 0,
             max_pitch: 0.0,
             final_pitch: 0.0,
@@ -190,6 +204,7 @@ impl Gate {
             && self.final_pitch.abs() < PITCH_LIMIT_DEG
             && self.travel < TRAVEL_LIMIT_M
             && self.peak_torque < TORQUE_LIMIT_UNITS
+            && self.wheel_active_samples >= MIN_WHEEL_ACTIVE_SAMPLES
     }
 }
 
@@ -199,6 +214,8 @@ fn wait_baseline(
     csv: &mut BufWriter<File>,
     started: &Instant,
     profile: &str,
+    quiet_pitch: f64,
+    quiet_gy: f64,
 ) -> Option<Sample> {
     let deadline = Instant::now() + Duration::from_secs(10);
     let mut quiet_since: Option<Instant> = None;
@@ -220,7 +237,7 @@ fn wait_baseline(
             && num(line, "bat") > 1.0
             && num(line, "estop") < 0.5
             && num(line, "arm") < 0.5;
-        let quiet = num(line, "gy").abs() <= QUIET_GY && num(line, "pitch").abs() <= QUIET_PITCH;
+        let quiet = num(line, "gy").abs() <= quiet_gy && num(line, "pitch").abs() <= quiet_pitch;
         if healthy && quiet {
             if quiet_since.is_none() {
                 quiet_since = Some(Instant::now());
@@ -233,6 +250,62 @@ fn wait_baseline(
         }
     }
     None
+}
+
+/// Keep telemetry flowing while the operator releases the support. The scored
+/// window must not start before that cue, and the port must keep draining so a
+/// paused host cannot back-pressure the bounded USB console writes.
+///
+/// The release can be signalled by a sentinel file or detected from telemetry:
+/// removing the support moves the body or starts the wheels. Detection makes
+/// the gate independent of operator terminal access and of chat latency.
+fn wait_for_release(
+    serial: &mut Box<dyn SerialPort>,
+    buffer: &mut Vec<u8>,
+    csv: &mut BufWriter<File>,
+    started: &Instant,
+    path: Option<&str>,
+    baseline_pitch: f64,
+    timeout: Duration,
+) -> bool {
+    if let Some(path) = path {
+        let _ = std::fs::remove_file(Path::new(path));
+    }
+    let deadline = Instant::now() + timeout;
+    let mut motion_samples = 0_usize;
+    while path.is_none_or(|path| !Path::new(path).exists()) {
+        if Instant::now() >= deadline {
+            eprintln!(
+                "release cue timed out after {} ms; aborting",
+                timeout.as_millis()
+            );
+            let _ = serial.write_all(b"estop\n");
+            return false;
+        }
+        let (samples, _) = listen(
+            serial,
+            buffer,
+            csv,
+            started,
+            Duration::from_millis(50),
+            "release_wait",
+        );
+        if path.is_none()
+            && samples.iter().any(|sample| {
+                let line = &sample.line;
+                (num(line, "pitch") - baseline_pitch).abs() > 2.5
+                    || num(line, "L").abs() > 3.0
+                    || num(line, "R").abs() > 3.0
+            })
+        {
+            motion_samples += samples.len();
+            if motion_samples >= 5 {
+                println!("release detected from telemetry; starting hold window");
+                return true;
+            }
+        }
+    }
+    true
 }
 
 fn write_json(path: &PathBuf, gates: &[Gate], abort: Option<&str>) {
@@ -254,9 +327,10 @@ fn write_json(path: &PathBuf, gates: &[Gate], abort: Option<&str>) {
         let comma = if index + 1 == gates.len() { "" } else { "," };
         let _ = writeln!(
             file,
-            "    {{\"pscale\": {:.2}, \"slew\": {:.0}, \"pass\": {}, \"samples\": {}, \"max_pitch_deg\": {:.2}, \"final_pitch_deg\": {:.2}, \"travel_m\": {:.3}, \"peak_torque\": {:.0}, \"wheel_active_samples\": {}, \"estop\": {}, \"fall\": {}}}{comma}",
+            "    {{\"pscale\": {:.2}, \"slew\": {:.0}, \"db\": {:.2}, \"pass\": {}, \"samples\": {}, \"max_pitch_deg\": {:.2}, \"final_pitch_deg\": {:.2}, \"travel_m\": {:.3}, \"peak_torque\": {:.0}, \"wheel_active_samples\": {}, \"estop\": {}, \"fall\": {}}}{comma}",
             gate.pscale,
             gate.slew,
+            gate.db,
             gate.pass(),
             gate.samples,
             gate.max_pitch,
@@ -278,15 +352,43 @@ fn main() {
     let mut run = false;
     let mut port = None;
     let mut pscale = 0.25_f64;
+    let mut db = 0.0_f64;
+    let mut release_file: Option<String> = None;
+    let mut ready_file: Option<String> = None;
+    let mut quiet_pitch = QUIET_PITCH;
+    let mut quiet_gy = QUIET_GY;
+    let mut release_timeout_ms = 5_000_u64;
     let mut slews = vec![100.0, 200.0, 300.0];
     let mut hold_ms = 10_000_u64;
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--run" => run = true,
+            "--release-file" => release_file = args.next(),
+            "--ready-file" => ready_file = args.next(),
+            "--quiet-pitch" => {
+                if let Some(value) = args.next().and_then(|v| v.parse::<f64>().ok()) {
+                    quiet_pitch = value.clamp(0.5, QUIET_PITCH);
+                }
+            }
+            "--quiet-gy" => {
+                if let Some(value) = args.next().and_then(|v| v.parse::<f64>().ok()) {
+                    quiet_gy = value.clamp(1.0, QUIET_GY);
+                }
+            }
+            "--release-timeout-ms" => {
+                if let Some(value) = args.next().and_then(|v| v.parse::<u64>().ok()) {
+                    release_timeout_ms = value.clamp(1_000, 30_000);
+                }
+            }
             "--port" => port = args.next(),
             "--pscale" => {
                 if let Some(value) = args.next().and_then(|v| v.parse::<f64>().ok()) {
                     pscale = value.clamp(0.0, 2.0);
+                }
+            }
+            "--db" => {
+                if let Some(value) = args.next().and_then(|v| v.parse::<f64>().ok()) {
+                    db = value.clamp(0.0, 0.6);
                 }
             }
             "--slews" => {
@@ -304,7 +406,7 @@ fn main() {
                 }
             }
             "--help" | "-h" => {
-                println!("usage: hold_sweep --run [--port PATH] [--pscale 0.25] [--slews 100,200,300] [--hold-ms 10000]");
+                println!("usage: hold_sweep --run [--port PATH] [--pscale 0.25] [--db 0.00] [--slews 100,200,300] [--hold-ms 10000] [--release-file PATH] [--ready-file PATH] [--quiet-pitch 5] [--quiet-gy 8] [--release-timeout-ms 5000]");
                 return;
             }
             other => {
@@ -312,6 +414,9 @@ fn main() {
                 return;
             }
         }
+    }
+    if let Some(path) = &ready_file {
+        let _ = std::fs::remove_file(path);
     }
     if !run {
         eprintln!("refusing to run: pass --run after securing the robot");
@@ -378,11 +483,12 @@ fn main() {
     let mut gates = Vec::new();
     if abort.is_none() {
         for slew in &slews {
-            let profile = format!("p{pscale:.2}_s{slew:.0}");
+            let profile = format!("p{pscale:.2}_s{slew:.0}_db{db:.2}");
             send(&mut serial, "clear");
             send(&mut serial, &format!("pscale {pscale:.2}"));
             send(&mut serial, &format!("slew {slew:.0}"));
             send(&mut serial, "ff off");
+            send(&mut serial, &format!("db {db:.2}"));
             let (_, replies) = listen(
                 &mut serial,
                 &mut buffer,
@@ -396,15 +502,37 @@ fn main() {
                 send(&mut serial, "estop");
                 continue;
             }
-            let Some(baseline) =
-                wait_baseline(&mut serial, &mut buffer, &mut csv, &started, &profile)
-            else {
+            let Some(baseline) = wait_baseline(
+                &mut serial,
+                &mut buffer,
+                &mut csv,
+                &started,
+                &profile,
+                quiet_pitch,
+                quiet_gy,
+            ) else {
                 println!("profile {profile}: no quiet baseline; skipped");
                 send(&mut serial, "estop");
                 continue;
             };
-            // `level` is runtime state and does not survive a Pico reboot;
-            // the arm gate requires it. Capture it at the quiet baseline pose.
+            // `zero` and `level` are runtime state. A Pico reboot restores the
+            // pitch zero only from a saved pose_home, so after `forget` the arm
+            // gate refuses to arm until a fresh zero is captured. Take both at
+            // the quiet baseline pose, zero first so the trim is relative to it.
+            send(&mut serial, "zero");
+            let (_, zero_replies) = listen(
+                &mut serial,
+                &mut buffer,
+                &mut csv,
+                &started,
+                Duration::from_millis(200),
+                &profile,
+            );
+            if zero_replies.iter().any(|line| line.starts_with("err ")) {
+                println!("profile {profile}: zero refused: {zero_replies:?}");
+                send(&mut serial, "estop");
+                continue;
+            }
             send(&mut serial, "level");
             let (_, level_replies) = listen(
                 &mut serial,
@@ -444,6 +572,27 @@ fn main() {
                 trim,
                 hold_ms
             );
+            if let Some(ready) = &ready_file {
+                let _ = std::fs::write(ready, "armed\n");
+            }
+            match &release_file {
+                Some(path) => {
+                    println!("profile {profile}: ARMED — RELEASE NOW, then create {path}")
+                }
+                None => println!("profile {profile}: ARMED — RELEASE NOW (auto-detected)"),
+            }
+            let _ = std::io::stdout().flush();
+            if !wait_for_release(
+                &mut serial,
+                &mut buffer,
+                &mut csv,
+                &started,
+                release_file.as_deref(),
+                num(&baseline.line, "pitch"),
+                Duration::from_millis(release_timeout_ms),
+            ) {
+                continue;
+            }
             let (held, _) = listen(
                 &mut serial,
                 &mut buffer,
@@ -452,7 +601,7 @@ fn main() {
                 Duration::from_millis(hold_ms),
                 &profile,
             );
-            let mut gate = Gate::new(pscale, *slew);
+            let mut gate = Gate::new(pscale, *slew, db);
             for sample in &held {
                 gate.observe(&sample.line, origin_x);
                 if gate.estop || gate.disarmed || gate.fall {
@@ -470,7 +619,11 @@ fn main() {
                 u8::from(gate.estop),
                 u8::from(gate.fall),
                 if gate.pass() { "PASS" } else { "FAIL" },
-                if gate.wheel_active_samples > 20 { "yes" } else { "NO - externally supported" }
+                if gate.wheel_active_samples >= MIN_WHEEL_ACTIVE_SAMPLES {
+                    "yes"
+                } else {
+                    "NO - externally supported"
+                }
             );
             gates.push(gate);
             send(&mut serial, "estop");
@@ -493,4 +646,37 @@ fn main() {
     write_json(&json_path, &gates, abort);
     println!("csv: {}", csv_path.display());
     println!("json: {}", json_path.display());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A rope-supported body satisfies every angle and travel limit, but it
+    /// must not be reported as a balance.
+    #[test]
+    fn a_still_body_without_wheel_authority_fails() {
+        let line = "t_ms=1000 pitch=0.2 lvl=0.0 gy=0.1 L=0 R=0 age=5 mb=ok bat=38 estop=0 arm=1 mode=2 opm=0 x=0 trq=10";
+        let mut gate = Gate::new(0.25, 100.0, 0.0);
+        for _ in 0..300 {
+            gate.observe(line, 0.0);
+        }
+        assert_eq!(gate.max_pitch, 0.2);
+        assert_eq!(gate.wheel_active_samples, 0);
+        assert!(!gate.pass());
+    }
+
+    #[test]
+    fn a_hold_with_wheel_authority_passes() {
+        let still = "t_ms=1000 pitch=0.2 lvl=0.0 gy=0.1 L=0 R=0 age=5 mb=ok bat=38 estop=0 arm=1 mode=2 opm=0 x=0 trq=10";
+        let rolling = "t_ms=1000 pitch=0.2 lvl=0.0 gy=0.1 L=3 R=-4 age=5 mb=ok bat=38 estop=0 arm=1 mode=2 opm=0 x=0 trq=10";
+        let mut gate = Gate::new(0.25, 100.0, 0.0);
+        for _ in 0..300 {
+            gate.observe(still, 0.0);
+        }
+        for _ in 0..MIN_WHEEL_ACTIVE_SAMPLES {
+            gate.observe(rolling, 0.0);
+        }
+        assert!(gate.pass());
+    }
 }

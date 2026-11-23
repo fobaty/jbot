@@ -33,6 +33,19 @@ On connect the console requests the configured stream rate and sends `stat` to
 populate the link panel. If the board rejects a command the reply is shown in the
 event log as an error.
 
+## Headless drivers
+
+Two binaries share the same serial link for bench gates that the GUI cannot
+score: `hold_sweep` (undisturbed 10 s hold over a `pscale`/`slew` ladder, see
+`docs/pscale-ladder.md`) and `axis_check` (live sign and axis verification after
+an IMU or wiring change, see `docs/axis-sign-check.md`). Both refuse to run
+without `--run` and end with `estop`.
+
+```bash
+cargo run -q -p jbot_console --bin axis_check --release -- --run
+cargo run -q -p jbot_console --bin hold_sweep --release -- --run --pscale 0.25 --slews 100
+```
+
 ## Window
 
 The layout is a fixed instrument board:

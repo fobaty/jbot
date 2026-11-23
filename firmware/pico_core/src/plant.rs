@@ -91,7 +91,7 @@ impl PlantParams {
         wheel_radius_m: 0.0825,
         // 2 x 2.5 Nm per wheel.
         max_torque_nm: 5.0,
-        deadband_nm: 0.5,
+        deadband_nm: 0.27,
     };
 
     /// `A1`: pitch stiffness from gravity, 1/s^2.
@@ -354,8 +354,22 @@ mod tests {
     fn the_dead_zone_blocks_small_commands() {
         let mut plant = Plant::new(PlantParams::NOMINAL);
         plant.reset(0.0, 0.0);
-        let state = plant.step(0.4, DT);
+        // Static friction: a command inside the dead zone moves nothing.
+        let state = plant.step(0.1, DT);
         assert_eq!(state.applied_torque_nm, 0.0);
+    }
+
+    #[test]
+    fn a_command_above_the_dead_zone_loses_only_the_breakaway() {
+        let mut plant = Plant::new(PlantParams::NOMINAL);
+        plant.reset(0.0, 0.0);
+        let state = plant.step(0.4, DT);
+        let expected = 0.4 - PlantParams::NOMINAL.deadband_nm;
+        assert!(
+            (state.applied_torque_nm - expected).abs() < 1e-4,
+            "applied {} expected {expected}",
+            state.applied_torque_nm
+        );
     }
 
     #[test]

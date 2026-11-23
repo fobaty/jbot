@@ -9,7 +9,7 @@
 //! * Host → Pico: `help`, `ping`, `stat`, `stream <hz>`, `trim <deg>`,
 //!   `reinit`, `estop`, `clear`, `stats reset`, `reboot`,
 //!   `test <units> [units]`, `home <deg>`, `vmax <deg/s>`, `pscale <0..2>`,
-//!   `save`, `forget`.
+//!   `db <Nm|off>`, `save`, `forget`.
 //! * Pico → host: `T key=value ...` telemetry, `ok ...` accepted, `err ...`
 //!   rejected, plus a banner on connect.
 //!
@@ -255,7 +255,7 @@ async fn handle_command(class: &mut Console, flash: &mut Store, line: &[u8]) -> 
             reply(
                 class,
                 format_args!(
-                    "ok help: ping | stat | stream <hz> | speed <mps> | steer <deg/s> | trim <deg> | zero | level | pose [back|face|home] [deg] | mount <name> | home [deg] | vmax [deg/s] | pscale [0..2] | slew [units/s] | ff [on|off] | arm | disarm | fall | test <units> [units] | reinit | estop | clear | save | forget | stats reset | reboot"
+                    "ok help: ping | stat | stream <hz> | speed <mps> | steer <deg/s> | trim <deg> | zero | level | pose [back|face|home] [deg] | mount <name> | home [deg] | vmax [deg/s] | pscale [0..2] | slew [units/s] | ff [on|off] | db [Nm|off] | arm | disarm | fall | test <units> [units] | reinit | estop | clear | save | forget | stats reset | reboot"
                 ),
             )
             .await;
@@ -268,11 +268,13 @@ async fn handle_command(class: &mut Console, flash: &mut Store, line: &[u8]) -> 
             // Report the *effective* law: gains after the bench power scale,
             // so what the console prints is what the loop runs.
             let pscale = state::pscale();
-            let tuning = state::tuning().scaled_by(pscale);
+            let tuning = state::tuning()
+                .scaled_by(pscale)
+                .with_deadband(state::deadband_nm());
             reply(
                 class,
                 format_args!(
-                    "stat up={:.1} loop={} stream={} trim={:.2} estop={} steps={} imu={} imu_err={} imu_code={} fb={} fb_drop={} rx={} fb_ok={} stop={} zero={:.2} zroll={:.2} level={:.2} mount={} nvm={} kpnm={:.1} kdnm={:.1} kpos={:.2} kv={:.2} ki={:.3} pdem={:.1} ptrm={:.1} armed={} zcapt={} lcapt={} home={:.2} fall={} vmax={:.2} pscale={:.2} slew={:.0}",
+                    "stat up={:.1} loop={} stream={} trim={:.2} estop={} steps={} imu={} imu_err={} imu_code={} fb={} fb_drop={} rx={} fb_ok={} stop={} zero={:.2} zroll={:.2} level={:.2} mount={} nvm={} kpnm={:.1} kdnm={:.1} kpos={:.2} kv={:.2} ki={:.3} pdem={:.1} ptrm={:.1} armed={} zcapt={} lcapt={} home={:.2} fall={} vmax={:.2} pscale={:.2} slew={:.0} db={:.2}",
                     uptime_s,
                     state::loop_hz(),
                     state::stream_hz(),
@@ -310,6 +312,7 @@ async fn handle_command(class: &mut Console, flash: &mut Store, line: &[u8]) -> 
                     state::ref_v_max_rad_s().to_degrees(),
                     pscale,
                     state::torque_slew_per_s(),
+                    state::deadband_nm(),
                 ),
             )
             .await;
@@ -678,6 +681,35 @@ async fn handle_command(class: &mut Console, flash: &mut Store, line: &[u8]) -> 
                     }
                     _ => {
                         reply(class, format_args!("err ff needs on or off")).await;
+                    }
+                },
+            }
+        }
+        "db" => {
+            // Runtime inverse of the measured drive dead zone. Off at boot so
+            // a bench value cannot leak into a fresh session.
+            match argument {
+                None => {
+                    reply(class, format_args!("ok db {:.2}", state::deadband_nm())).await;
+                }
+                Some("off") => {
+                    state::set_deadband_nm(0.0);
+                    reply(class, format_args!("ok db off")).await;
+                }
+                Some(value) => match value.parse::<f32>() {
+                    Ok(nm) if (0.0..=state::MAX_DEADBAND_NM).contains(&nm) => {
+                        let applied = state::set_deadband_nm(nm);
+                        reply(class, format_args!("ok db {applied:.2}")).await;
+                    }
+                    _ => {
+                        reply(
+                            class,
+                            format_args!(
+                                "err db needs 0..={:.1} Nm or off",
+                                state::MAX_DEADBAND_NM
+                            ),
+                        )
+                        .await;
                     }
                 },
             }

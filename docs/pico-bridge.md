@@ -256,7 +256,7 @@ answers each command with one `ok`/`err`/`stat` line and, while streaming, sends
 | `steer` | `ok steer <deg/s>` | Query the steering setpoint |
 | `steer <deg/s>` | `ok steer <deg/s>` | Accepted range `-180..=180` |
 | `test` | `ok test l=<units> r=<units>` | Query the applied spin-test torque |
-| `test <units> [units]` | `ok test l=<units> r=<units>` | Bench spin test: direct wheel-torque request, ±300 units clamp, one argument drives both wheels. Applied only while the balance law is disarmed and the e-stop is clear; the applied torque ramps at 600 units/s and the request expires 5 s after it was accepted. The arguments are *wheel-torque* requests, not wire channels: `to_command` maps them through the stock mixer inverse. Bench-verified 2026-11-19 for the flashed `VARIANT_USART` build (no `INVERT_*`): same-sign requests roll straight (`test 50 -50` reached the wire as `speed=50` and rolled forward), equal requests pivot (`test 100 100` reached the wire as `steer=100`) |
+| `test <units> [units]` | `ok test l=<units> r=<units>` | Bench spin test: direct wheel-torque request, ±300 units clamp, one argument drives both wheels. Applied only while the balance law is disarmed and the e-stop is clear; the applied torque ramps at 600 units/s and the request expires 5 s after it was accepted. The arguments are *wheel-torque* requests, not wire channels: `to_command` maps them through the stock mixer inverse. Bench-verified 2026-11-19 for the flashed `VARIANT_USART` build (no `INVERT_*`): same-sign requests roll straight (`test 50 50` reaches the wire as `speed=50` and rolls forward), counter-rolling requests pivot (`test 100 -100` reaches the wire as `steer=100`). The earlier `test 50 -50`/`test 100 100` note described the inverted mixer before commit `8991a4c` |
 | `reinit` | `ok reinit` | Re-runs the BNO055 start-up sequence |
 | `estop` | `ok estop` | Latches the emergency stop |
 | `clear` | `ok clear` | Clears the latch |
@@ -569,6 +569,13 @@ cargo run --release                       # flash via probe-rs, RTT attached
 Definition of done for a control change: unit tests pass, the HIL balance test
 passes, no new clippy warnings, jitter and latency inside budget, and a rollback
 path exists.
+
+Before any armed run after an IMU re-mount or drive rewiring, the sign and axis
+check must pass (`cargo run -q -p jbot_console --bin axis_check --release -- --run --wheels`,
+see `docs/axis-sign-check.md`). It verifies the four conventions the law depends
+on: forward lean raises `pitch`, the pitch rate matches `d(pitch)/dt`,
+counter-clockwise yaw is positive, and the wheel signs are the bench-verified
+ones.
 
 ## 11. Open items
 
