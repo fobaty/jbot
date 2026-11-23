@@ -27,10 +27,11 @@ anchor and a pair of scissors.
    without a push, which is the whole point of the fixture.
 5. Tie a fresh piece of rope before the next profile.
 
-The driver's `release-file` marker must be created before the cut, so the
-scored window starts just before the body becomes free. The first few hundred
-milliseconds of that window are the still-supported baseline; scoring it is
-harmless because the pitch error there is near zero.
+The driver detects the release from telemetry, so no operator terminal is
+needed. A clean cut produces almost no pitch jump; the scored window starts
+when the wheels begin to move. The first few hundred milliseconds are still
+near the supported baseline, which is harmless because the pitch error there
+is close to zero.
 
 This variant needs only the existing rope, scissors and a rigid anchor. It is
 less smooth than a screw-driven cradle but removes the dominant disturbance:
@@ -86,12 +87,13 @@ smoothly by hand and holds its position without creeping.
    cargo run -q -p jbot_console --bin hold_sweep --release -- --run \
      --pscale 0.30 --slews 300 --hold-ms 10000 --db 0.00 \
      --quiet-pitch 3 --quiet-gy 3 --release-timeout-ms 5000 \
-     --release-file <path>/jbot-release --ready-file <path>/jbot-ready
+     --ready-file <path>/jbot-ready
    ```
 
 3. When the ready file appears, lower the cradle smoothly over 1-2 s until it
-   clears the belly, then create the release file. The scored 10 s window
-   starts at that moment.
+   clears the belly. The driver detects the load transfer from telemetry and
+   starts the scored 10 s window itself. Keep hands off the body from the ready
+   cue until the run ends.
 4. The driver ends each profile with `estop`. Raise the cradle again before
    the next profile.
 
@@ -100,10 +102,13 @@ smoothly by hand and holds its position without creeping.
 Before any gain or compensation conclusion, qualify the fixture itself:
 
 - Run the same profile three times.
-- For each run, measure `gy` over the first 200 ms after the release marker in
-  the CSV (`profile` column `p...`).
-- The fixture is acceptable when the peak `|gy|` in that window is at most
-  2 dps in all three runs and the sign of the initial rate is consistent.
+- `hold_sweep` grades the opening pitch rate and records `release_gy_peak` in
+  the JSON. Above 25 dps the trial is reported as `VOID - release disturbance`
+  instead of `PASS`/`FAIL`; those runs carry no control-law information.
+- The fixture is acceptable when all three runs are free of the VOID flag,
+  `release_gy_peak` is at most 2 dps in each, and the sign of the initial rate
+  is consistent. A fixed-anchor cut should meet this; a hand release never
+  does (measured 130-330 dps).
 
 If this gate fails, improve the fixture before interpreting balance results.
 Do not tune the control law to compensate for release disturbance.

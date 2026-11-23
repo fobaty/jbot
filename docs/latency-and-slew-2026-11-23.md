@@ -171,9 +171,10 @@ Pico firmware.
   loaded bench measurement. A unit test confirms the override survives power
   scaling and produces no torque at zero effort.
 * `hold_sweep` gained `--db`, `--release-file`, `--ready-file`,
-  `--quiet-pitch`, `--quiet-gy` and `--release-timeout-ms`. The release marker
-  starts the scored window only after the arm succeeded, and a missing marker
-  ends the profile with `estop` instead of leaving the robot armed.
+  `--quiet-pitch`, `--quiet-gy` and `--release-timeout-ms`. Release is detected
+  from telemetry when no marker file is supplied, and a missing cue ends the
+  profile with `estop` instead of leaving the robot armed. Opening pitch rate
+  above 25 dps marks the trial `VOID - release disturbance`.
 * `gyro_null_cal::angular_acceleration()` was missing the milliseconds-to-
   seconds conversion. Its `alpha` column is now in dps² as declared, so the
   `tol_alpha` quiet gate is effective. The earlier 53.8 u dynamic search was
