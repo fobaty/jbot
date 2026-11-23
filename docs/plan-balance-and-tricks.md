@@ -142,8 +142,10 @@ fall and no latch.
 2. Controlled soft fall - redefined as a **guided tip-over** after WP3 session 5
    showed a soft landing is physically impossible at 5.7 Nm. The reference now
    stops at a controllable 12 degrees and the balance torque fades linearly to
-   zero over 1.5 s, so there is no abrupt torque cut. Implemented and tested but
-   not yet flashed; a repeat bench run is needed.
+   zero over 1.5 s, so there is no abrupt torque cut. Implemented, flashed and
+   repeated in WP3 session 6: the firmware behaves as designed, but the
+   rope-on-floor rig cannot release the robot repeatably, so the attempt still
+   ends on the guard. Further fall trials need a proper rig.
 3. Dynamic self-righting - needs WP1 and WP3.
 4. Backflip - only if WP0 measures enough torque and WP1 confirms it in the
    nonlinear model.

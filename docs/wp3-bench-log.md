@@ -98,9 +98,27 @@ upright on the floor, rope and hands on the body, zone at most 0.5 m. Evidence:
   landing at the pillow angle is **not achievable** with this actuator; a
   different mechanism or a revised definition of "controlled fall" is needed.
 
+## Session 6 — guided tip-over repeat (still guard-ended)
+
+The revised firmware (12-degree reference, 1.5 s linear torque fade) was
+flashed. The mainboard had slept in the meantime and was woken with a 2-3 s
+button hold; `fall_driver --run --record-ms 8000` then armed and requested the
+fall with the robot upright on the floor, rope and hands on the body. Evidence:
+`csv/jbot-fall-1795392571341.csv`.
+
+- The mode entered correctly (`opm=4`, reference 0.45 to 8.26 degrees, torque
+  peak 426 units) but lasted only about 0.52 s. The torque fade had reached
+  roughly 65 percent; it did not complete.
+- Pitch then swung to about -26 degrees and the guard ended the attempt. Peak
+  pitch rate was about 533 dps, so the body was caught and righted by the
+  operator. The rope-on-floor rig does not produce a repeatable, bounded fall:
+  the direction and timing depend on how the operator holds the machine.
+- Conclusion: the firmware behaviour is as designed, but the test method cannot
+  demonstrate a controlled landing. Further bench work on the fall needs a
+  rig that fixes the pivot and release conditions, not another hand-held trial.
+
 ## Gate
 
-Link check, wheel-level yaw and body-level pivot pass. After session 5 the fall
-definition was changed to a guided tip-over (12-degree controllable lean, 1.5 s
-linear torque fade, no abrupt cut). That revision is implemented and unit-tested
-but not flashed; repeating the bench run needs fresh step-by-step approval.
+Link check, wheel-level yaw and body-level pivot pass. Fall work is blocked on
+test-rig quality, not on code: no further fall trials are recommended until a
+repeatable rig exists.
