@@ -245,14 +245,22 @@ fn capture_level_when_still(
             if window.len() < 8 {
                 continue;
             }
-            let pitches: Vec<f64> = window.iter().map(|(_, p)| *p).collect();
-            let lo = pitches.iter().copied().fold(f64::INFINITY, f64::min);
-            let hi = pitches.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-            let spread = hi - lo;
-            if spread < 0.5 {
-                let _ = serial.write_all(b"level\n");
-                let _ = serial.flush();
-                return true;
+            let pitch = window.last().map(|(_, p)| *p).unwrap_or(0.0);
+            let lo = window.iter().map(|(_, p)| *p).fold(f64::INFINITY, f64::min);
+            let hi = window
+                .iter()
+                .map(|(_, p)| *p)
+                .fold(f64::NEG_INFINITY, f64::max);
+            if hi - lo < 0.5 {
+                // The hold gate scores absolute pitch against level. Capturing
+                // a tilted pose would make that criterion impossible, so only
+                // accept a genuinely upright, still body.
+                if pitch.abs() <= 2.0 {
+                    let _ = serial.write_all(b"level\n");
+                    let _ = serial.flush();
+                    return true;
+                }
+                window.clear();
             }
         }
     }

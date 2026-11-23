@@ -20,8 +20,13 @@ identical command-driven `home` steps. It always ends with `estop`.
 ```sh
 cd /Users/fobaty/dev/jbot
 cargo run -q -p jbot_console --bin recovery_driver --release -- \
-  --run --snap-ref --hold-only --pscale 0.25 --slew 200
+  --run --relevel --hold-only --pscale 0.25 --slew 200
 ```
+
+Use `--relevel`, not `--snap-ref`, for the hold gate: the gate scores absolute
+pitch against level, so the level must be captured with the body genuinely
+upright (the driver refuses a tilted capture). Snapping the reference to a
+tilted attitude would make `|pitch| < 2 deg` impossible by construction.
 
 Its CSV has the same first 25 columns as `spin_driver`, so the existing
 scorer consumes it directly:
