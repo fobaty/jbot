@@ -59,6 +59,45 @@ floor. The useful operating range for maneuver corrections is the small band
 around upright, roughly +/-5 degrees, where the `home` reference and the balance
 law work together. The feedforward curve must be measured there.
 
+## Dynamic gyro-null experiment (2026-11-22)
+
+`crates/jbot_console/src/bin/gyro_null_cal.rs` implements the requested
+dynamic method: instead of placing the body at fixed angles, it applies a short
+torque starting very small (4 units) and ramps up, measuring `alpha = d(gy)/dt`
+to find the torque where the body stops accelerating. No static placement, no
+reflash.
+
+`csv/jbot-gyronull-1795398968223.csv` shows why this cannot identify the
+feedforward near upright. At 4 units the wheels never turn (`L=R=0 rpm`) and
+`gy` is only sensor noise within +/-5.6 dps, so `alpha` is indistinguishable
+from zero. The search reports a false null of -4 units at every pitch from -4.1
+to +0.6 degrees. The loaded dead zone (~50 units) is far above the requested
+4-unit start, so the command never reaches the motors. This is a dead-zone
+limit, not a tuning failure: any torque under ~50 units produces no wheel
+motion and therefore no gyro signal to null.
+
+Raising the start above the dead zone would move the body, but then the search
+is measuring breakaway friction, not the gravity holding torque. Near upright
+the gravity moment is itself below the dead zone, so no gyro-null measurement
+there can separate the two. The existing bounded feedforward (+3.23 units/deg
+from the lever ladder, A/B verified) remains the best available estimate.
+
+### Dynamic dead-zone search (successful, 2026-11-22)
+
+The same driver was extended with a dynamic dead-zone search: it starts at 3
+units and grows the command, watching wheel RPM and gyro rate, until the wheels
+break away. `csv/jbot-gyronull-1795399203498.csv` found **53.8 units** (the
+command where RPM jumped to 22 and gyro to 80 dps), matching the earlier static
+estimate of ~50 units but obtained entirely dynamically. This is the reusable
+result: the loaded dead zone can be auto-identified without manual placement.
+
+The subsequent gyro-null phase in that run is not valid. The dead-zone search
+left the body already swinging (gyro -109..+43 dps), so fitting `alpha` over a
+140 ms window returned ~0 and reported false nulls. The torque-null needs a
+quiet body before each probe; the current driver does not re-settle between
+the dead-zone search and the first null. The dead-zone measurement itself is
+sound and is the part to keep.
+
 ## Driver (superseded by the reference-hold method)
 
 `crates/jbot_console/src/bin/lift_cal.rs`:
