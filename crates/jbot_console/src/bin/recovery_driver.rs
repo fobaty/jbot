@@ -18,7 +18,7 @@ use serialport::SerialPort;
 const BAUD: u32 = 115200;
 // The first 25 columns match spin_driver so `jbot-analyze` can score these
 // recordings with `oscillation`, `law_fit` and `breakaway` directly.
-const HEADER: &str = "t_ms,step,loop_hz,imu_fresh,pitch_deg,roll_deg,heading_deg,gy_dps,gx_dps,gz_dps,left_rpm,right_rpm,bat_v,age_ms,estop,vset,wset,torque_units,test_left_units,test_right_units,ref_deg,demand_deg,trim_deg,position_m,mode,trial,op_mode,grace_s,arm";
+const HEADER: &str = "t_ms,step,loop_hz,imu_fresh,pitch_deg,roll_deg,heading_deg,gy_dps,gx_dps,gz_dps,left_rpm,right_rpm,bat_v,age_ms,estop,vset,wset,torque_units,test_left_units,test_right_units,ref_deg,demand_deg,trim_deg,position_m,mode,trial,op_mode,grace_s,arm,ff";
 /// Beyond this angle the attempt is a fall, not a recovery.
 const PITCH_LIMIT_DEG: f64 = 25.0;
 /// Allowed residual pitch error after a trial, degrees.
@@ -73,6 +73,7 @@ fn row(trial: usize, line: &str, t_ms: u64) -> String {
         (n("opm") as u64).to_string(),
         format!("{:.3}", n("grace")),
         (n("arm") as u64).to_string(),
+        format!("{:.0}", n("ff")),
     ];
     fields.join(",")
 }
@@ -347,6 +348,7 @@ fn main() {
     let mut relevel = false;
     let mut snap_ref = false;
     let mut hold_only = false;
+    let mut ff_enabled = false;
     let mut port = None;
     // The compiled defaults (pscale 1.0, slew 3000) are not a safe bench
     // profile: every stable armed run in the audit used pscale 0.10-0.30.
@@ -362,6 +364,11 @@ fn main() {
             "--relevel" => relevel = true,
             "--snap-ref" => snap_ref = true,
             "--hold-only" => hold_only = true,
+            "--ff" => match args.next().as_deref() {
+                Some("on") => ff_enabled = true,
+                Some("off") => ff_enabled = false,
+                _ => {}
+            },
             "--port" => port = args.next(),
             "--pscale" => {
                 if let Some(value) = args.next().and_then(|v| v.parse::<f64>().ok()) {
@@ -406,7 +413,7 @@ fn main() {
                 }
             }
             "--help" | "-h" => {
-                println!("usage: recovery_driver --run [--snap-ref] [--hold-only] [--trials 3] [--angle 5] [--hold-ms 500] [--settle-ms 2000] [--pscale 0.30] [--slew 100] [--port PATH]");
+                println!("usage: recovery_driver --run [--snap-ref] [--hold-only] [--ff on|off] [--trials 3] [--angle 5] [--hold-ms 500] [--settle-ms 2000] [--pscale 0.30] [--slew 100] [--port PATH]");
                 return;
             }
             other => {
@@ -464,7 +471,11 @@ fn main() {
         None,
     );
     send(&mut serial, "clear");
-    println!("safe bench profile: pscale {pscale:.2}, slew {slew:.0}");
+    println!(
+        "safe bench profile: pscale {pscale:.2}, slew {slew:.0}, ff {}",
+        if ff_enabled { "on" } else { "off" }
+    );
+    send(&mut serial, if ff_enabled { "ff on" } else { "ff off" });
     send(&mut serial, &format!("pscale {pscale:.2}"));
     send(&mut serial, &format!("slew {slew:.0}"));
     pump(

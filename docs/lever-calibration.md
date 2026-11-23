@@ -112,7 +112,10 @@ The feature is **off at boot** and enabled only with the console command
 `ff on` (`ff off` disables, `ff` queries). Runtime-only, like `pscale` and
 `slew`, so it cannot leak into a fresh session. Telemetry reports the applied
 value in the `ff` field. The code and unit tests are in place; flashing and a
-bench A/B comparison need separate approval.
+bench A/B comparison needs separate approval. The firmware was flashed on
+2026-11-22 (`picotool load -u -v -x -t elf`, verified OK); boot telemetry shows
+`ff=0` and the persisted `zof=-2.50 deg`. The mainboard was asleep at that
+moment, so no torque was produced.
 
 The feedforward is an empirical correction, not the gravity lever `m*g*L`.
 Verify with the gain ladder that enabling it does not change the stability
