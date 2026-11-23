@@ -65,6 +65,10 @@ const FIXTURE_GY_LIMIT_DPS: f64 = 2.0;
 const FIXTURE_RUNS: usize = 3;
 const QUIET_GY: f64 = 8.0;
 const QUIET_PITCH: f64 = 5.0;
+/// The operator can hold the body steady but slightly tilted. Capturing the
+/// zero at that pose redefines vertical for the law, so a wider baseline is
+/// safe and keeps a manual release from being blocked by pose accuracy.
+const BASELINE_PITCH_MAX: f64 = 15.0;
 const MAX_FB_AGE_MS: f64 = 100.0;
 
 fn field<'a>(line: &'a str, key: &str) -> Option<&'a str> {
@@ -483,7 +487,7 @@ fn main() {
             "--ready-file" => ready_file = args.next(),
             "--quiet-pitch" => {
                 if let Some(value) = args.next().and_then(|v| v.parse::<f64>().ok()) {
-                    quiet_pitch = value.clamp(0.5, QUIET_PITCH);
+                    quiet_pitch = value.clamp(0.5, BASELINE_PITCH_MAX);
                 }
             }
             "--quiet-gy" => {
