@@ -101,6 +101,23 @@ confirmed the new zero offset (`zof=-2.50 deg`). As with any pose change, the
 values must be invalidated with `forget` and recaptured after a construction
 change.
 
+## Firmware feedforward (not flashed yet)
+
+`jbot_pico_core::control::feedforward_units` computes a bounded holding torque
+from the measured slope: -3.23 units per degree relative to the home pitch of
+-2.5 degrees, clamped to +/-60 units. It is added to the common-mode balance
+torque before the SafeFall fade.
+
+The feature is **off at boot** and enabled only with the console command
+`ff on` (`ff off` disables, `ff` queries). Runtime-only, like `pscale` and
+`slew`, so it cannot leak into a fresh session. Telemetry reports the applied
+value in the `ff` field. The code and unit tests are in place; flashing and a
+bench A/B comparison need separate approval.
+
+The feedforward is an empirical correction, not the gravity lever `m*g*L`.
+Verify with the gain ladder that enabling it does not change the stability
+floor before relying on it.
+
 ## Safety
 
 - Rope attached, hands on or immediately above the body, zone at most 0.5 m.

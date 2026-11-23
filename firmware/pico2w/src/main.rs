@@ -528,6 +528,16 @@ async fn control_task(
                     battery_scale: battery_scale(last_feedback.battery_voltage_v()),
                 };
                 let mut torque = balance.update(&input, &tuning, CONTROL_PERIOD_S);
+                let ff_units = if state::feedforward_enabled() {
+                    // Add the calibrated holding torque before the SafeFall
+                    // fade so a guided tip-over still removes all torque.
+                    let ff = jbot_pico_core::control::feedforward_units(pitch_zero);
+                    torque.left += ff;
+                    torque.right += ff;
+                    ff
+                } else {
+                    0.0
+                };
                 if op_mode == BalanceMode::SafeFall {
                     let gain = safe_fall_fade.update(CONTROL_PERIOD_S);
                     torque.left *= gain;
@@ -587,6 +597,7 @@ async fn control_task(
                         guard_tilt_deg: guard_tilt_rad.to_degrees(),
                         op_mode: op_mode.code(),
                         raise_grace_s: safe_fall_grace_s,
+                        feedforward_units: ff_units,
                     };
                     to_command(WheelTorque { left, right })
                 }
@@ -685,6 +696,8 @@ struct BalanceReport {
     op_mode: u8,
     /// Raise grace remaining, seconds.
     raise_grace_s: f32,
+    /// Applied calibrated feedforward, command units.
+    feedforward_units: f32,
 }
 
 impl BalanceReport {
@@ -785,6 +798,7 @@ fn snapshot(
         position_m: report.position_m,
         balance_mode: report.mode,
         guard_tilt_deg: report.guard_tilt_deg,
+        feedforward_units: report.feedforward_units,
         op_mode: report.op_mode,
         raise_grace_s: report.raise_grace_s,
     }

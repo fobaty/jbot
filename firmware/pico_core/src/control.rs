@@ -777,6 +777,32 @@ impl BalanceController {
 
 /// Smooth inverse of the torque dead zone, newton-metres in and out.
 ///
+/// Measured holding torque slope, command units per degree of pitch.
+///
+/// Derived from the inverted-lever calibration (`docs/lever-calibration.md`):
+/// a positive command drives the body negative, so the holding torque has a
+/// negative slope against pitch. The outer table values give -77.5 units over
+/// 24 degrees, rounded here.
+pub const FEEDFORWARD_SLOPE_UNITS_PER_DEG: f32 = -3.23;
+/// Home pitch used as the zero of the feedforward table, degrees.
+pub const FEEDFORWARD_HOME_DEG: f32 = -2.5;
+/// Maximum feedforward contribution, command units.
+pub const FEEDFORWARD_LIMIT_UNITS: f32 = 60.0;
+
+/// Gravity/lever feedforward from the calibrated holding-torque curve.
+///
+/// This is an empirical correction measured with the wheels on the floor; it
+/// is not `m*g*L`. Keeping it bounded prevents a bad sample from commanding
+/// large torque. A non-finite pitch returns zero.
+pub fn feedforward_units(pitch_rad: f32) -> f32 {
+    if !pitch_rad.is_finite() {
+        return 0.0;
+    }
+    let deg = pitch_rad.to_degrees();
+    (FEEDFORWARD_SLOPE_UNITS_PER_DEG * (deg - FEEDFORWARD_HOME_DEG))
+        .clamp(-FEEDFORWARD_LIMIT_UNITS, FEEDFORWARD_LIMIT_UNITS)
+}
+
 /// Ramped pitch reference for a controlled fall.
 ///
 /// The reference starts at the measured pitch so arming the mode cannot cause
@@ -1909,6 +1935,21 @@ mod tests {
         assert_eq!(
             state.mode_guard_cause(&t, BalanceMode::Balance, f32::NAN, 0.0),
             None
+        );
+    }
+
+    #[test]
+    fn feedforward_is_zero_at_home_and_bounded() {
+        assert_eq!(feedforward_units(FEEDFORWARD_HOME_DEG.to_radians()), 0.0);
+        let forward = feedforward_units(12.0_f32.to_radians());
+        let back = feedforward_units((-12.0_f32).to_radians());
+        assert!(forward < 0.0 && back > 0.0);
+        assert!(forward >= -FEEDFORWARD_LIMIT_UNITS);
+        assert!(back <= FEEDFORWARD_LIMIT_UNITS);
+        assert_eq!(feedforward_units(f32::NAN), 0.0);
+        assert_eq!(
+            feedforward_units(180.0_f32.to_radians()),
+            -FEEDFORWARD_LIMIT_UNITS
         );
     }
 

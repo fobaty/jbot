@@ -115,6 +115,8 @@ pub struct Telemetry {
     pub op_mode: u8,
     /// Remaining guard grace for a deliberate raise, seconds.
     pub raise_grace_s: f32,
+    /// Applied calibrated feedforward, command units.
+    pub feedforward_units: f32,
 }
 
 /// Balance mode values carried by [`Telemetry::balance_mode`].
@@ -136,6 +138,19 @@ pub static REINIT: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 pub static SPIN_REQUEST: Signal<CriticalSectionRawMutex, SpinPair> = Signal::new();
 /// One-shot request to begin a controlled fall while armed.
 pub static SAFE_FALL_REQUEST: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+/// Runtime enable for the calibrated feedforward term. Off at boot so a
+/// bench-defined curve cannot leak into a fresh session.
+static FEEDFORWARD_ENABLED: AtomicBool = AtomicBool::new(false);
+
+/// Whether the calibrated feedforward term is applied.
+pub fn feedforward_enabled() -> bool {
+    FEEDFORWARD_ENABLED.load(Ordering::Relaxed)
+}
+
+/// Enable or disable the calibrated feedforward term.
+pub fn set_feedforward_enabled(enabled: bool) {
+    FEEDFORWARD_ENABLED.store(enabled, Ordering::Relaxed);
+}
 
 /// Telemetry rate in hertz; zero disables the stream.
 static STREAM_HZ: AtomicU32 = AtomicU32::new(DEFAULT_STREAM_HZ);
