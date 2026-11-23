@@ -42,6 +42,11 @@ const TRAVEL_LIMIT_M: f64 = 0.1;
 const TORQUE_LIMIT_UNITS: f64 = 900.0;
 /// A hold without wheel motion is a rope-supported stance, not a balance.
 const MIN_WHEEL_ACTIVE_SAMPLES: usize = 20;
+/// A leaning body with stationary wheels is being held up from outside. A free
+/// inverted pendulum cannot sit at a lean with zero rate; if this persists the
+/// rope is still carrying the load and the trial says nothing about the law.
+const SUPPORT_STILL_SAMPLES: usize = 40;
+const SUPPORT_PITCH_DEG: f64 = 0.8;
 /// Opening hold-window samples used to grade the release. At the 100 Hz stream
 /// this is about 300 ms; the fixture targets |gy| <= 2 dps over that span.
 const RELEASE_WINDOW_SAMPLES: usize = 30;
@@ -172,6 +177,8 @@ struct Gate {
     travel: f64,
     peak_torque: f64,
     wheel_active_samples: usize,
+    still_run: usize,
+    max_still_run: usize,
     /// Peak gyro rate over the whole post-cue window. Diagnostic only: the
     /// natural fall after a clean release is not a fixture disturbance.
     release_gy_peak: f64,
@@ -198,6 +205,8 @@ impl Gate {
             travel: 0.0,
             peak_torque: 0.0,
             wheel_active_samples: 0,
+            still_run: 0,
+            max_still_run: 0,
             release_gy_peak: 0.0,
             release_pre_cue: 0.0,
             release_post_cue: 0.0,
@@ -221,6 +230,12 @@ impl Gate {
         self.peak_torque = self.peak_torque.max(num(line, "trq").abs());
         if num(line, "L").abs() > 2.0 || num(line, "R").abs() > 2.0 {
             self.wheel_active_samples += 1;
+            self.still_run = 0;
+        } else if pitch.abs() > SUPPORT_PITCH_DEG {
+            self.still_run += 1;
+            self.max_still_run = self.max_still_run.max(self.still_run);
+        } else {
+            self.still_run = 0;
         }
         let rate = num(line, "gy").abs();
         if self.samples <= CUE_WINDOW_SAMPLES {
@@ -243,6 +258,11 @@ impl Gate {
         self.release_pre_cue.max(self.release_post_cue)
     }
 
+    /// A leaning body with motionless wheels is supported from outside.
+    fn externally_supported(&self) -> bool {
+        self.max_still_run > SUPPORT_STILL_SAMPLES
+    }
+
     /// A violent release injects a several-degree swing before the loop can
     /// react, so the outcome says nothing about the control law.
     fn release_void(&self) -> bool {
@@ -252,6 +272,7 @@ impl Gate {
     fn pass(&self) -> bool {
         self.samples > 200
             && !self.release_void()
+            && !self.externally_supported()
             && !self.estop
             && !self.disarmed
             && !self.fall
@@ -412,7 +433,7 @@ fn write_json(path: &PathBuf, gates: &[Gate], abort: Option<&str>, fixture: Opti
         let comma = if index + 1 == gates.len() { "" } else { "," };
         let _ = writeln!(
             file,
-            "    {{\"pscale\": {:.2}, \"slew\": {:.0}, \"db\": {:.2}, \"pass\": {}, \"release_void\": {}, \"release_cue_rate\": {:.1}, \"release_pre_cue\": {:.1}, \"release_post_cue\": {:.1}, \"release_gy_peak\": {:.1}, \"samples\": {}, \"max_pitch_deg\": {:.2}, \"final_pitch_deg\": {:.2}, \"travel_m\": {:.3}, \"peak_torque\": {:.0}, \"wheel_active_samples\": {}, \"estop\": {}, \"fall\": {}, \"down\": {}}}{comma}",
+            "    {{\"pscale\": {:.2}, \"slew\": {:.0}, \"db\": {:.2}, \"pass\": {}, \"release_void\": {}, \"release_cue_rate\": {:.1}, \"release_pre_cue\": {:.1}, \"release_post_cue\": {:.1}, \"release_gy_peak\": {:.1}, \"samples\": {}, \"max_pitch_deg\": {:.2}, \"final_pitch_deg\": {:.2}, \"travel_m\": {:.3}, \"peak_torque\": {:.0}, \"wheel_active_samples\": {}, \"max_still_run\": {}, \"externally_supported\": {}, \"estop\": {}, \"fall\": {}, \"down\": {}}}{comma}",
             gate.pscale,
             gate.slew,
             gate.db,
@@ -428,6 +449,8 @@ fn write_json(path: &PathBuf, gates: &[Gate], abort: Option<&str>, fixture: Opti
             gate.travel,
             gate.peak_torque,
             gate.wheel_active_samples,
+            gate.max_still_run,
+            u8::from(gate.externally_supported()),
             u8::from(gate.estop),
             u8::from(gate.fall),
             u8::from(gate.down)
@@ -711,13 +734,14 @@ fn main() {
                 }
             }
             println!(
-                "profile {profile}: {} samples, pitch max {:.2} final {:.2}, travel {:.3} m, torque {:.0} u, wheel-active {} samples, release cue {:.1} dps (pre/post {:.1}/{:.1}), peak after {:.0} dps, estop {} fall {} => {} (authority {})",
+                "profile {profile}: {} samples, pitch max {:.2} final {:.2}, travel {:.3} m, torque {:.0} u, wheel-active {} samples, max-still {} samples, release cue {:.1} dps (pre/post {:.1}/{:.1}), peak after {:.0} dps, estop {} fall {} => {} (authority {})",
                 gate.samples,
                 gate.max_pitch,
                 gate.final_pitch,
                 gate.travel,
                 gate.peak_torque,
                 gate.wheel_active_samples,
+                gate.max_still_run,
                 gate.release_cue_rate(),
                 gate.release_pre_cue,
                 gate.release_post_cue,
@@ -731,7 +755,9 @@ fn main() {
                 } else {
                     "FAIL"
                 },
-                if gate.wheel_active_samples >= MIN_WHEEL_ACTIVE_SAMPLES {
+                if gate.wheel_active_samples >= MIN_WHEEL_ACTIVE_SAMPLES
+                    && !gate.externally_supported()
+                {
                     "yes"
                 } else {
                     "NO - externally supported"
@@ -801,6 +827,23 @@ mod tests {
         }
         assert_eq!(gate.max_pitch, 0.2);
         assert_eq!(gate.wheel_active_samples, 0);
+        assert!(!gate.pass());
+    }
+
+    /// Enough active samples elsewhere must not hide a long lean with dead
+    /// wheels: that is the rope still holding the body up.
+    #[test]
+    fn a_lean_with_stationary_wheels_is_externally_supported() {
+        let rolling = "t_ms=1000 pitch=0.2 lvl=0.0 gy=0.1 L=3 R=-4 age=5 mb=ok bat=38 estop=0 arm=1 mode=2 opm=0 x=0 trq=10";
+        let supported = "t_ms=1000 pitch=1.5 lvl=0.0 gy=0.2 L=0 R=0 age=5 mb=ok bat=38 estop=0 arm=1 mode=2 opm=0 x=0 trq=40";
+        let mut gate = Gate::new(0.30, 3000.0, 0.0);
+        for _ in 0..MIN_WHEEL_ACTIVE_SAMPLES {
+            gate.observe(rolling, 0.0);
+        }
+        for _ in 0..(SUPPORT_STILL_SAMPLES + 1) {
+            gate.observe(supported, 0.0);
+        }
+        assert!(gate.externally_supported());
         assert!(!gate.pass());
     }
 
