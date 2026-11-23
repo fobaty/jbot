@@ -158,8 +158,29 @@ Further recovery trials are not recommended until both a tuned gain profile
 and a repeatable release fixture exist. The driver and its fixes are kept as
 the tool for that future work.
 
+## Session 8 — pscale ladder, hold gate
+
+The ladder procedure in `docs/pscale-ladder.md` was started with a 10 s
+undisturbed hold at `pscale 0.25`. Two runs were recorded:
+
+- `csv/jbot-recovery-1795394005553.csv` (`slew 200`): failed. Pitch reached
+  33.6 degrees, travel 0.46 m and the guard latched. `jbot-analyze` found a
+  regular 1.22 s oscillation (p2p 45.6 degrees, 1.64 crossings/s) and a poor
+  law fit (kp 0.5 Nm/rad, R2 0.37), with only 92 units of peak torque and no
+  saturation. The fitted dead zone was about 61 units.
+- `csv/jbot-recovery-1795394078817.csv` (`slew 100`): **hold gate passed**.
+  11.8 s armed, pitch 1.3-4.1 degrees (p2p 1.3, std 0.6), zero travel, no fall
+  and no latch. The fit is now credible: kp 6.2 Nm/rad, kd +1.36 Nm/rad,
+  R2 0.94, residual 2 units. The axis check is inconclusive only because the
+  body barely moved.
+
+A driver bug was found during this session: an out-of-range `--slew` value was
+silently ignored, so a request for 500 actually ran at 100. The driver now
+clamps and reports the applied value. The passing result is therefore labelled
+`slew 100`, and the procedure starts at that value.
+
 ## Gate
 
-Link check, wheel-level yaw and body-level pivot pass. Controlled fall and the
-commanded-disturbance recovery gate are both blocked on test-rig quality and
-on the outstanding gain ladder, not on the control code.
+Link check, wheel-level yaw, body-level pivot and the 10 s hold gate at
+`pscale 0.25 / slew 100` pass. The commanded-disturbance portion of the WP3
+gate is still open; controlled fall remains blocked on test-rig quality.

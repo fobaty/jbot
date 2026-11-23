@@ -20,7 +20,7 @@ identical command-driven `home` steps. It always ends with `estop`.
 ```sh
 cd /Users/fobaty/dev/jbot
 cargo run -q -p jbot_console --bin recovery_driver --release -- \
-  --run --relevel --hold-only --pscale 0.25 --slew 200
+  --run --relevel --hold-only --pscale 0.25 --slew 100
 ```
 
 Use `--relevel`, not `--snap-ref`, for the hold gate: the gate scores absolute
@@ -46,7 +46,10 @@ stable period is a control loop fighting itself, not an external disturbance.
   the body is still, and `forget` after any construction change.
 - No persistent gain changes: `pscale` and `slew` are runtime-only and reset to
   the compiled defaults at boot. Apply them in every run.
-- Start at `pscale 0.25`, `slew 200`. Never start at the compiled defaults.
+- Start at `pscale 0.25`, `slew 100`. Never start at the compiled defaults.
+  The first hold run at `slew 200` oscillated and latched; `slew 100` passed
+  the hold gate with a well-fitted pitch law (`kp 6.2 Nm/rad`, `kd 1.36 Nm/rad`,
+  R2 0.94). Keep `slew` fixed while stepping `pscale`.
 
 ## Ladder
 

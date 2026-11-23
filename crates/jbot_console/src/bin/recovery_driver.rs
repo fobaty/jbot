@@ -372,8 +372,14 @@ fn main() {
             }
             "--slew" => {
                 if let Some(value) = args.next().and_then(|v| v.parse::<f64>().ok()) {
-                    if value.is_finite() && (50.0..=300.0).contains(&value) {
-                        slew = value;
+                    if value.is_finite() {
+                        let applied = value.clamp(100.0, 1000.0);
+                        if (applied - value).abs() > 1e-6 {
+                            println!("warning: slew {value:.0} clamped to {applied:.0} units/s");
+                        }
+                        slew = applied;
+                    } else {
+                        println!("warning: non-finite slew ignored, using {slew:.0}");
                     }
                 }
             }
