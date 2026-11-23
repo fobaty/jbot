@@ -12,21 +12,23 @@ the body, wheels on the floor, test zone at most 0.5 m.
 
 ## Tooling
 
-`recovery_driver` is the single entry point. It clears the latch, applies a
-safe runtime profile, snaps the pitch reference to the measured attitude,
-waits for a stable upright baseline, then either holds for 10 s or applies N
-identical command-driven `home` steps. It always ends with `estop`.
+`hold_sweep` is the bench entry point for hold trials. It clears the latch,
+applies a runtime profile, waits for a still baseline, captures `zero` and
+`level` at that pose, arms, detects the release from telemetry, and records the
+hold. It always ends with `estop`.
 
 ```sh
 cd /Users/fobaty/dev/jbot
-cargo run -q -p jbot_console --bin recovery_driver --release -- \
-  --run --relevel --hold-only --pscale 0.25 --slew 100
+cargo run -q -p jbot_console --bin hold_sweep --release -- \
+  --run --port /dev/cu.usbmodemJBOT_PICO_011 --pscale 0.30 --slews 3000 \
+  --hold-ms 10000 --db 0.00 --quiet-pitch 8 --quiet-gy 3 \
+  --release-timeout-ms 20000 --ready-file /tmp/jbot-ready
 ```
 
-Use `--relevel`, not `--snap-ref`, for the hold gate: the gate scores absolute
-pitch against level, so the level must be captured with the body genuinely
-upright (the driver refuses a tilted capture). Snapping the reference to a
-tilted attitude would make `|pitch| < 2 deg` impossible by construction.
+The baseline requires stillness, not an exact pose: a steady tilted body is
+accepted because `zero` is captured there and becomes vertical for the law.
+A body that is merely resting on the rope is rejected by the wheel-authority
+gates instead.
 
 Its CSV has the same first 25 columns as `spin_driver`, so the existing
 scorer consumes it directly:
@@ -64,6 +66,13 @@ stable period is a control loop fighting itself, not an external disturbance.
   re-derived. See `docs/wp3-bench-log.md` session 8 and
   `docs/wp0-torque-identification.md`.
 
+- **Release grading:** `hold_sweep` calls a run `VOID - release disturbance`
+  only when the gyro rate in the few samples around the cue exceeds 25 deg/s.
+  The peak over the longer post-cue window is diagnostic only: a clean release
+  followed by a natural fall is a `FAIL` for the law, not a `VOID` for the
+  fixture. A sustained lean with stationary wheels is
+  `NO - externally supported` and is equally uninformative.
+
 ## Ladder
 
 1. **Hold gate at 0.25.** Run with `--hold-only --pscale 0.25 --slew 200`.
@@ -74,10 +83,11 @@ stable period is a control loop fighting itself, not an external disturbance.
    a stable oscillation period points to loop tuning, growing position drift
    points to the outer loop, and a large dead zone points to the unmeasured
    loaded breakaway. Fix the identified cause first. `hold_sweep` reports a
-   trial as `VOID - release disturbance` when the opening pitch rate exceeds
-   25 deg/s: a hand release swings the body before the loop can react, so that
-   run says nothing about the control law. Re-run on the fixture instead of
-   treating a VOID as a tuning failure.
+   trial as `VOID - release disturbance` when the gyro rate in the few samples
+   around the cue exceeds 25 deg/s. The peak over the longer post-cue window is
+   diagnostic only: a clean release followed by a natural fall is a `FAIL` for
+   the law, not a `VOID`. Re-run on the fixture instead of treating a VOID as a
+   tuning failure.
 3. **Commanded disturbance.** If the hold gate passes, run the same profile
    with `--angle 3 --trials 3 --hold-ms 500 --settle-ms 2500`. Record the CSV
    and score it. Require all three trials to recover with no fall and no latch.
