@@ -52,10 +52,13 @@ stable period is a control loop fighting itself, not an external disturbance.
   R2 0.94). Keep `slew` fixed while stepping `pscale`.
 - **Current status:** the ladder is blocked at 0.25. A 3 degree disturbance
   latched, a 1 degree disturbance failed on the second repetition, and the
-  0.30 rung oscillated and latched during the hold gate. Do not repeat the
-  ladder until the loaded dead zone (observed around 47-61 units) is measured
-  and `PlantParams::NOMINAL` is re-derived. See `docs/wp3-bench-log.md`
-  session 8.
+  0.30 rung oscillated and latched during the hold gate. A first loaded
+  dead-zone measurement puts it at roughly 40-60 units (0.20-0.30 Nm), about
+  1.5-2 times the free-wheel value, but it is not a calibration: the hand-held
+  rig changed the load during the ramp. Do not repeat the ladder until the
+  dead zone is measured on a fixed-load fixture and `PlantParams::NOMINAL` is
+  re-derived. See `docs/wp3-bench-log.md` session 8 and
+  `docs/wp0-torque-identification.md`.
 
 ## Ladder
 

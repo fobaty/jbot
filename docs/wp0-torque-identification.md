@@ -46,9 +46,33 @@ torque-speed envelope already reduces the available torque there.
 2. No gain or threshold change is justified by this measurement: the design
    assumption of about 5 Nm is confirmed. Tier 1 work (position hold, spin,
    controlled fall) can continue in WP2 code without changing the torque model.
-3. The measured breakaway applies to free wheels only. The loaded dead zone
-   still needs a separate bench measurement before dead-zone compensation is
-   enabled.
+3. The measured breakaway applies to free wheels only. A first loaded
+   measurement was made later (see below); it is approximate, not yet a basis
+   for dead-zone compensation.
+
+## Loaded dead zone (first estimate, 2026-11-22)
+
+A command-driven ramp with the wheels on the floor and the robot held upright
+was recorded as `csv/jbot-spin-1795394390161.csv` (`spin-driver --levels
+10,...,120 --hold-ms 500`). Plateau hall speeds by command level:
+
+| Command (units) | Plateau wheel speed (rpm) |
+| --- | --- |
+| 10-20 | 0 |
+| 30-40 | 8-9, intermittent |
+| 50-60 | about 23, consistent |
+| 70-100 | 0-18, inconsistent |
+| 110-120 | 56-81, consistent |
+
+Separately, `jbot-analyze` reported a loaded breakaway of 47-61 units
+(0.23-0.30 Nm nominal) on three armed recovery recordings in the same session.
+Combining the two, the loaded dead zone is **roughly 40-60 units (0.20-0.30 Nm)**,
+about 1.5-2 times the free-wheel value of 26 units.
+
+This is an estimate, not a calibration: the 70-100 unit readings are
+non-monotonic because the hand-held rig changed the normal load and wheel
+contact during the run. A fixture with a fixed, known load is needed before
+this number enters `PlantParams::NOMINAL` or dead-zone compensation is enabled.
 
 ## Tooling note
 
