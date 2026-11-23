@@ -24,10 +24,24 @@ close/reopen but blocked the console after the Pico re-enumerated when the
 mainboard was powered on, because the host did not reassert DTR. The second
 attempt bounded every write with a 250 ms timeout; cancelling a write left the
 USB endpoint unusable and the console stopped answering after a driver run.
-The final version keeps DTR gating for writes but gives a host two seconds to
-assert DTR at session start before proceeding, so a re-enumerated device with
-a DTR-less host still streams. It was reflashed and used for the yaw check
-below; closing the port between host sessions no longer needs a USB replug.
+The third version gated writes on DTR with a two-second grace at session start.
+It worked for a simple close/reopen but still hung after a driver streamed at
+200 Hz and closed mid-line: the DTR check ran once before the whole line, then
+the remaining `write_packet` calls waited forever for a host that had stopped
+draining the endpoint.
+
+Root cause (2026-11-23): the IN endpoint stays enabled after a host closes, so
+`read_packet` does not report the close and a write already in flight never
+completes. Cancelling a waiting `write_packet` is safe on the RP driver — the
+endpoint buffer is only touched after the endpoint reports ready — so the
+final fix bounds **every** write (100 ms for telemetry, 1 s for command
+replies), drops a line on timeout instead of leaving the session, and ends the
+session only when DTR drops from an asserted state. A DTR-less host after a
+re-enumeration is still served. A leading newline at session start terminates
+any fragment left in the host buffer by an interrupted line. After reflashing,
+three consecutive port close/reopen cycles kept streaming telemetry and
+answered commands without a USB replug. The first reply can be delayed by up to
+about a second while the session restarts.
 
 ## Session 2 — yaw differential check (no body rotation expected)
 

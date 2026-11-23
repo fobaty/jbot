@@ -121,10 +121,12 @@ the control path keeps its 12 Hz rate filter. All of this was flashed to the
 Pico on 2026-11-22 and verified to boot and stream telemetry; the mainboard was
 left off. The guard filter's effect on fall latency must still be observed in
 the first armed trial. The same reflash carries a USB console fix:
-`console_task` now gates writes on DTR, with a two-second grace for a host that
-does not assert it after a Pico re-enumeration; closing and reopening the port
-was confirmed to resume telemetry without USB re-enumeration. A pure DTR gate
-and a bounded-write variant were both tried and reverted; see the WP3 log.
+`console_task` now bounds every USB write (100 ms telemetry, 1 s replies),
+drops lines on timeout, ends a session on a DTR drop from an asserted state and
+emits a resync newline at session start. This replaced the earlier pure DTR
+gate, which still hung when a host closed mid-line during a 200 Hz stream.
+Three close/reopen cycles were verified without USB re-enumeration; see the
+WP3 log for the root cause.
 
 ### WP3 — Bench trials (each session needs fresh step-by-step approval)
 
