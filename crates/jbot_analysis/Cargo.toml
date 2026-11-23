@@ -12,6 +12,10 @@ path = "src/main.rs"
 [dependencies]
 
 [[bin]]
+name = "lever-fit"
+path = "src/bin/lever_fit.rs"
+
+[[bin]]
 name = "recovery-sweep"
 path = "src/bin/recovery_sweep.rs"
 
