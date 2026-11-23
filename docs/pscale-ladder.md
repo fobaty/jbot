@@ -1,0 +1,79 @@
+# pscale ladder procedure
+
+Re-run of audit Phase 3 after the sign/derivative correction. The compiled
+`pscale=1.0` and `slew=3000` are development defaults, not a soft start; all
+stable armed runs in the audit used `pscale 0.10-0.30`. The stability floor for
+the corrected plant is `pscale >= 0.25`. No gain auto-tuning exists in the
+200 Hz path, so the ladder is manual and gated.
+
+This procedure is **code and procedure only**. Every bench step needs fresh
+step-by-step approval and a secured robot: rope, hands on or immediately above
+the body, wheels on the floor, test zone at most 0.5 m.
+
+## Tooling
+
+`recovery_driver` is the single entry point. It clears the latch, applies a
+safe runtime profile, snaps the pitch reference to the measured attitude,
+waits for a stable upright baseline, then either holds for 10 s or applies N
+identical command-driven `home` steps. It always ends with `estop`.
+
+```sh
+cd /Users/fobaty/dev/jbot
+cargo run -q -p jbot_console --bin recovery_driver --release -- \
+  --run --snap-ref --hold-only --pscale 0.25 --slew 200
+```
+
+Its CSV has the same first 25 columns as `spin_driver`, so the existing
+scorer consumes it directly:
+
+```sh
+cargo run -q -p jbot_analysis --bin jbot-analyze -- csv/jbot-recovery-<ts>.csv
+```
+
+The report includes `oscillation` (`crossings_per_s`, `period_s`,
+`error_p2p_deg`), `law_fit` and `breakaway`. A regular crossing train with a
+stable period is a control loop fighting itself, not an external disturbance.
+
+## Preconditions
+
+- Mainboard awake: telemetry `mb=ok`, `age < 300 ms`, fresh battery voltage.
+- Zero and level captured (`zcapt=1`, `lcapt=1`). Recapture `level` only while
+  the body is still, and `forget` after any construction change.
+- No persistent gain changes: `pscale` and `slew` are runtime-only and reset to
+  the compiled defaults at boot. Apply them in every run.
+- Start at `pscale 0.25`, `slew 200`. Never start at the compiled defaults.
+
+## Ladder
+
+1. **Hold gate at 0.25.** Run with `--hold-only --pscale 0.25 --slew 200`.
+   Acceptance, measured from the CSV: 10 s hold, `|pitch| < 2 deg`,
+   `|x| < 0.1 m`, no torque saturation, no guard latch, `estop=0` until the
+   driver ends the run.
+2. **If the hold gate fails, stop.** Do not raise the gain. Score the recording:
+   a stable oscillation period points to loop tuning, growing position drift
+   points to the outer loop, and a large dead zone points to the unmeasured
+   loaded breakaway. Fix the identified cause first.
+3. **Commanded disturbance.** If the hold gate passes, run the same profile
+   with `--angle 3 --trials 3 --hold-ms 500 --settle-ms 2500`. Record the CSV
+   and score it. Require all three trials to recover with no fall and no latch.
+4. **Raise in one step at a time:** `0.25 -> 0.30 -> 0.40 -> 0.60`, keeping
+   `slew` fixed for comparability. Repeat steps 1-3 at each rung and score with
+   `jbot-analyze`. Stop and latch on any guard, any saturation, or a worsening
+   oscillation score.
+5. **Do not exceed 0.60** without a separate Architect decision. `pscale` is a
+   bench multiplier on `pitch_kp`/`pitch_kd` and the yaw differential; the fall
+   guards and the torque budget do not scale with it.
+
+## What this ladder does not solve
+
+A tuned gain profile still needs a repeatable release fixture. The
+rope-on-floor hand-held setup cannot hold a fixed pivot or release the body
+without an impulse, which is why session 7 could never satisfy the baseline
+precondition. Closing the WP3 gate requires both this ladder and that fixture.
+
+## Related
+
+- `docs/audit-2026-11-22.md` sections 3 and 5 for the stability floor and the
+  original Phase 3/4 wording.
+- `docs/wp3-bench-log.md` session 7 for the observed failure modes.
+- `docs/plan-balance-and-tricks.md` for the WP3 gate and the Tier plan.

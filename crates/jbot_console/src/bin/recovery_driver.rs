@@ -16,7 +16,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use serialport::SerialPort;
 
 const BAUD: u32 = 115200;
-const HEADER: &str = "trial,t_ms,step,pitch_deg,heading_deg,gy_dps,gz_dps,ref_deg,demand_deg,torque_units,position_m,loop_hz,age_ms,estop,mode,op_mode,grace_s,arm";
+// The first 25 columns match spin_driver so `jbot-analyze` can score these
+// recordings with `oscillation`, `law_fit` and `breakaway` directly.
+const HEADER: &str = "t_ms,step,loop_hz,imu_fresh,pitch_deg,roll_deg,heading_deg,gy_dps,gx_dps,gz_dps,left_rpm,right_rpm,bat_v,age_ms,estop,vset,wset,torque_units,test_left_units,test_right_units,ref_deg,demand_deg,trim_deg,position_m,mode,trial,op_mode,grace_s,arm";
 /// Beyond this angle the attempt is a fall, not a recovery.
 const PITCH_LIMIT_DEG: f64 = 25.0;
 /// Allowed residual pitch error after a trial, degrees.
@@ -42,21 +44,32 @@ fn telemetry_line(line: &str) -> bool {
 fn row(trial: usize, line: &str, t_ms: u64) -> String {
     let n = |key| num(line, key);
     let fields = [
-        trial.to_string(),
         t_ms.to_string(),
         (n("step") as u64).to_string(),
+        (n("loop") as u64).to_string(),
+        u8::from(field(line, "imu") == Some("ok")).to_string(),
         format!("{:.4}", n("pitch")),
+        format!("{:.4}", n("roll")),
         format!("{:.4}", n("hdg")),
         format!("{:.4}", n("gy")),
+        format!("{:.4}", n("gx")),
         format!("{:.4}", n("gz")),
-        format!("{:.4}", n("ref")),
-        format!("{:.4}", n("dem")),
-        format!("{:.1}", n("trq")),
-        format!("{:.4}", n("x")),
-        (n("loop") as u64).to_string(),
+        n("L").to_string(),
+        n("R").to_string(),
+        format!("{:.2}", n("bat")),
         (n("age") as u64).to_string(),
         (n("estop") as u64).to_string(),
+        format!("{:.2}", n("vset")),
+        format!("{:.2}", n("wset")),
+        format!("{:.1}", n("trq")),
+        format!("{:.1}", n("tsl")),
+        format!("{:.1}", n("tsr")),
+        format!("{:.4}", n("ref")),
+        format!("{:.4}", n("dem")),
+        format!("{:.4}", n("trm")),
+        format!("{:.4}", n("x")),
         (n("mode") as u64).to_string(),
+        trial.to_string(),
         (n("opm") as u64).to_string(),
         format!("{:.3}", n("grace")),
         (n("arm") as u64).to_string(),
@@ -325,6 +338,7 @@ fn main() {
     let mut run = false;
     let mut relevel = false;
     let mut snap_ref = false;
+    let mut hold_only = false;
     let mut port = None;
     // The compiled defaults (pscale 1.0, slew 3000) are not a safe bench
     // profile: every stable armed run in the audit used pscale 0.10-0.30.
@@ -339,6 +353,7 @@ fn main() {
             "--run" => run = true,
             "--relevel" => relevel = true,
             "--snap-ref" => snap_ref = true,
+            "--hold-only" => hold_only = true,
             "--port" => port = args.next(),
             "--pscale" => {
                 if let Some(value) = args.next().and_then(|v| v.parse::<f64>().ok()) {
@@ -377,7 +392,7 @@ fn main() {
                 }
             }
             "--help" | "-h" => {
-                println!("usage: recovery_driver --run [--snap-ref] [--trials 3] [--angle 5] [--hold-ms 500] [--settle-ms 2000] [--pscale 0.30] [--slew 100] [--port PATH]");
+                println!("usage: recovery_driver --run [--snap-ref] [--hold-only] [--trials 3] [--angle 5] [--hold-ms 500] [--settle-ms 2000] [--pscale 0.30] [--slew 100] [--port PATH]");
                 return;
             }
             other => {
@@ -528,6 +543,36 @@ fn main() {
     };
     println!("baseline pitch {baseline_pitch:.2} deg, position {baseline_position:.3} m");
 
+    if hold_only {
+        println!("hold-only: recording 10 s with no disturbance");
+        let mut stats = TrialStats {
+            origin_m: baseline_position,
+            ..TrialStats::default()
+        };
+        pump(
+            &mut serial,
+            &mut buffer,
+            &mut csv,
+            &started,
+            0,
+            Duration::from_secs(10),
+            Some(&mut stats),
+        );
+        println!(
+            "hold: pitch max {:.2} deg, travel {:.3} m, torque peak {:.0} units, estop={} latch={} disarmed={}",
+            stats.max_abs_pitch,
+            stats.max_travel_m,
+            stats.peak_torque,
+            u8::from(stats.estop),
+            u8::from(stats.fall_latch),
+            u8::from(stats.disarmed),
+        );
+        send(&mut serial, "estop");
+        let _ = csv.flush();
+        println!("estop sent; recording: {}", csv_path.display());
+        return;
+    }
+
     let mut passed = 0;
     for trial in 1..=trials {
         let mut stats = TrialStats {
@@ -592,6 +637,10 @@ fn main() {
     let _ = csv.flush();
     println!(
         "passed {passed}/{trials} trials; estop sent; recording: {}",
+        csv_path.display()
+    );
+    println!(
+        "score: cargo run -q -p jbot_analysis --bin jbot-analyze -- {}",
         csv_path.display()
     );
 }
