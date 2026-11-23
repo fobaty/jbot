@@ -196,6 +196,55 @@ fn wait_for_baseline(
     None
 }
 
+/// Capture a new level only while the body is held still. A level taken
+/// during operator motion becomes a pitch reference the machine cannot hold.
+fn capture_level_when_still(
+    serial: &mut Box<dyn SerialPort>,
+    buffer: &mut Vec<u8>,
+    csv: &mut BufWriter<File>,
+    started: &Instant,
+    timeout: Duration,
+) -> bool {
+    let deadline = Instant::now() + timeout;
+    let mut window: Vec<(f64, f64)> = Vec::new();
+    while Instant::now() < deadline {
+        let lines = pump(
+            serial,
+            buffer,
+            csv,
+            started,
+            0,
+            Duration::from_millis(200),
+            None,
+        );
+        for line in lines {
+            if !telemetry_line(&line) {
+                continue;
+            }
+            if num(&line, "arm") > 0.5 || num(&line, "estop") > 0.5 || num(&line, "age") > 300.0 {
+                window.clear();
+                continue;
+            }
+            let now = started.elapsed().as_secs_f64();
+            window.retain(|(t, _)| now - *t <= 1.0);
+            window.push((now, num(&line, "pitch")));
+            if window.len() < 8 {
+                continue;
+            }
+            let pitches: Vec<f64> = window.iter().map(|(_, p)| *p).collect();
+            let lo = pitches.iter().copied().fold(f64::INFINITY, f64::min);
+            let hi = pitches.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+            let spread = hi - lo;
+            if spread < 0.5 {
+                let _ = serial.write_all(b"level\n");
+                let _ = serial.flush();
+                return true;
+            }
+        }
+    }
+    false
+}
+
 fn pick_port(explicit: Option<String>) -> String {
     if let Some(port) = explicit {
         return port;
@@ -218,6 +267,7 @@ fn timestamp_ms() -> u128 {
 fn main() {
     let mut args = std::env::args().skip(1);
     let mut run = false;
+    let mut relevel = false;
     let mut port = None;
     let mut trials = 3_usize;
     let mut angle = 5.0_f64;
@@ -226,6 +276,7 @@ fn main() {
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--run" => run = true,
+            "--relevel" => relevel = true,
             "--port" => port = args.next(),
             "--trials" => {
                 if let Some(value) = args.next().and_then(|v| v.parse::<usize>().ok()) {
@@ -250,7 +301,7 @@ fn main() {
                 }
             }
             "--help" | "-h" => {
-                println!("usage: recovery_driver --run [--trials 3] [--angle 5] [--hold-ms 500] [--settle-ms 2000] [--port PATH]");
+                println!("usage: recovery_driver --run [--relevel] [--trials 3] [--angle 5] [--hold-ms 500] [--settle-ms 2000] [--port PATH]");
                 return;
             }
             other => {
@@ -317,8 +368,32 @@ fn main() {
         Duration::from_millis(300),
         None,
     );
-    // Keep the persisted level. Re-capturing it while the operator still
-    // holds the body at an angle poisoned the reference in the first trial.
+    if relevel {
+        println!("hold the body upright and still: capturing level when pitch settles");
+        if !capture_level_when_still(
+            &mut serial,
+            &mut buffer,
+            &mut csv,
+            &started,
+            Duration::from_secs(12),
+        ) {
+            println!("pitch never settled; aborting without arming");
+            send(&mut serial, "estop");
+            let _ = csv.flush();
+            return;
+        }
+        pump(
+            &mut serial,
+            &mut buffer,
+            &mut csv,
+            &started,
+            0,
+            Duration::from_millis(300),
+            None,
+        );
+    }
+    // Otherwise keep the persisted level: re-capturing it while the operator
+    // still holds the body at an angle poisons the reference.
     send(&mut serial, "arm");
     let arm = pump(
         &mut serial,
