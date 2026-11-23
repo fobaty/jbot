@@ -133,7 +133,7 @@ fn pump(
                             if let Some(stats) = stats.as_deref_mut() {
                                 stats.observe(&text);
                             }
-                        } else if text.starts_with("ok ") || text.starts_with("err ") {
+                        } else {
                             lines.push(text);
                         }
                     }
@@ -144,6 +144,56 @@ fn pump(
         }
     }
     lines
+}
+
+/// Wait until the machine is truly standing and holding, then return its
+/// pitch and position. Arming alone is not enough: an operator still holding
+/// the body at an angle produces a baseline that no recovery can match.
+fn wait_for_baseline(
+    serial: &mut Box<dyn SerialPort>,
+    buffer: &mut Vec<u8>,
+    csv: &mut BufWriter<File>,
+    started: &Instant,
+    timeout: Duration,
+) -> Option<(f64, f64)> {
+    let deadline = Instant::now() + timeout;
+    let mut stable_since: Option<Instant> = None;
+    let mut candidate: (f64, f64);
+    while Instant::now() < deadline {
+        let lines = pump(
+            serial,
+            buffer,
+            csv,
+            started,
+            0,
+            Duration::from_millis(200),
+            None,
+        );
+        for line in lines {
+            if !telemetry_line(&line) {
+                continue;
+            }
+            let pitch = num(&line, "pitch");
+            let mode = num(&line, "mode");
+            let standing = pitch.abs() < 5.0
+                && (mode == 1.0 || mode == 2.0)
+                && num(&line, "arm") > 0.5
+                && num(&line, "estop") < 0.5
+                && num(&line, "age") < 300.0;
+            if standing {
+                candidate = (pitch, num(&line, "x"));
+                if stable_since.is_none() {
+                    stable_since = Some(Instant::now());
+                }
+                if stable_since.is_some_and(|since| since.elapsed() >= Duration::from_millis(500)) {
+                    return Some(candidate);
+                }
+            } else {
+                stable_since = None;
+            }
+        }
+    }
+    None
 }
 
 fn pick_port(explicit: Option<String>) -> String {
@@ -301,29 +351,19 @@ fn main() {
         return;
     }
 
-    // Baseline from the live stream: the last telemetry pitch and position.
-    let mut baseline_pitch = 0.0;
-    let mut baseline_position = 0.0;
-    let baseline_deadline = Instant::now() + Duration::from_millis(300);
-    while Instant::now() < baseline_deadline {
-        let mut chunk = [0_u8; 1024];
-        let read = serial.read(&mut chunk).unwrap_or_default();
-        for &byte in &chunk[..read] {
-            match byte {
-                b'\r' => {}
-                b'\n' => {
-                    if let Ok(line) = std::str::from_utf8(&buffer) {
-                        if telemetry_line(line.trim_end()) {
-                            baseline_pitch = num(line, "pitch");
-                            baseline_position = num(line, "x");
-                        }
-                    }
-                    buffer.clear();
-                }
-                other => buffer.push(other),
-            }
-        }
-    }
+    let Some((baseline_pitch, baseline_position)) = wait_for_baseline(
+        &mut serial,
+        &mut buffer,
+        &mut csv,
+        &started,
+        Duration::from_secs(8),
+    ) else {
+        println!("no stable upright baseline; release the body and retry");
+        send(&mut serial, "estop");
+        let _ = csv.flush();
+        println!("aborted; recording: {}", csv_path.display());
+        return;
+    };
     println!("baseline pitch {baseline_pitch:.2} deg, position {baseline_position:.3} m");
 
     let mut passed = 0;
