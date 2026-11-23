@@ -164,7 +164,11 @@ struct Gate {
     travel: f64,
     peak_torque: f64,
     wheel_active_samples: usize,
+    /// Peak gyro rate in the release window after the cue.
     release_gy_peak: f64,
+    /// Peak gyro rate in the window just before the cue. A hand swing can
+    /// happen here, before the wheels move and before scoring starts.
+    release_pre_peak: f64,
     estop: bool,
     disarmed: bool,
     fall: bool,
@@ -184,6 +188,7 @@ impl Gate {
             peak_torque: 0.0,
             wheel_active_samples: 0,
             release_gy_peak: 0.0,
+            release_pre_peak: 0.0,
             estop: false,
             disarmed: false,
             fall: false,
@@ -213,10 +218,15 @@ impl Gate {
         self.other_mode |= num(line, "mode") > 2.5;
     }
 
+    /// Largest gyro rate spanning both sides of the release cue.
+    fn release_disturbance_peak(&self) -> f64 {
+        self.release_pre_peak.max(self.release_gy_peak)
+    }
+
     /// A violent release injects a several-degree swing before the loop can
     /// react, so the outcome says nothing about the control law.
     fn release_void(&self) -> bool {
-        self.release_gy_peak > RELEASE_GY_LIMIT_DPS
+        self.release_disturbance_peak() > RELEASE_GY_LIMIT_DPS
     }
 
     fn pass(&self) -> bool {
@@ -285,6 +295,11 @@ fn wait_baseline(
 /// The release can be signalled by a sentinel file or detected from telemetry:
 /// removing the support moves the body or starts the wheels. Detection makes
 /// the gate independent of operator terminal access and of chat latency.
+/// Returns `(released, pre_release_gy_peak)`. The second value is the largest
+/// gyro rate seen in the rolling window just before the release cue. A hand
+/// swing often happens before the wheels start moving, so scoring only the
+/// post-release window would miss the very disturbance the fixture gate must
+/// catch.
 fn wait_for_release(
     serial: &mut Box<dyn SerialPort>,
     buffer: &mut Vec<u8>,
@@ -293,12 +308,13 @@ fn wait_for_release(
     path: Option<&str>,
     baseline_pitch: f64,
     timeout: Duration,
-) -> bool {
+) -> (bool, f64) {
     if let Some(path) = path {
         let _ = std::fs::remove_file(Path::new(path));
     }
     let deadline = Instant::now() + timeout;
     let mut motion_samples = 0_usize;
+    let mut pre_gy: Vec<f64> = Vec::with_capacity(RELEASE_WINDOW_SAMPLES);
     while path.is_none_or(|path| !Path::new(path).exists()) {
         if Instant::now() >= deadline {
             eprintln!(
@@ -306,7 +322,7 @@ fn wait_for_release(
                 timeout.as_millis()
             );
             let _ = serial.write_all(b"estop\n");
-            return false;
+            return (false, 0.0);
         }
         let (samples, _) = listen(
             serial,
@@ -316,6 +332,13 @@ fn wait_for_release(
             Duration::from_millis(50),
             "release_wait",
         );
+        for sample in &samples {
+            pre_gy.push(num(&sample.line, "gy").abs());
+        }
+        if pre_gy.len() > RELEASE_WINDOW_SAMPLES {
+            let excess = pre_gy.len() - RELEASE_WINDOW_SAMPLES;
+            pre_gy.drain(..excess);
+        }
         if path.is_none()
             && samples.iter().any(|sample| {
                 let line = &sample.line;
@@ -327,11 +350,15 @@ fn wait_for_release(
             motion_samples += samples.len();
             if motion_samples >= 5 {
                 println!("release detected from telemetry; starting hold window");
-                return true;
+                return (true, peak_gy(&pre_gy));
             }
         }
     }
-    true
+    (true, peak_gy(&pre_gy))
+}
+
+fn peak_gy(values: &[f64]) -> f64 {
+    values.iter().copied().fold(0.0_f64, f64::max)
 }
 
 /// Grade the release fixture, not the control law. Every run must be present,
@@ -339,9 +366,9 @@ fn wait_for_release(
 /// is a failure: three releases are required by `docs/release-fixture.md`.
 fn fixture_acceptable(gates: &[Gate]) -> bool {
     gates.len() == FIXTURE_RUNS
-        && gates
-            .iter()
-            .all(|gate| !gate.release_void() && gate.release_gy_peak <= FIXTURE_GY_LIMIT_DPS)
+        && gates.iter().all(|gate| {
+            !gate.release_void() && gate.release_disturbance_peak() <= FIXTURE_GY_LIMIT_DPS
+        })
 }
 
 fn write_json(path: &PathBuf, gates: &[Gate], abort: Option<&str>, fixture: Option<bool>) {
@@ -366,12 +393,13 @@ fn write_json(path: &PathBuf, gates: &[Gate], abort: Option<&str>, fixture: Opti
         let comma = if index + 1 == gates.len() { "" } else { "," };
         let _ = writeln!(
             file,
-            "    {{\"pscale\": {:.2}, \"slew\": {:.0}, \"db\": {:.2}, \"pass\": {}, \"release_void\": {}, \"release_gy_peak\": {:.1}, \"samples\": {}, \"max_pitch_deg\": {:.2}, \"final_pitch_deg\": {:.2}, \"travel_m\": {:.3}, \"peak_torque\": {:.0}, \"wheel_active_samples\": {}, \"estop\": {}, \"fall\": {}}}{comma}",
+            "    {{\"pscale\": {:.2}, \"slew\": {:.0}, \"db\": {:.2}, \"pass\": {}, \"release_void\": {}, \"release_pre_gy_peak\": {:.1}, \"release_gy_peak\": {:.1}, \"samples\": {}, \"max_pitch_deg\": {:.2}, \"final_pitch_deg\": {:.2}, \"travel_m\": {:.3}, \"peak_torque\": {:.0}, \"wheel_active_samples\": {}, \"estop\": {}, \"fall\": {}}}{comma}",
             gate.pscale,
             gate.slew,
             gate.db,
             gate.pass(),
             u8::from(gate.release_void()),
+            gate.release_pre_peak,
             gate.release_gy_peak,
             gate.samples,
             gate.max_pitch,
@@ -521,13 +549,13 @@ fn main() {
         Duration::from_millis(400),
         "init",
     );
-    let mut abort = None;
+    let mut abort: Option<String> = None;
     if !init.last().is_some_and(|sample| {
         let line = &sample.line;
         field(line, "mb") == Some("ok") && num(line, "bat") > 1.0
     }) {
-        abort = Some("mainboard feedback absent");
-        eprintln!("{}; no arm sent", abort.unwrap_or_default());
+        abort = Some("mainboard feedback absent".to_owned());
+        eprintln!("{}; no arm sent", abort.as_deref().unwrap_or_default());
     }
 
     let mut gates = Vec::new();
@@ -632,7 +660,7 @@ fn main() {
                 None => println!("profile {profile}: ARMED — RELEASE NOW (auto-detected)"),
             }
             let _ = std::io::stdout().flush();
-            if !wait_for_release(
+            let (released, release_pre_peak) = wait_for_release(
                 &mut serial,
                 &mut buffer,
                 &mut csv,
@@ -640,7 +668,8 @@ fn main() {
                 release_file.as_deref(),
                 num(&baseline.line, "pitch"),
                 Duration::from_millis(release_timeout_ms),
-            ) {
+            );
+            if !released {
                 continue;
             }
             let (held, _) = listen(
@@ -652,6 +681,7 @@ fn main() {
                 &profile,
             );
             let mut gate = Gate::new(pscale, *slew, db);
+            gate.release_pre_peak = release_pre_peak;
             for sample in &held {
                 gate.observe(&sample.line, origin_x);
                 if gate.estop || gate.disarmed || gate.fall {
@@ -659,13 +689,14 @@ fn main() {
                 }
             }
             println!(
-                "profile {profile}: {} samples, pitch max {:.2} final {:.2}, travel {:.3} m, torque {:.0} u, wheel-active {} samples, release gy {:.0} dps, estop {} fall {} => {} (authority {})",
+                "profile {profile}: {} samples, pitch max {:.2} final {:.2}, travel {:.3} m, torque {:.0} u, wheel-active {} samples, release gy pre/post {:.0}/{:.0} dps, estop {} fall {} => {} (authority {})",
                 gate.samples,
                 gate.max_pitch,
                 gate.final_pitch,
                 gate.travel,
                 gate.peak_torque,
                 gate.wheel_active_samples,
+                gate.release_pre_peak,
                 gate.release_gy_peak,
                 u8::from(gate.estop),
                 u8::from(gate.fall),
@@ -682,8 +713,16 @@ fn main() {
                     "NO - externally supported"
                 }
             );
+            let down = gate.fall || gate.estop || gate.disarmed;
             gates.push(gate);
             send(&mut serial, "estop");
+            if down {
+                abort = Some(format!(
+                    "robot down after profile {profile}; re-stand before more releases"
+                ));
+                eprintln!("{}", abort.as_deref().unwrap_or_default());
+                break;
+            }
         }
     }
 
@@ -707,7 +746,9 @@ fn main() {
             if acceptable { "PASS" } else { "FAIL" },
             gates
                 .iter()
-                .filter(|gate| !gate.release_void() && gate.release_gy_peak <= FIXTURE_GY_LIMIT_DPS)
+                .filter(|gate| {
+                    !gate.release_void() && gate.release_disturbance_peak() <= FIXTURE_GY_LIMIT_DPS
+                })
                 .count(),
             FIXTURE_RUNS,
             FIXTURE_GY_LIMIT_DPS
@@ -716,7 +757,7 @@ fn main() {
     } else {
         None
     };
-    write_json(&json_path, &gates, abort, fixture);
+    write_json(&json_path, &gates, abort.as_deref(), fixture);
     println!("csv: {}", csv_path.display());
     println!("json: {}", json_path.display());
 }
@@ -812,5 +853,42 @@ mod tests {
             gate_with_peak(120.0),
             gate_with_peak(1.0)
         ]));
+    }
+
+    /// A hand swing before the wheels start moving is part of the release,
+    /// even when it stays below the VOID threshold. Scoring only the
+    /// post-release window would hide it and qualify a bad fixture.
+    #[test]
+    fn a_pre_release_impulse_fails_fixture_qualification() {
+        let calm = "t_ms=1000 pitch=0.2 lvl=0.0 gy=0.5 L=0 R=0 age=5 mb=ok bat=38 estop=0 arm=1 mode=2 opm=0 x=0 trq=10";
+        let mut gate = Gate::new(0.30, 300.0, 0.0);
+        for _ in 0..RELEASE_WINDOW_SAMPLES {
+            gate.observe(calm, 0.0);
+        }
+        gate.release_pre_peak = 16.9;
+        assert_eq!(gate.release_gy_peak, 0.5);
+        assert!(!gate.release_void());
+        assert_eq!(gate.release_disturbance_peak(), 16.9);
+        assert!(!fixture_acceptable(&[
+            gate,
+            gate_with_peak(1.0),
+            gate_with_peak(1.0)
+        ]));
+    }
+
+    #[test]
+    fn a_violent_pre_release_impulse_voids_the_trial() {
+        let mut gate = gate_with_peak(0.5);
+        gate.release_pre_peak = 32.0;
+        assert!(gate.release_void());
+    }
+
+    #[test]
+    fn a_clean_release_on_both_sides_qualifies_the_fixture() {
+        let mut gates: Vec<Gate> = (0..FIXTURE_RUNS).map(|_| gate_with_peak(1.0)).collect();
+        for gate in &mut gates {
+            gate.release_pre_peak = 0.8;
+        }
+        assert!(fixture_acceptable(&gates));
     }
 }

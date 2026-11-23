@@ -93,6 +93,13 @@ smoothly by hand and holds its position without creeping.
    For qualification alone, add `--fixture-qual`. It runs three identical 2 s
    releases and prints a `FIXTURE PASS/FAIL` verdict; the JSON gains a
    `fixture_acceptable` field. It grades the release, not the control law.
+   Add `--release-file /tmp/jbot-release` to mark the exact cut instant: cut
+   the thread, then create the file. Without it the driver detects motion from
+   telemetry, which starts scoring only after the wheels have begun to turn.
+
+   If a profile ends in a fall or disarm, the sweep stops with an abort reason
+   instead of silently skipping the remaining releases: the robot has to be
+   stood back up before another release can be qualified.
 
 3. When the ready file appears, lower the cradle smoothly over 1-2 s until it
    clears the belly. The driver detects the load transfer from telemetry and
@@ -106,13 +113,17 @@ smoothly by hand and holds its position without creeping.
 Before any gain or compensation conclusion, qualify the fixture itself:
 
 - Run the same profile three times.
-- `hold_sweep` grades the opening pitch rate and records `release_gy_peak` in
-  the JSON. Above 25 dps the trial is reported as `VOID - release disturbance`
-  instead of `PASS`/`FAIL`; those runs carry no control-law information.
+- `hold_sweep` grades the opening pitch rate on both sides of the release cue
+  and records `release_pre_gy_peak` and `release_gy_peak` in the JSON. A hand
+  swing often happens before the wheels turn, so the pre-cue window is part of
+  the same disturbance metric. Above 25 dps the trial is reported as
+  `VOID - release disturbance` instead of `PASS`/`FAIL`; those runs carry no
+  control-law information.
 - The fixture is acceptable when all three runs are free of the VOID flag and
-  `release_gy_peak` is at most 2 dps in each. `--fixture-qual` applies exactly
-  this test and reports the verdict. A fixed-anchor cut should meet this; a
-  hand release never does (measured 130-330 dps).
+  the larger of the two release peaks is at most 2 dps in each.
+  `--fixture-qual` applies exactly this test and reports the verdict. A
+  fixed-anchor cut should meet this; a hand release never does (measured
+  130-330 dps, and 13-32 dps even with a slow hand payout).
 - A run that is below the 25 dps VOID threshold but above 2 dps still carries
   control information; it is not a control failure, but it means the fixture
   is not repeatable yet.
