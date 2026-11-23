@@ -289,7 +289,7 @@ fn snap_reference_when_still(
                 .fold(f64::NEG_INFINITY, f64::max);
             if hi - lo < 0.5 {
                 let pitch = window.last().map(|(_, p)| *p).unwrap_or(0.0);
-                if pitch.abs() <= 4.0 {
+                if pitch.abs() <= 4.9 {
                     let _ = serial.write_all(format!("home {pitch:.2}\n").as_bytes());
                     let _ = serial.flush();
                     return Some(pitch);
@@ -513,7 +513,12 @@ fn main() {
             origin_m: baseline_position,
             ..TrialStats::default()
         };
-        let target = baseline_pitch + angle;
+        let forward = baseline_pitch + angle;
+        let target = if forward.abs() <= 5.0 {
+            forward
+        } else {
+            baseline_pitch - angle
+        };
         let return_target = baseline_pitch;
         if target.abs() > 5.0 || return_target.abs() > 5.0 {
             println!("home targets outside the 5 degree limit; aborting");
