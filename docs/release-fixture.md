@@ -113,17 +113,21 @@ smoothly by hand and holds its position without creeping.
 Before any gain or compensation conclusion, qualify the fixture itself:
 
 - Run the same profile three times.
-- `hold_sweep` grades the opening pitch rate on both sides of the release cue
-  and records `release_pre_gy_peak` and `release_gy_peak` in the JSON. A hand
-  swing often happens before the wheels turn, so the pre-cue window is part of
-  the same disturbance metric. Above 25 dps the trial is reported as
-  `VOID - release disturbance` instead of `PASS`/`FAIL`; those runs carry no
-  control-law information.
+- `hold_sweep` grades the release in a narrow window of a few samples on each
+  side of the cue and records `release_cue_rate`, `release_pre_cue` and
+  `release_post_cue` in the JSON. A hand swing often starts before the wheels
+  turn, so both sides matter. Above 25 dps the trial is reported as
+  `VOID - release disturbance`; those runs carry no control-law information.
+- The peak `gy` over the longer post-cue window is recorded as
+  `release_gy_peak` for diagnostics only. A clean release can be followed by a
+  natural fall, which must be graded `FAIL` for the control law, not `VOID` for
+  the fixture. Scoring that whole window as a release disturbance hides real
+  control failures.
 - The fixture is acceptable when all three runs are free of the VOID flag and
-  the larger of the two release peaks is at most 2 dps in each.
-  `--fixture-qual` applies exactly this test and reports the verdict. A
-  fixed-anchor cut should meet this; a hand release never does (measured
-  130-330 dps, and 13-32 dps even with a slow hand payout).
+  `release_cue_rate` is at most 2 dps in each. `--fixture-qual` applies exactly
+  this test and reports the verdict. A fixed-anchor cut should meet this; a
+  hand release never does (measured 130-330 dps, and 13-32 dps with a slow hand
+  payout).
 - A run that is below the 25 dps VOID threshold but above 2 dps still carries
   control information; it is not a control failure, but it means the fixture
   is not repeatable yet.

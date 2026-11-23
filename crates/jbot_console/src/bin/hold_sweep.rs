@@ -45,6 +45,10 @@ const MIN_WHEEL_ACTIVE_SAMPLES: usize = 20;
 /// Opening hold-window samples used to grade the release. At the 100 Hz stream
 /// this is about 300 ms; the fixture targets |gy| <= 2 dps over that span.
 const RELEASE_WINDOW_SAMPLES: usize = 30;
+/// Only this many samples on each side of the cue describe the release itself.
+/// The rest of the post-cue window is the control response and must not be
+/// mistaken for a hand impulse.
+const CUE_WINDOW_SAMPLES: usize = 3;
 /// A hand release swings the body far faster than a fixed-anchor drop. Above
 /// this opening rate the trial cannot attribute its outcome to the control law.
 const RELEASE_GY_LIMIT_DPS: f64 = 25.0;
@@ -168,11 +172,13 @@ struct Gate {
     travel: f64,
     peak_torque: f64,
     wheel_active_samples: usize,
-    /// Peak gyro rate in the release window after the cue.
+    /// Peak gyro rate over the whole post-cue window. Diagnostic only: the
+    /// natural fall after a clean release is not a fixture disturbance.
     release_gy_peak: f64,
-    /// Peak gyro rate in the window just before the cue. A hand swing can
-    /// happen here, before the wheels move and before scoring starts.
-    release_pre_peak: f64,
+    /// Peak |gy| in the few samples immediately before the cue.
+    release_pre_cue: f64,
+    /// Peak |gy| in the few samples immediately after the cue.
+    release_post_cue: f64,
     estop: bool,
     disarmed: bool,
     fall: bool,
@@ -193,7 +199,8 @@ impl Gate {
             peak_torque: 0.0,
             wheel_active_samples: 0,
             release_gy_peak: 0.0,
-            release_pre_peak: 0.0,
+            release_pre_cue: 0.0,
+            release_post_cue: 0.0,
             estop: false,
             disarmed: false,
             fall: false,
@@ -215,8 +222,12 @@ impl Gate {
         if num(line, "L").abs() > 2.0 || num(line, "R").abs() > 2.0 {
             self.wheel_active_samples += 1;
         }
+        let rate = num(line, "gy").abs();
+        if self.samples <= CUE_WINDOW_SAMPLES {
+            self.release_post_cue = self.release_post_cue.max(rate);
+        }
         if self.samples <= RELEASE_WINDOW_SAMPLES {
-            self.release_gy_peak = self.release_gy_peak.max(num(line, "gy").abs());
+            self.release_gy_peak = self.release_gy_peak.max(rate);
         }
         self.estop |= num(line, "estop") > 0.5;
         self.disarmed |= num(line, "arm") < 0.5;
@@ -225,15 +236,17 @@ impl Gate {
         self.other_mode |= num(line, "mode") > 2.5;
     }
 
-    /// Largest gyro rate spanning both sides of the release cue.
-    fn release_disturbance_peak(&self) -> f64 {
-        self.release_pre_peak.max(self.release_gy_peak)
+    /// Gyro rate at the release cue, taken on both sides of the instant. Only
+    /// this narrow window is the fixture's doing. Everything after it is the
+    /// control response and is graded as PASS/FAIL, not as a release defect.
+    fn release_cue_rate(&self) -> f64 {
+        self.release_pre_cue.max(self.release_post_cue)
     }
 
     /// A violent release injects a several-degree swing before the loop can
     /// react, so the outcome says nothing about the control law.
     fn release_void(&self) -> bool {
-        self.release_disturbance_peak() > RELEASE_GY_LIMIT_DPS
+        self.release_cue_rate() > RELEASE_GY_LIMIT_DPS
     }
 
     fn pass(&self) -> bool {
@@ -302,11 +315,10 @@ fn wait_baseline(
 /// The release can be signalled by a sentinel file or detected from telemetry:
 /// removing the support moves the body or starts the wheels. Detection makes
 /// the gate independent of operator terminal access and of chat latency.
-/// Returns `(released, pre_release_gy_peak)`. The second value is the largest
-/// gyro rate seen in the rolling window just before the release cue. A hand
-/// swing often happens before the wheels start moving, so scoring only the
-/// post-release window would miss the very disturbance the fixture gate must
-/// catch.
+/// Returns `(released, pre_cue_rate)`, where the second value is the peak gyro
+/// rate in the few samples just before the cue. A hand swing often starts
+/// before the wheels move, so the cue has to be graded on both sides; the
+/// longer window after it belongs to the control law, not to the fixture.
 fn wait_for_release(
     serial: &mut Box<dyn SerialPort>,
     buffer: &mut Vec<u8>,
@@ -321,7 +333,7 @@ fn wait_for_release(
     }
     let deadline = Instant::now() + timeout;
     let mut motion_samples = 0_usize;
-    let mut pre_gy: Vec<f64> = Vec::with_capacity(RELEASE_WINDOW_SAMPLES);
+    let mut pre_gy: Vec<f64> = Vec::with_capacity(CUE_WINDOW_SAMPLES);
     while path.is_none_or(|path| !Path::new(path).exists()) {
         if Instant::now() >= deadline {
             eprintln!(
@@ -342,8 +354,8 @@ fn wait_for_release(
         for sample in &samples {
             pre_gy.push(num(&sample.line, "gy").abs());
         }
-        if pre_gy.len() > RELEASE_WINDOW_SAMPLES {
-            let excess = pre_gy.len() - RELEASE_WINDOW_SAMPLES;
+        if pre_gy.len() > CUE_WINDOW_SAMPLES {
+            let excess = pre_gy.len() - CUE_WINDOW_SAMPLES;
             pre_gy.drain(..excess);
         }
         if path.is_none()
@@ -373,9 +385,9 @@ fn peak_gy(values: &[f64]) -> f64 {
 /// is a failure: three releases are required by `docs/release-fixture.md`.
 fn fixture_acceptable(gates: &[Gate]) -> bool {
     gates.len() == FIXTURE_RUNS
-        && gates.iter().all(|gate| {
-            !gate.release_void() && gate.release_disturbance_peak() <= FIXTURE_GY_LIMIT_DPS
-        })
+        && gates
+            .iter()
+            .all(|gate| !gate.release_void() && gate.release_cue_rate() <= FIXTURE_GY_LIMIT_DPS)
 }
 
 fn write_json(path: &PathBuf, gates: &[Gate], abort: Option<&str>, fixture: Option<bool>) {
@@ -400,13 +412,15 @@ fn write_json(path: &PathBuf, gates: &[Gate], abort: Option<&str>, fixture: Opti
         let comma = if index + 1 == gates.len() { "" } else { "," };
         let _ = writeln!(
             file,
-            "    {{\"pscale\": {:.2}, \"slew\": {:.0}, \"db\": {:.2}, \"pass\": {}, \"release_void\": {}, \"release_pre_gy_peak\": {:.1}, \"release_gy_peak\": {:.1}, \"samples\": {}, \"max_pitch_deg\": {:.2}, \"final_pitch_deg\": {:.2}, \"travel_m\": {:.3}, \"peak_torque\": {:.0}, \"wheel_active_samples\": {}, \"estop\": {}, \"fall\": {}, \"down\": {}}}{comma}",
+            "    {{\"pscale\": {:.2}, \"slew\": {:.0}, \"db\": {:.2}, \"pass\": {}, \"release_void\": {}, \"release_cue_rate\": {:.1}, \"release_pre_cue\": {:.1}, \"release_post_cue\": {:.1}, \"release_gy_peak\": {:.1}, \"samples\": {}, \"max_pitch_deg\": {:.2}, \"final_pitch_deg\": {:.2}, \"travel_m\": {:.3}, \"peak_torque\": {:.0}, \"wheel_active_samples\": {}, \"estop\": {}, \"fall\": {}, \"down\": {}}}{comma}",
             gate.pscale,
             gate.slew,
             gate.db,
             gate.pass(),
             u8::from(gate.release_void()),
-            gate.release_pre_peak,
+            gate.release_cue_rate(),
+            gate.release_pre_cue,
+            gate.release_post_cue,
             gate.release_gy_peak,
             gate.samples,
             gate.max_pitch,
@@ -668,7 +682,7 @@ fn main() {
                 None => println!("profile {profile}: ARMED — RELEASE NOW (auto-detected)"),
             }
             let _ = std::io::stdout().flush();
-            let (released, release_pre_peak) = wait_for_release(
+            let (released, release_pre_cue) = wait_for_release(
                 &mut serial,
                 &mut buffer,
                 &mut csv,
@@ -689,7 +703,7 @@ fn main() {
                 &profile,
             );
             let mut gate = Gate::new(pscale, *slew, db);
-            gate.release_pre_peak = release_pre_peak;
+            gate.release_pre_cue = release_pre_cue;
             for sample in &held {
                 gate.observe(&sample.line, origin_x);
                 if gate.estop || gate.disarmed || gate.fall || gate.down {
@@ -697,14 +711,16 @@ fn main() {
                 }
             }
             println!(
-                "profile {profile}: {} samples, pitch max {:.2} final {:.2}, travel {:.3} m, torque {:.0} u, wheel-active {} samples, release gy pre/post {:.0}/{:.0} dps, estop {} fall {} => {} (authority {})",
+                "profile {profile}: {} samples, pitch max {:.2} final {:.2}, travel {:.3} m, torque {:.0} u, wheel-active {} samples, release cue {:.1} dps (pre/post {:.1}/{:.1}), peak after {:.0} dps, estop {} fall {} => {} (authority {})",
                 gate.samples,
                 gate.max_pitch,
                 gate.final_pitch,
                 gate.travel,
                 gate.peak_torque,
                 gate.wheel_active_samples,
-                gate.release_pre_peak,
+                gate.release_cue_rate(),
+                gate.release_pre_cue,
+                gate.release_post_cue,
                 gate.release_gy_peak,
                 u8::from(gate.estop),
                 u8::from(gate.fall),
@@ -755,7 +771,7 @@ fn main() {
             gates
                 .iter()
                 .filter(|gate| {
-                    !gate.release_void() && gate.release_disturbance_peak() <= FIXTURE_GY_LIMIT_DPS
+                    !gate.release_void() && gate.release_cue_rate() <= FIXTURE_GY_LIMIT_DPS
                 })
                 .count(),
             FIXTURE_RUNS,
@@ -873,10 +889,10 @@ mod tests {
         for _ in 0..RELEASE_WINDOW_SAMPLES {
             gate.observe(calm, 0.0);
         }
-        gate.release_pre_peak = 16.9;
+        gate.release_pre_cue = 16.9;
         assert_eq!(gate.release_gy_peak, 0.5);
         assert!(!gate.release_void());
-        assert_eq!(gate.release_disturbance_peak(), 16.9);
+        assert_eq!(gate.release_cue_rate(), 16.9);
         assert!(!fixture_acceptable(&[
             gate,
             gate_with_peak(1.0),
@@ -887,7 +903,7 @@ mod tests {
     #[test]
     fn a_violent_pre_release_impulse_voids_the_trial() {
         let mut gate = gate_with_peak(0.5);
-        gate.release_pre_peak = 32.0;
+        gate.release_pre_cue = 32.0;
         assert!(gate.release_void());
     }
 
@@ -909,8 +925,26 @@ mod tests {
     fn a_clean_release_on_both_sides_qualifies_the_fixture() {
         let mut gates: Vec<Gate> = (0..FIXTURE_RUNS).map(|_| gate_with_peak(1.0)).collect();
         for gate in &mut gates {
-            gate.release_pre_peak = 0.8;
+            gate.release_pre_cue = 0.8;
         }
         assert!(fixture_acceptable(&gates));
+    }
+
+    /// A clean release followed by a fall is a control failure. Grading the
+    /// whole post-cue window would mislabel it VOID and hide the real result.
+    #[test]
+    fn a_fall_after_a_clean_release_is_not_a_void() {
+        let quiet = "t_ms=1000 pitch=0.2 lvl=0.0 gy=1.2 L=3 R=-4 age=5 mb=ok bat=38 estop=0 arm=1 mode=2 opm=0 x=0 trq=10";
+        let falling = "t_ms=1000 pitch=20.0 lvl=0.0 gy=60.0 L=3 R=-4 age=5 mb=ok bat=38 estop=0 arm=1 mode=2 opm=0 x=0 trq=100";
+        let mut gate = Gate::new(0.30, 300.0, 0.0);
+        for _ in 0..CUE_WINDOW_SAMPLES {
+            gate.observe(quiet, 0.0);
+        }
+        for _ in 0..RELEASE_WINDOW_SAMPLES {
+            gate.observe(falling, 0.0);
+        }
+        assert!(!gate.release_void());
+        assert_eq!(gate.release_cue_rate(), 1.2);
+        assert_eq!(gate.release_gy_peak, 60.0);
     }
 }
