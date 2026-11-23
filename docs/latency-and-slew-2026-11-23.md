@@ -280,7 +280,10 @@ cannot close that gap.
 1. Reduce the mainboard command-to-torque delay below roughly 80 ms, or move
    the inner torque loop onto the mainboard, so the 200 Hz law sees fresh
    actuation within the pendulum time constant.
-2. Restore `zero_pitch_rad` from NVM at boot even without `pose_home`.
+2. ~~Restore `zero_pitch_rad` from NVM at boot even without `pose_home`.~~ Done
+   in code: a `zero captured` flag in the NVM flags byte lets boot restore the
+   stored pitch zero; legacy records fall back to `pose_home`. Needs a reflash
+   and one fresh `zero` capture.
 3. Build the vertical release fixture from `docs/release-fixture.md`; hand
    releases still dominate every scored window.
 4. Only then repeat the gain ladder. Do not treat any current PASS as WP3

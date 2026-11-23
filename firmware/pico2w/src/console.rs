@@ -206,6 +206,7 @@ fn current_record() -> Option<Record> {
         state::pose_face_deg(),
         state::pose_home_deg(),
     )
+    .map(|record| record.with_zero_captured(state::zero_captured()))
 }
 
 /// Write the current settings record to flash.

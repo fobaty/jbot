@@ -58,8 +58,10 @@ analyzer.
   session; this tool performs it live and adds the yaw and wheel conventions.
 - The e-stop is latched at the end, as with the other drivers. Send `clear`
   before the next run.
-- After `forget` or any Pico reboot, capture `zero` again before arming: the
-  boot path restores the pitch zero only from a saved `pose_home`, so `zero`
-  alone in NVM leaves `zcapt=0` and the arm gate refuses. `hold_sweep` now
-  captures both `zero` and `level` at its own quiet baseline; the GUI console
-  requires the operator to re-capture zero.
+- The boot path used to restore the pitch zero only from a saved `pose_home`,
+  so a `zero`/`save` without a home pose left `zcapt=0` after a reboot and the
+  arm gate refused. Firmware now stores a `zero captured` flag in the NVM flags
+  byte and restores `zero_pitch_rad` from it. Legacy records decode with the
+  flag clear, so they still fall back to `pose_home` and need one fresh `zero`
+  capture after the upgrade. `hold_sweep` is independent of this: it captures
+  both `zero` and `level` at its own quiet baseline before arming.

@@ -30,6 +30,10 @@ pub const MAGIC: u32 = 0x564E_424A;
 /// Version 3 adds three measured pose pitch references and invalidates v2
 /// records; a refused record falls back to defaults and the operator captures
 /// the pose references again.
+///
+/// The flag byte gained a "zero captured" bit without a version bump: v3
+/// writers leave it clear, so legacy records decode conservatively and still
+/// restore the pitch zero only from a measured `pose_home`.
 pub const VERSION: u16 = 3;
 /// Largest accepted magnitude of a stored zero/level angle, degrees.
 ///
@@ -50,8 +54,12 @@ const OFF_MAGIC: usize = 0;
 const OFF_VERSION: usize = 4;
 /// Offset of the mount selector inside the encoded record.
 const OFF_MOUNT: usize = 6;
-/// Offset of the reserved flag byte inside the encoded record.
+/// Offset of the flag byte inside the encoded record. Bit 0 records that the
+/// pitch zero was explicitly captured; legacy records leave it clear.
 const OFF_FLAGS: usize = 7;
+/// Flag bit marking the stored pitch zero as an operator capture rather than
+/// the placeholder written for an uncaptured zero.
+const FLAG_ZERO_CAPTURED: u8 = 1;
 /// Offset of the pitch zero offset inside the encoded record.
 const OFF_ZERO_PITCH: usize = 8;
 /// Offset of the roll zero offset inside the encoded record.
@@ -76,6 +84,10 @@ pub struct Record {
     pub mount: u8,
     /// Pitch zero offset, radians.
     pub zero_pitch_rad: f32,
+    /// Whether the pitch zero was explicitly captured. Without this bit the
+    /// boot path cannot tell a real capture from the zero placeholder written
+    /// for an uncaptured offset, so it refuses to restore it.
+    pub zero_captured: bool,
     /// Roll zero offset, radians.
     pub zero_roll_rad: f32,
     /// Captured level reference, radians.
@@ -104,6 +116,7 @@ impl Record {
         let record = Self {
             mount,
             zero_pitch_rad,
+            zero_captured: false,
             zero_roll_rad,
             level_rad,
             pose_back_deg,
@@ -111,6 +124,15 @@ impl Record {
             pose_home_deg,
         };
         record.is_valid().then_some(record)
+    }
+
+    /// Mark the pitch zero as an operator capture so the boot path restores it.
+    ///
+    /// A builder rather than another constructor argument: the flag is
+    /// orthogonal to the measured angles and most callers leave it clear.
+    pub fn with_zero_captured(mut self, captured: bool) -> Self {
+        self.zero_captured = captured;
+        self
     }
 
     /// Whether every field is inside the range a real capture can produce.
@@ -130,7 +152,11 @@ impl Record {
         bytes[OFF_MAGIC..OFF_MAGIC + 4].copy_from_slice(&MAGIC.to_le_bytes());
         bytes[OFF_VERSION..OFF_VERSION + 2].copy_from_slice(&VERSION.to_le_bytes());
         bytes[OFF_MOUNT] = self.mount;
-        bytes[OFF_FLAGS] = 0;
+        bytes[OFF_FLAGS] = if self.zero_captured {
+            FLAG_ZERO_CAPTURED
+        } else {
+            0
+        };
         bytes[OFF_ZERO_PITCH..OFF_ZERO_PITCH + 4]
             .copy_from_slice(&self.zero_pitch_rad.to_le_bytes());
         bytes[OFF_ZERO_ROLL..OFF_ZERO_ROLL + 4].copy_from_slice(&self.zero_roll_rad.to_le_bytes());
@@ -167,6 +193,7 @@ impl Record {
         }
         let record = Self {
             mount: bytes[OFF_MOUNT],
+            zero_captured: bytes[OFF_FLAGS] & FLAG_ZERO_CAPTURED != 0,
             zero_pitch_rad: f32::from_le_bytes(
                 bytes[OFF_ZERO_PITCH..OFF_ZERO_PITCH + 4].try_into().ok()?,
             ),
@@ -249,6 +276,7 @@ mod tests {
         Record {
             mount: Mount::RotYp.as_u32() as u8,
             zero_pitch_rad: 0.021,
+            zero_captured: true,
             zero_roll_rad: -0.004,
             level_rad: -0.012,
             pose_back_deg: Some(-99.8),
@@ -261,6 +289,34 @@ mod tests {
     fn round_trip() {
         let record = sample();
         assert_eq!(Record::decode(&record.encode()), Some(record));
+    }
+
+    #[test]
+    fn zero_captured_flag_round_trips() {
+        for captured in [false, true] {
+            let record =
+                Record::new(0, 0.01, 0.0, 0.0, None, None, None).unwrap()
+                    .with_zero_captured(captured);
+            let decoded = Record::decode(&record.encode()).unwrap();
+            assert_eq!(decoded.zero_captured, captured);
+            assert_eq!(decoded.zero_pitch_rad, 0.01);
+        }
+    }
+
+    #[test]
+    fn a_legacy_record_decodes_with_the_zero_flag_clear() {
+        let record = Record::new(0, 0.01, 0.0, 0.0, None, None, None)
+            .unwrap()
+            .with_zero_captured(true);
+        let mut bytes = record.encode();
+        bytes[OFF_FLAGS] = 0;
+        // Legacy writers leave the flags byte clear; recompute the CRC over
+        // that image so the only difference is the bit the old firmware lacked.
+        let crc = crc32(&bytes[..CRC_SPAN]);
+        bytes[OFF_CRC..OFF_CRC + 4].copy_from_slice(&crc.to_le_bytes());
+        let decoded = Record::decode(&bytes).unwrap();
+        assert!(!decoded.zero_captured);
+        assert_eq!(decoded.zero_pitch_rad, 0.01);
     }
 
     #[test]
