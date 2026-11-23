@@ -179,6 +179,24 @@ silently ignored, so a request for 500 actually ran at 100. The driver now
 clamps and reports the applied value. The passing result is therefore labelled
 `slew 100`, and the procedure starts at that value.
 
+### Commanded-disturbance attempts at 0.25
+
+- `csv/jbot-recovery-1795394161845.csv` (`home 3 deg`, three trials): the first
+  step drove pitch to 33.5 degrees, travel 0.37 m and disarmed the law. `jbot-analyze`
+  found a 1.57 s oscillation with 42.6 degrees peak-to-peak and a poor law fit
+  (R2 -1.8). Trials two and three ran with zero torque because the law was
+  already off; the driver now aborts the series on disarm.
+- `csv/jbot-recovery-1795394215846.csv` (`home 1 deg`): trial one peaked at
+  17.6 degrees and travelled 0.27 m but stayed armed, though it did not settle
+  inside the 3 degree residual window. Trial two peaked at 35 degrees,
+  travelled 0.52 m and latched. The 1 degree disturbance is therefore not
+  repeatable either.
+
+The machine can hold still at `pscale 0.25 / slew 100` but cannot reject even a
+minimal reference step twice in a row. The fitted `kp 6.2 Nm/rad` leaves little
+authority against gravity at a few degrees of error, so the next step in the
+ladder is a single rung to `pscale 0.30` with `slew` held at 100.
+
 ## Gate
 
 Link check, wheel-level yaw, body-level pivot and the 10 s hold gate at
