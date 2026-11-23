@@ -50,6 +50,12 @@ stable period is a control loop fighting itself, not an external disturbance.
   The first hold run at `slew 200` oscillated and latched; `slew 100` passed
   the hold gate with a well-fitted pitch law (`kp 6.2 Nm/rad`, `kd 1.36 Nm/rad`,
   R2 0.94). Keep `slew` fixed while stepping `pscale`.
+- **Current status:** the ladder is blocked at 0.25. A 3 degree disturbance
+  latched, a 1 degree disturbance failed on the second repetition, and the
+  0.30 rung oscillated and latched during the hold gate. Do not repeat the
+  ladder until the loaded dead zone (observed around 47-61 units) is measured
+  and `PlantParams::NOMINAL` is re-derived. See `docs/wp3-bench-log.md`
+  session 8.
 
 ## Ladder
 

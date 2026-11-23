@@ -197,8 +197,26 @@ minimal reference step twice in a row. The fitted `kp 6.2 Nm/rad` leaves little
 authority against gravity at a few degrees of error, so the next step in the
 ladder is a single rung to `pscale 0.30` with `slew` held at 100.
 
+### Next rung: 0.30
+
+`csv/jbot-recovery-1795394255629.csv` (`pscale 0.30 / slew 100`, hold only):
+the machine never settled. Pitch oscillated between about +18 and -25 degrees
+with a roughly 1.2 s period while position drifted to -0.44 m, and the guard
+latched at the end. This reproduces the 0.30 behaviour from session 7, so the
+rung is rejected; the ladder cannot advance past 0.25 on this setup.
+
+### Ladder outcome
+
+The ladder stops at `pscale 0.25 / slew 100`. That profile can hold still but
+cannot reject even a 1 degree reference step twice, and the next rung is
+unstable. The recordings repeatedly report a loaded breakaway around 47-61
+units (0.23-0.30 Nm nominal), which is not in `PlantParams::NOMINAL`; until it
+is measured and the gains are re-derived, raising `pscale` is guesswork. A
+repeatable release fixture is still needed as well.
+
 ## Gate
 
-Link check, wheel-level yaw, body-level pivot and the 10 s hold gate at
+Link check, wheel-level yaw, body-level pivot and one 10 s hold gate at
 `pscale 0.25 / slew 100` pass. The commanded-disturbance portion of the WP3
-gate is still open; controlled fall remains blocked on test-rig quality.
+gate is not met, the gain ladder is blocked at 0.25, and controlled fall
+remains blocked on test-rig quality.
