@@ -317,16 +317,8 @@ fn main() {
         Duration::from_millis(300),
         None,
     );
-    send(&mut serial, "level");
-    pump(
-        &mut serial,
-        &mut buffer,
-        &mut csv,
-        &started,
-        0,
-        Duration::from_millis(300),
-        None,
-    );
+    // Keep the persisted level. Re-capturing it while the operator still
+    // holds the body at an angle poisoned the reference in the first trial.
     send(&mut serial, "arm");
     let arm = pump(
         &mut serial,
