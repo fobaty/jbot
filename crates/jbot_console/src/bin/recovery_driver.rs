@@ -641,8 +641,8 @@ fn main() {
             u8::from(stats.other_mode),
             u8::from(stats.disarmed),
         );
-        if stats.estop || stats.fall_latch {
-            println!("  guard fired; stopping the series");
+        if stats.estop || stats.fall_latch || stats.disarmed {
+            println!("  guard fired or the law disarmed; stopping the series");
             break;
         }
     }
