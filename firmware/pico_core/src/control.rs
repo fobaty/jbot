@@ -777,13 +777,14 @@ impl BalanceController {
 
 /// Smooth inverse of the torque dead zone, newton-metres in and out.
 ///
-/// Measured holding torque slope, command units per degree of pitch.
+/// Corrective torque slope, command units per degree of pitch.
 ///
-/// Derived from the inverted-lever calibration (`docs/lever-calibration.md`):
-/// a positive command drives the body negative, so the holding torque has a
-/// negative slope against pitch. The outer table values give -77.5 units over
-/// 24 degrees, rounded here.
-pub const FEEDFORWARD_SLOPE_UNITS_PER_DEG: f32 = -3.23;
+/// Derived from the inverted-lever calibration (`docs/lever-calibration.md`).
+/// The measured curve is the torque that *caused* a given lean: +60 units gave
+/// -15 degrees. Returning body to home needs the opposite sign, so the
+/// correction is +3.23 units per degree. An A/B hold test confirmed that the
+/// negative slope destabilised the loop.
+pub const FEEDFORWARD_SLOPE_UNITS_PER_DEG: f32 = 3.23;
 /// Home pitch used as the zero of the feedforward table, degrees.
 pub const FEEDFORWARD_HOME_DEG: f32 = -2.5;
 /// Maximum feedforward contribution, command units.
@@ -1943,13 +1944,13 @@ mod tests {
         assert_eq!(feedforward_units(FEEDFORWARD_HOME_DEG.to_radians()), 0.0);
         let forward = feedforward_units(12.0_f32.to_radians());
         let back = feedforward_units((-12.0_f32).to_radians());
-        assert!(forward < 0.0 && back > 0.0);
+        assert!(forward > 0.0 && back < 0.0);
         assert!(forward >= -FEEDFORWARD_LIMIT_UNITS);
         assert!(back <= FEEDFORWARD_LIMIT_UNITS);
         assert_eq!(feedforward_units(f32::NAN), 0.0);
         assert_eq!(
             feedforward_units(180.0_f32.to_radians()),
-            -FEEDFORWARD_LIMIT_UNITS
+            FEEDFORWARD_LIMIT_UNITS
         );
     }
 

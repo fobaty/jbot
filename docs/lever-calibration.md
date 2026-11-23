@@ -112,10 +112,22 @@ The feature is **off at boot** and enabled only with the console command
 `ff on` (`ff off` disables, `ff` queries). Runtime-only, like `pscale` and
 `slew`, so it cannot leak into a fresh session. Telemetry reports the applied
 value in the `ff` field. The code and unit tests are in place; flashing and a
-bench A/B comparison needs separate approval. The firmware was flashed on
-2026-11-22 (`picotool load -u -v -x -t elf`, verified OK); boot telemetry shows
-`ff=0` and the persisted `zof=-2.50 deg`. The mainboard was asleep at that
-moment, so no torque was produced.
+The firmware was flashed on 2026-11-22 (`picotool load -u -v -x -t elf`,
+verified OK); boot telemetry shows `ff=0` and the persisted `zof=-2.50 deg`.
+
+### A/B hold test and sign correction
+
+`csv/jbot-recovery-1795396331682.csv` (`ff off`) and
+`csv/jbot-recovery-1795396373463.csv` (`ff on`) are two 10 s hold gates at
+`pscale 0.25 / slew 100`. With the first, negative slope the result was worse:
+
+- `ff off`: pitch p2p 1.9 degrees, no oscillation, kp 6.6 Nm/rad, R2 0.75.
+- `ff on`: pitch p2p 3.4 degrees, a 3.93 s period, kp 0.9 Nm/rad, R2 negative.
+
+The ladder curve is the torque that *caused* a lean (+60 units gave -15
+degrees). Returning the body home needs the opposite sign, so the corrective
+slope was changed to +3.23 units per degree. The corrected code passes all
+quality gates but has not been reflashed or re-tested yet.
 
 The feedforward is an empirical correction, not the gravity lever `m*g*L`.
 Verify with the gain ladder that enabling it does not change the stability
