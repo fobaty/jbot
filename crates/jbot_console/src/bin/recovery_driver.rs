@@ -86,6 +86,7 @@ struct TrialStats {
     last_pitch: f64,
     max_travel_m: f64,
     peak_torque: f64,
+    wheel_active_samples: usize,
     estop: bool,
     fall_latch: bool,
     disarmed: bool,
@@ -101,6 +102,9 @@ impl TrialStats {
         self.last_pitch = num(line, "pitch");
         self.max_travel_m = self.max_travel_m.max((num(line, "x") - origin_m).abs());
         self.peak_torque = self.peak_torque.max(num(line, "trq").abs());
+        if num(line, "left_rpm").abs() > 2.0 || num(line, "right_rpm").abs() > 2.0 {
+            self.wheel_active_samples += 1;
+        }
         self.estop |= num(line, "estop") > 0.5;
         // Mode 4 is the fall latch; any other nonzero op mode means the
         // balance law handed control to a different subsystem.
@@ -109,8 +113,14 @@ impl TrialStats {
         self.disarmed |= num(line, "arm") < 0.5;
     }
 
+    /// A body that never turns its wheels is resting on the rope, not balancing.
+    fn externally_supported(&self) -> bool {
+        self.wheel_active_samples < 20
+    }
+
     fn pass(&self, baseline_pitch: f64) -> bool {
         self.samples > 20
+            && !self.externally_supported()
             && !self.estop
             && !self.fall_latch
             && !self.disarmed
@@ -586,7 +596,8 @@ fn main() {
             Some(&mut stats),
         );
         println!(
-            "hold: pitch max {:.2} deg, travel {:.3} m, torque peak {:.0} units, estop={} latch={} disarmed={}",
+            "hold: wheel-active {} samples, pitch max {:.2} deg, travel {:.3} m, torque peak {:.0} units, estop={} latch={} disarmed={}",
+            stats.wheel_active_samples,
             stats.max_abs_pitch,
             stats.max_travel_m,
             stats.peak_torque,
@@ -643,8 +654,9 @@ fn main() {
             passed += 1;
         }
         println!(
-            "  {} samples, pitch max {:.2} deg, last {:.2} deg, travel {:.3} m, torque peak {:.0} units, estop={} latch={} other_opm={} disarmed={}",
+            "  {} samples, wheel-active {} samples, pitch max {:.2} deg, last {:.2} deg, travel {:.3} m, torque peak {:.0} units, estop={} latch={} other_opm={} disarmed={}",
             stats.samples,
+            stats.wheel_active_samples,
             stats.max_abs_pitch,
             stats.last_pitch,
             stats.max_travel_m,
