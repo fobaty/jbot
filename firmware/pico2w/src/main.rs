@@ -177,6 +177,7 @@ async fn main(spawner: Spawner) {
             state::set_pose_home_deg(record.pose_home_deg);
             if record.zero_captured {
                 state::set_zero_pitch_rad(record.zero_pitch_rad);
+                state::set_zero_roll_rad(record.zero_roll_rad);
                 state::set_zero_captured(true);
             } else if let Some(home_deg) = record.pose_home_deg {
                 state::set_zero_pitch_rad(home_deg.to_radians());
