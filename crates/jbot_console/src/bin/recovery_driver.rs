@@ -133,6 +133,7 @@ fn pump(
                             if let Some(stats) = stats.as_deref_mut() {
                                 stats.observe(&text);
                             }
+                            lines.push(text);
                         } else {
                             lines.push(text);
                         }
