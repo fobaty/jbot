@@ -246,6 +246,61 @@ fn capture_level_when_still(
     false
 }
 
+/// Snap the pitch reference to the body's current attitude. A level captured
+/// moments earlier can still differ from the attitude at `arm`, and that
+/// mismatch is enough to push a free-standing machine over.
+fn snap_reference_when_still(
+    serial: &mut Box<dyn SerialPort>,
+    buffer: &mut Vec<u8>,
+    csv: &mut BufWriter<File>,
+    started: &Instant,
+    timeout: Duration,
+) -> Option<f64> {
+    let deadline = Instant::now() + timeout;
+    let mut window: Vec<(f64, f64)> = Vec::new();
+    while Instant::now() < deadline {
+        let lines = pump(
+            serial,
+            buffer,
+            csv,
+            started,
+            0,
+            Duration::from_millis(200),
+            None,
+        );
+        for line in lines {
+            if !telemetry_line(&line) {
+                continue;
+            }
+            if num(&line, "arm") > 0.5 || num(&line, "estop") > 0.5 || num(&line, "age") > 300.0 {
+                window.clear();
+                continue;
+            }
+            let now = started.elapsed().as_secs_f64();
+            window.retain(|(t, _)| now - *t <= 1.0);
+            window.push((now, num(&line, "pitch")));
+            if window.len() < 8 {
+                continue;
+            }
+            let lo = window.iter().map(|(_, p)| *p).fold(f64::INFINITY, f64::min);
+            let hi = window
+                .iter()
+                .map(|(_, p)| *p)
+                .fold(f64::NEG_INFINITY, f64::max);
+            if hi - lo < 0.5 {
+                let pitch = window.last().map(|(_, p)| *p).unwrap_or(0.0);
+                if pitch.abs() <= 4.0 {
+                    let _ = serial.write_all(format!("home {pitch:.2}\n").as_bytes());
+                    let _ = serial.flush();
+                    return Some(pitch);
+                }
+                return None;
+            }
+        }
+    }
+    None
+}
+
 fn pick_port(explicit: Option<String>) -> String {
     if let Some(port) = explicit {
         return port;
@@ -269,6 +324,7 @@ fn main() {
     let mut args = std::env::args().skip(1);
     let mut run = false;
     let mut relevel = false;
+    let mut snap_ref = false;
     let mut port = None;
     let mut trials = 3_usize;
     let mut angle = 5.0_f64;
@@ -278,6 +334,7 @@ fn main() {
         match arg.as_str() {
             "--run" => run = true,
             "--relevel" => relevel = true,
+            "--snap-ref" => snap_ref = true,
             "--port" => port = args.next(),
             "--trials" => {
                 if let Some(value) = args.next().and_then(|v| v.parse::<usize>().ok()) {
@@ -302,7 +359,7 @@ fn main() {
                 }
             }
             "--help" | "-h" => {
-                println!("usage: recovery_driver --run [--relevel] [--trials 3] [--angle 5] [--hold-ms 500] [--settle-ms 2000] [--port PATH]");
+                println!("usage: recovery_driver --run [--relevel | --snap-ref] [--trials 3] [--angle 5] [--hold-ms 500] [--settle-ms 2000] [--port PATH]");
                 return;
             }
             other => {
@@ -369,7 +426,23 @@ fn main() {
         Duration::from_millis(300),
         None,
     );
-    if relevel {
+    if snap_ref {
+        println!("hold the body upright and still: snapping the reference to its pitch");
+        if snap_reference_when_still(
+            &mut serial,
+            &mut buffer,
+            &mut csv,
+            &started,
+            Duration::from_secs(12),
+        )
+        .is_none()
+        {
+            println!("pitch never settled or was outside the home range; aborting");
+            send(&mut serial, "estop");
+            let _ = csv.flush();
+            return;
+        }
+    } else if relevel {
         println!("hold the body upright and still: capturing level when pitch settles");
         if !capture_level_when_still(
             &mut serial,
@@ -440,8 +513,14 @@ fn main() {
             origin_m: baseline_position,
             ..TrialStats::default()
         };
-        println!("trial {trial}/{trials}: home {angle:.1} deg for {hold_ms} ms");
-        send(&mut serial, &format!("home {angle:.1}"));
+        let target = baseline_pitch + angle;
+        let return_target = baseline_pitch;
+        if target.abs() > 5.0 || return_target.abs() > 5.0 {
+            println!("home targets outside the 5 degree limit; aborting");
+            break;
+        }
+        println!("trial {trial}/{trials}: home {target:.1} deg for {hold_ms} ms");
+        send(&mut serial, &format!("home {target:.2}"));
         pump(
             &mut serial,
             &mut buffer,
@@ -451,7 +530,7 @@ fn main() {
             Duration::from_millis(hold_ms),
             Some(&mut stats),
         );
-        send(&mut serial, "home");
+        send(&mut serial, &format!("home {return_target:.2}"));
         pump(
             &mut serial,
             &mut buffer,
