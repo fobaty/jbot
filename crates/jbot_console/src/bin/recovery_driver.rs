@@ -326,6 +326,10 @@ fn main() {
     let mut relevel = false;
     let mut snap_ref = false;
     let mut port = None;
+    // The compiled defaults (pscale 1.0, slew 3000) are not a safe bench
+    // profile: every stable armed run in the audit used pscale 0.10-0.30.
+    let mut pscale = 0.30_f64;
+    let mut slew = 100.0_f64;
     let mut trials = 3_usize;
     let mut angle = 5.0_f64;
     let mut hold_ms = 500_u64;
@@ -336,6 +340,20 @@ fn main() {
             "--relevel" => relevel = true,
             "--snap-ref" => snap_ref = true,
             "--port" => port = args.next(),
+            "--pscale" => {
+                if let Some(value) = args.next().and_then(|v| v.parse::<f64>().ok()) {
+                    if value.is_finite() && (0.0..=1.0).contains(&value) {
+                        pscale = value;
+                    }
+                }
+            }
+            "--slew" => {
+                if let Some(value) = args.next().and_then(|v| v.parse::<f64>().ok()) {
+                    if value.is_finite() && (50.0..=300.0).contains(&value) {
+                        slew = value;
+                    }
+                }
+            }
             "--trials" => {
                 if let Some(value) = args.next().and_then(|v| v.parse::<usize>().ok()) {
                     trials = value.clamp(1, 10);
@@ -359,7 +377,7 @@ fn main() {
                 }
             }
             "--help" | "-h" => {
-                println!("usage: recovery_driver --run [--relevel | --snap-ref] [--trials 3] [--angle 5] [--hold-ms 500] [--settle-ms 2000] [--port PATH]");
+                println!("usage: recovery_driver --run [--snap-ref] [--trials 3] [--angle 5] [--hold-ms 500] [--settle-ms 2000] [--pscale 0.30] [--slew 100] [--port PATH]");
                 return;
             }
             other => {
@@ -417,6 +435,9 @@ fn main() {
         None,
     );
     send(&mut serial, "clear");
+    println!("safe bench profile: pscale {pscale:.2}, slew {slew:.0}");
+    send(&mut serial, &format!("pscale {pscale:.2}"));
+    send(&mut serial, &format!("slew {slew:.0}"));
     pump(
         &mut serial,
         &mut buffer,
