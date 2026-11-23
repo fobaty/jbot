@@ -134,7 +134,12 @@ telemetry with automatic `estop`. Rope and hands on the body, test zone at most
 0.5 m, minimum torque, smooth ramp and damping.
 
 **Gate:** repeatable recovery from N identical commanded disturbances with no
-fall and no latch.
+fall and no latch. **Not met.** WP3 session 7 added a command-driven
+`recovery_driver`, but the robot could not hold a stable upright baseline: the
+compiled `pscale=1.0` profile makes it fall immediately, while the safe bench
+profile `pscale=0.30 / slew=100` leaves it oscillating for about 4 s before
+latching. Closing this gate needs the re-run gain ladder and a repeatable
+release fixture; see `docs/wp3-bench-log.md`.
 
 ### WP4 — Tricks rollout, in this order
 

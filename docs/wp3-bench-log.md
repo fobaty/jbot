@@ -117,8 +117,49 @@ fall with the robot upright on the floor, rope and hands on the body. Evidence:
   demonstrate a controlled landing. Further bench work on the fall needs a
   rig that fixes the pivot and release conditions, not another hand-held trial.
 
+## Session 7 — WP3 gate attempt (commanded-disturbance recovery)
+
+A new `recovery_driver` was written to close the formal WP3 gate: arm the
+balance law, apply N identical pitch-reference steps with `home`, return the
+reference to the measured pitch and require recovery without a fall or a
+guard latch. It ends every run with `estop`. Several setup faults were found
+and fixed in the driver itself: an unguarded `level` recapture while the body
+was tilted, a stability check that could not see telemetry lines, and a pitch
+reference that did not match the measured attitude at `arm`.
+
+Evidence from the series (all `csv/jbot-recovery-*.csv`):
+
+- With the firmware defaults (`pscale=1.0`, `slew=3000`) the machine fell
+  within roughly 300 ms of `arm`. The audit records that every stable armed
+  run used `pscale 0.10-0.30` and that the compiled defaults are not a bench
+  profile. This was a test-setup error, not a firmware defect.
+- With a reference snapped to the measured pitch the machine held perfectly
+  while it was still supported (`pitch=-3.99` degrees, torque within +/-4
+  units for 1.7 s), confirming the law behaves correctly at zero mismatch.
+- With the safe bench profile (`pscale=0.30`, `slew=100`) the machine stayed
+  armed for about 4 s and repeatedly recovered from excursions past 20 degrees
+  (guard state moved from recover back to hold several times). It never
+  settled inside the +/-5 degree baseline window: it oscillated with a roughly
+  one-second period while position drifted to -0.42 m, then latched off. The
+  gate's stability precondition could not be met, so no disturbance trial ran.
+
+### Outcome
+
+The formal WP3 gate remains **not met**. The results point to two independent
+gaps rather than a single bug:
+
+1. The gain ladder has not been re-run on the current wiring (the audit notes
+   the `pscale` ladder has to be repeated after the sign/derivative correction).
+   `pscale 0.30` is a safe identification profile, not a tuned balance profile.
+2. The rope-on-floor, hand-held setup cannot release the body reproducibly or
+   hold a fixed pivot, the same limitation that blocked the fall trials.
+
+Further recovery trials are not recommended until both a tuned gain profile
+and a repeatable release fixture exist. The driver and its fixes are kept as
+the tool for that future work.
+
 ## Gate
 
-Link check, wheel-level yaw and body-level pivot pass. Fall work is blocked on
-test-rig quality, not on code: no further fall trials are recommended until a
-repeatable rig exists.
+Link check, wheel-level yaw and body-level pivot pass. Controlled fall and the
+commanded-disturbance recovery gate are both blocked on test-rig quality and
+on the outstanding gain ladder, not on the control code.
