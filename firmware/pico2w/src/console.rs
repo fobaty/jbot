@@ -271,11 +271,12 @@ async fn handle_command(class: &mut Console, flash: &mut Store, line: &[u8]) -> 
             let pscale = state::pscale();
             let tuning = state::tuning()
                 .scaled_by(pscale)
-                .with_deadband(state::deadband_nm());
+                .with_deadband(state::deadband_nm())
+                .with_derivative_scale(state::dscale());
             reply(
                 class,
                 format_args!(
-                    "stat up={:.1} loop={} stream={} trim={:.2} estop={} steps={} imu={} imu_err={} imu_code={} fb={} fb_drop={} rx={} fb_ok={} stop={} zero={:.2} zroll={:.2} level={:.2} mount={} nvm={} kpnm={:.1} kdnm={:.1} kpos={:.2} kv={:.2} ki={:.3} pdem={:.1} ptrm={:.1} armed={} zcapt={} lcapt={} home={:.2} fall={} vmax={:.2} pscale={:.2} slew={:.0} db={:.2}",
+                    "stat up={:.1} loop={} stream={} trim={:.2} estop={} steps={} imu={} imu_err={} imu_code={} fb={} fb_drop={} rx={} fb_ok={} stop={} zero={:.2} zroll={:.2} level={:.2} mount={} nvm={} kpnm={:.1} kdnm={:.1} kpos={:.2} kv={:.2} ki={:.3} pdem={:.1} ptrm={:.1} armed={} zcapt={} lcapt={} home={:.2} fall={} vmax={:.2} pscale={:.2} dscale={:.2} slew={:.0} db={:.2}",
                     uptime_s,
                     state::loop_hz(),
                     state::stream_hz(),
@@ -312,6 +313,7 @@ async fn handle_command(class: &mut Console, flash: &mut Store, line: &[u8]) -> 
                     state::read(&state::FALL_EVENTS),
                     state::ref_v_max_rad_s().to_degrees(),
                     pscale,
+                    state::dscale(),
                     state::torque_slew_per_s(),
                     state::deadband_nm(),
                 ),
@@ -653,6 +655,33 @@ async fn handle_command(class: &mut Console, flash: &mut Store, line: &[u8]) -> 
                             format_args!(
                                 "err pscale needs 0..={:.1} (1.0 = compiled tuning, 0 = law inert)",
                                 jbot_pico_core::control::MAX_PSCALE
+                            ),
+                        )
+                        .await;
+                    }
+                },
+            }
+        }
+        "dscale" => {
+            // Derivative-only bench scale. Runtime-only, like `pscale`.
+            match argument {
+                None => {
+                    reply(class, format_args!("ok dscale {:.2}", state::dscale())).await;
+                }
+                Some(value) => match parse_f32(value) {
+                    Some(scale)
+                        if scale.is_finite()
+                            && (0.0..=jbot_pico_core::control::MAX_DSCALE).contains(&scale) =>
+                    {
+                        let applied = state::set_dscale(scale);
+                        reply(class, format_args!("ok dscale {:.2}", applied)).await;
+                    }
+                    _ => {
+                        reply(
+                            class,
+                            format_args!(
+                                "err dscale needs 0..={:.1} (1.0 = compiled damping)",
+                                jbot_pico_core::control::MAX_DSCALE
                             ),
                         )
                         .await;

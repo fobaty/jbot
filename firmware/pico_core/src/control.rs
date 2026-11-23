@@ -292,11 +292,28 @@ impl Tuning {
         self.deadband_nm = deadband_nm.max(0.0);
         self
     }
+
+    /// Scale only the pitch derivative gain. Raising `pscale` alone lifts both
+    /// gains, so the extra proportional torque needed to cross the drive dead
+    /// zone also amplifies gyro noise and actuator lag into a limit cycle. This
+    /// lets a bench keep the damping small while opening the position loop.
+    /// Non-finite factors leave the gain unchanged.
+    pub fn with_derivative_scale(mut self, factor: f32) -> Self {
+        let factor = if factor.is_finite() {
+            factor.clamp(0.0, MAX_DSCALE)
+        } else {
+            1.0
+        };
+        self.pitch_kd_nm_per_rad_s *= factor;
+        self
+    }
 }
 
 /// Largest [`Tuning::scaled_by`] factor; the USB console polices the same
 /// bound for its `pscale` command.
 pub const MAX_PSCALE: f32 = 2.0;
+/// Largest [`Tuning::with_derivative_scale`] factor.
+pub const MAX_DSCALE: f32 = 2.0;
 
 /// High-level operating mode of the balance supervisor.
 ///
@@ -1042,6 +1059,18 @@ mod tests {
         assert_eq!(base.scaled_by(1.0), base);
         assert!(!base.scaled_by(0.0).is_active());
         assert!(base.scaled_by(1.0).is_active());
+    }
+
+    #[test]
+    fn derivative_scale_leaves_proportional_gain_untouched() {
+        let base = tuning();
+        let softened = base.with_derivative_scale(0.2);
+        assert_eq!(softened.pitch_kp_nm_per_rad, base.pitch_kp_nm_per_rad);
+        assert!((softened.pitch_kd_nm_per_rad_s - 0.2 * base.pitch_kd_nm_per_rad_s).abs() < 1e-6);
+        assert_eq!(base.with_derivative_scale(1.0), base);
+        assert_eq!(base.with_derivative_scale(f32::NAN), base);
+        let capped = base.with_derivative_scale(99.0);
+        assert!((capped.pitch_kd_nm_per_rad_s - MAX_DSCALE * base.pitch_kd_nm_per_rad_s).abs() < 1e-6);
     }
 
     #[test]

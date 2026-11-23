@@ -9,7 +9,7 @@ use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
 
-use jbot_pico_core::control::{StopReason, Tuning, MAX_PSCALE};
+use jbot_pico_core::control::{StopReason, Tuning, MAX_DSCALE, MAX_PSCALE};
 use jbot_pico_core::mount::Mount;
 use jbot_pico_core::plant::PlantParams;
 use jbot_pico_core::spin::SpinPair;
@@ -219,6 +219,9 @@ static REF_VMAX_BITS: AtomicU32 =
 /// stored as `f32` bits. Runtime-only: resets to 1.0 at boot so a bench
 /// session cannot leak a weakened law into the next power-up.
 static PSCALE_BITS: AtomicU32 = AtomicU32::new(1.0f32.to_bits());
+/// Runtime scale on only the pitch derivative gain, stored as `f32` bits.
+/// Runtime-only like [`PSCALE_BITS`], so it cannot leak into a power-up.
+static DSCALE_BITS: AtomicU32 = AtomicU32::new(1.0f32.to_bits());
 /// Runtime inverse of the measured drive dead zone, newton-metres, stored as
 /// `f32` bits. Off at boot like the feedforward gate: an empirical bench value
 /// must never change the compiled law on a fresh power-up.
@@ -364,6 +367,23 @@ pub fn set_pscale(value: f32) -> f32 {
         1.0
     };
     PSCALE_BITS.store(clamped.to_bits(), Ordering::Relaxed);
+    clamped
+}
+
+/// Runtime scale on the pitch derivative gain only.
+pub fn dscale() -> f32 {
+    f32::from_bits(DSCALE_BITS.load(Ordering::Relaxed))
+}
+
+/// Set the derivative-only scale, clamped to `0..=[`MAX_DSCALE`]`.
+/// Non-finite input resets to the neutral 1.0. Returns the stored value.
+pub fn set_dscale(value: f32) -> f32 {
+    let clamped = if value.is_finite() {
+        value.clamp(0.0, MAX_DSCALE)
+    } else {
+        1.0
+    };
+    DSCALE_BITS.store(clamped.to_bits(), Ordering::Relaxed);
     clamped
 }
 
