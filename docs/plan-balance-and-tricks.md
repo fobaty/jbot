@@ -139,9 +139,10 @@ fall and no latch.
 ### WP4 — Tricks rollout, in this order
 
 1. Spin/pivot - needs the WP2 yaw fix.
-2. Controlled soft fall - needs the `SafeFall` mode. The pure ramp and guard
-   grace are implemented with unit tests, and the firmware has a `fall` command
-   and SafeFall control path, but this code is **not flashed** yet.
+2. Controlled soft fall - needs the `SafeFall` mode. Implemented, tested and
+   flashed, but the first bench attempt (WP3 session 5) showed it cannot produce
+   a soft landing: gravity exceeds the 5.7 Nm budget beyond about 25 degrees.
+   Needs an Architect decision on the fall definition before further trials.
 3. Dynamic self-righting - needs WP1 and WP3.
 4. Backflip - only if WP0 measures enough torque and WP1 confirms it in the
    nonlinear model.

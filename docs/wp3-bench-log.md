@@ -79,7 +79,27 @@ fall or runaway, leaving the body free to rotate; zone at most 0.5 m. The same
 - This confirms the yaw-authority fix at body level: the corrected inverse
   produces a real in-place turn from the same 60-unit differential command.
 
+## Session 5 — first SafeFall attempt (not a soft landing)
+
+SafeFall firmware was flashed, then `fall_driver --run --record-ms 8000`
+executed `clear`, `level`, `arm` (confirmed `arm=1`) and `fall` with the robot
+upright on the floor, rope and hands on the body, zone at most 0.5 m. Evidence:
+`csv/jbot-fall-1795392138647.csv`.
+
+- The mode entered correctly: `opm=4`, grace counting down from 6.00 s, and the
+  pitch reference ramped from 1.26 to 5.69 degrees at the configured 15 deg/s.
+- It lasted only about 0.3 s. Peak commanded torque was 438 units (about 2.5 Nm),
+  but the body passed 71 degrees and the guard latched `Lying`; the mode ended
+  on the guard, not on reaching the 60-degree target. The driver then sent
+  `estop` as designed.
+- This is consistent with WP1 and the WP0 torque budget: beyond roughly 25
+  degrees, gravity torque (`m g L sin(theta)`) exceeds the 5.7 Nm available, so
+  the machine falls faster than a 15 deg/s reference can follow. A true soft
+  landing at the pillow angle is **not achievable** with this actuator; a
+  different mechanism or a revised definition of "controlled fall" is needed.
+
 ## Gate
 
-Link check, wheel-level yaw and body-level pivot all pass. Further Tier 1 work
-(controlled fall, higher-rate spin) still needs fresh step-by-step approval.
+Link check, wheel-level yaw and body-level pivot pass. SafeFall is implemented
+and flashed but does not produce a soft landing; further work needs an
+Architect decision on the fall definition, plus fresh step-by-step approval.
