@@ -126,8 +126,12 @@ verified OK); boot telemetry shows `ff=0` and the persisted `zof=-2.50 deg`.
 
 The ladder curve is the torque that *caused* a lean (+60 units gave -15
 degrees). Returning the body home needs the opposite sign, so the corrective
-slope was changed to +3.23 units per degree. The corrected code passes all
-quality gates but has not been reflashed or re-tested yet.
+slope was changed to +3.23 units per degree. The corrected firmware was
+reflashed and re-tested: `csv/jbot-recovery-1795396542330.csv` shows pitch
+p2p 1.2 degrees, no oscillation and 0.000 m travel, against 1.9 degrees for
+the `ff off` baseline. The lower law-fit R2 is expected because the offline
+fit does not model the added feedforward term. The feature stays off at boot
+and is enabled only with `ff on`.
 
 The feedforward is an empirical correction, not the gravity lever `m*g*L`.
 Verify with the gain ladder that enabling it does not change the stability
