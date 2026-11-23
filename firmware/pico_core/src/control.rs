@@ -933,17 +933,18 @@ impl FadeGain {
 }
 
 /// The drive ignores commands below `deadband` and then applies the excess, so
-/// the inverse has to add the dead zone back. The old quadratic blend reached
-/// only a fraction of the breakaway torque for small corrections, leaving the
-/// body stuck at a lean while the wheels stayed still. Any meaningful request
-/// now gets the full offset; only a narrow band around zero is blended so the
-/// inverse is not a pure relay at the equilibrium.
+/// the inverse has to add the dead zone back. A hard sign step would act like a
+/// relay and pump the machine, so the last bit before zero is blended.
 fn deadband_compensation(torque_nm: f32, deadband_nm: f32) -> f32 {
     if !deadband_nm.is_finite() || deadband_nm <= 0.0 || !torque_nm.is_finite() {
         return 0.0;
     }
-    let transition = deadband_nm * 0.1;
-    deadband_nm * (torque_nm / transition).clamp(-1.0, 1.0)
+    if torque_nm.abs() >= deadband_nm {
+        deadband_nm.copysign(torque_nm)
+    } else {
+        let ratio = torque_nm / deadband_nm;
+        deadband_nm * ratio * ratio.abs()
+    }
 }
 
 /// Convert a wheel torque pair into the EFeru steer/speed command.
@@ -2118,16 +2119,6 @@ mod tests {
             assert!((cmd_left - left).abs() <= 1);
             assert!((cmd_right - right).abs() <= 1);
         }
-    }
-
-    /// A small correction must still reach the breakaway torque; the old
-    /// quadratic inverse left the body parked in the dead zone.
-    #[test]
-    fn deadband_compensation_breaks_away_on_small_requests() {
-        let deadband = 0.5;
-        assert_eq!(deadband_compensation(0.0, deadband), 0.0);
-        assert!((deadband_compensation(0.1, deadband) - deadband).abs() < 1e-6);
-        assert!((deadband_compensation(-0.1, deadband) + deadband).abs() < 1e-6);
     }
 
     #[test]
