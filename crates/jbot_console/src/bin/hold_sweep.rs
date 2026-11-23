@@ -34,6 +34,10 @@ use serialport::SerialPort;
 const BAUD: u32 = 115200;
 const HEADER: &str = "t_ms,step,loop_hz,pitch_deg,lvl_deg,gy_dps,left_rpm,right_rpm,bat_v,age_ms,estop,arm,tsl_units,tsr_units,trq_units,ref_deg,demand_deg,position_m,mode,opm,profile";
 const PITCH_LIMIT_DEG: f64 = 2.0;
+/// Beyond this tilt the robot has physically tipped over. The firmware fall
+/// latch does not always engage, so the driver must detect a down body itself
+/// and stop before attempting further releases.
+const DOWN_PITCH_DEG: f64 = 20.0;
 const TRAVEL_LIMIT_M: f64 = 0.1;
 const TORQUE_LIMIT_UNITS: f64 = 900.0;
 /// A hold without wheel motion is a rope-supported stance, not a balance.
@@ -172,6 +176,7 @@ struct Gate {
     estop: bool,
     disarmed: bool,
     fall: bool,
+    down: bool,
     other_mode: bool,
 }
 
@@ -192,6 +197,7 @@ impl Gate {
             estop: false,
             disarmed: false,
             fall: false,
+            down: false,
             other_mode: false,
         }
     }
@@ -215,6 +221,7 @@ impl Gate {
         self.estop |= num(line, "estop") > 0.5;
         self.disarmed |= num(line, "arm") < 0.5;
         self.fall |= num(line, "mode") > 3.5 || num(line, "opm") > 0.5;
+        self.down |= pitch.abs() > DOWN_PITCH_DEG;
         self.other_mode |= num(line, "mode") > 2.5;
     }
 
@@ -393,7 +400,7 @@ fn write_json(path: &PathBuf, gates: &[Gate], abort: Option<&str>, fixture: Opti
         let comma = if index + 1 == gates.len() { "" } else { "," };
         let _ = writeln!(
             file,
-            "    {{\"pscale\": {:.2}, \"slew\": {:.0}, \"db\": {:.2}, \"pass\": {}, \"release_void\": {}, \"release_pre_gy_peak\": {:.1}, \"release_gy_peak\": {:.1}, \"samples\": {}, \"max_pitch_deg\": {:.2}, \"final_pitch_deg\": {:.2}, \"travel_m\": {:.3}, \"peak_torque\": {:.0}, \"wheel_active_samples\": {}, \"estop\": {}, \"fall\": {}}}{comma}",
+            "    {{\"pscale\": {:.2}, \"slew\": {:.0}, \"db\": {:.2}, \"pass\": {}, \"release_void\": {}, \"release_pre_gy_peak\": {:.1}, \"release_gy_peak\": {:.1}, \"samples\": {}, \"max_pitch_deg\": {:.2}, \"final_pitch_deg\": {:.2}, \"travel_m\": {:.3}, \"peak_torque\": {:.0}, \"wheel_active_samples\": {}, \"estop\": {}, \"fall\": {}, \"down\": {}}}{comma}",
             gate.pscale,
             gate.slew,
             gate.db,
@@ -408,7 +415,8 @@ fn write_json(path: &PathBuf, gates: &[Gate], abort: Option<&str>, fixture: Opti
             gate.peak_torque,
             gate.wheel_active_samples,
             u8::from(gate.estop),
-            u8::from(gate.fall)
+            u8::from(gate.fall),
+            u8::from(gate.down)
         );
     }
     let _ = writeln!(file, "  ]");
@@ -684,7 +692,7 @@ fn main() {
             gate.release_pre_peak = release_pre_peak;
             for sample in &held {
                 gate.observe(&sample.line, origin_x);
-                if gate.estop || gate.disarmed || gate.fall {
+                if gate.estop || gate.disarmed || gate.fall || gate.down {
                     break;
                 }
             }
@@ -713,7 +721,7 @@ fn main() {
                     "NO - externally supported"
                 }
             );
-            let down = gate.fall || gate.estop || gate.disarmed;
+            let down = gate.fall || gate.down || gate.estop || gate.disarmed;
             gates.push(gate);
             send(&mut serial, "estop");
             if down {
@@ -881,6 +889,20 @@ mod tests {
         let mut gate = gate_with_peak(0.5);
         gate.release_pre_peak = 32.0;
         assert!(gate.release_void());
+    }
+
+    /// The firmware fall latch does not engage on every tip-over, so a large
+    /// pitch alone must mark the robot as down.
+    #[test]
+    fn a_large_pitch_marks_the_robot_down_without_a_fall_latch() {
+        let tipped = "t_ms=1000 pitch=31.5 lvl=0.0 gy=0.2 L=0 R=0 age=5 mb=ok bat=38 estop=0 arm=1 mode=2 opm=0 x=0 trq=10";
+        let mut gate = Gate::new(0.30, 300.0, 0.0);
+        for _ in 0..RELEASE_WINDOW_SAMPLES {
+            gate.observe(tipped, 0.0);
+        }
+        assert!(gate.down);
+        assert!(!gate.fall);
+        assert!(!gate.pass());
     }
 
     #[test]
