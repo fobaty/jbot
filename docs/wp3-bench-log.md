@@ -214,9 +214,25 @@ units (0.23-0.30 Nm nominal), which is not in `PlantParams::NOMINAL`; until it
 is measured and the gains are re-derived, raising `pscale` is guesswork. A
 repeatable release fixture is still needed as well.
 
+### Feedforward A/B and disturbance retry
+
+With the corrected +3.23 units/degree feedforward, `csv/jbot-recovery-1795396542330.csv`
+shows a better hold than the `ff off` baseline: pitch p2p 1.2 degrees versus
+1.9, no oscillation and 0.000 m travel.
+
+`csv/jbot-recovery-1795396635001.csv` repeated the 1 degree disturbance series
+with `ff on`. Two of three trials passed: pitch stayed within 2.6-3.3 degrees
+with no travel, no latch and residual pitch error under 1 degree. The third
+trial peaked at 36.8 degrees and the guard latched. The offline score reports
+a 42.7 degree peak-to-peak excursion over the whole run and one latch.
+
+This is an improvement from 0/3 before feedforward, but the WP3 gate requires
+every trial to recover: it is still not met.
+
 ## Gate
 
-Link check, wheel-level yaw, body-level pivot and one 10 s hold gate at
-`pscale 0.25 / slew 100` pass. The commanded-disturbance portion of the WP3
-gate is not met, the gain ladder is blocked at 0.25, and controlled fall
-remains blocked on test-rig quality.
+Link check, wheel-level yaw, body-level pivot and the 10 s hold gate at
+`pscale 0.25 / slew 100` pass. With feedforward enabled, two of three 1 degree
+disturbances recover, but the commanded-disturbance gate is not met. The gain
+ladder is blocked at 0.25 and controlled fall remains blocked on test-rig
+quality.

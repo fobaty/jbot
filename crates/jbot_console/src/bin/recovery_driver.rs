@@ -194,7 +194,9 @@ fn wait_for_baseline(
                 && (mode == 1.0 || mode == 2.0)
                 && num(&line, "arm") > 0.5
                 && num(&line, "estop") < 0.5
-                && num(&line, "age") < 300.0;
+                && num(&line, "age") < 300.0
+                && num(&line, "x").abs() < 0.03
+                && num(&line, "gy").abs() < 5.0;
             if standing {
                 candidate = (pitch, num(&line, "x"));
                 if stable_since.is_none() {
