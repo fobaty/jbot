@@ -1,0 +1,10 @@
+[package]
+name = "f103_core"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[lib]
+# I/O-free logic. Host tests compile this crate for the host and prove the
+# control/protocol contracts without hardware.
+path = "src/lib.rs"

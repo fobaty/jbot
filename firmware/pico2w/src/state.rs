@@ -4,13 +4,14 @@
 //! lock-free surface they share. Atomics keep the control loop free of locks
 //! and let the USB console read the same values without disturbing it.
 
-use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
 
 use jbot_pico_core::calibration::MAX_BREAKAWAY_UNITS;
 use jbot_pico_core::control::{StopReason, Tuning, MAX_DSCALE, MAX_PSCALE};
+use jbot_pico_core::hardened::ProtocolMode;
 use jbot_pico_core::mount::Mount;
 use jbot_pico_core::plant::PlantParams;
 use jbot_pico_core::spin::SpinPair;
@@ -40,6 +41,18 @@ pub const MAX_STREAM_HZ: u32 = CONTROL_HZ;
 const DEFAULT_STREAM_HZ: u32 = 1;
 /// Whether the STM32 debug bridge is forwarded to the USB console. Bench only.
 static DEBUG_BRIDGE: AtomicBool = AtomicBool::new(false);
+
+/// Control-link wire contract. Runtime-only: a bench switch must not leak into
+/// the next power-up, and the STM32 side defaults to the same legacy frame.
+static PROTOCOL_MODE: AtomicU8 = AtomicU8::new(ProtocolMode::DEFAULT.as_u8());
+
+pub fn set_protocol_mode(mode: ProtocolMode) {
+    PROTOCOL_MODE.store(mode.as_u8(), Ordering::Relaxed);
+}
+
+pub fn protocol_mode() -> ProtocolMode {
+    ProtocolMode::from_u8(PROTOCOL_MODE.load(Ordering::Relaxed)).unwrap_or(ProtocolMode::DEFAULT)
+}
 
 /// Enable or disable forwarding of the debug UART to the USB console.
 pub fn set_debug_bridge(enabled: bool) {
@@ -298,6 +311,8 @@ pub static CONTROL_STEPS: AtomicU32 = AtomicU32::new(0);
 pub static FALL_EVENTS: AtomicU32 = AtomicU32::new(0);
 /// Bytes discarded while resynchronising the feedback parser.
 pub static FB_DISCARDED: AtomicU32 = AtomicU32::new(0);
+/// CRC or framing failures of the hardened feedback decoder.
+pub static FB_CRC_ERRORS: AtomicU32 = AtomicU32::new(0);
 /// Raw bytes received from the mainboard link, including bytes that never
 /// become a frame. Distinguishes a dead wire from a framing mismatch.
 pub static LINK_BYTES: AtomicU32 = AtomicU32::new(0);
@@ -797,6 +812,7 @@ pub fn reset_counters() {
     IMU_LAST_ERROR.store(0, Ordering::Relaxed);
     FB_FRAMES.store(0, Ordering::Relaxed);
     FB_DISCARDED.store(0, Ordering::Relaxed);
+    FB_CRC_ERRORS.store(0, Ordering::Relaxed);
     LINK_BYTES.store(0, Ordering::Relaxed);
     STOP_REASON.store(0, Ordering::Relaxed);
     FALL_EVENTS.store(0, Ordering::Relaxed);

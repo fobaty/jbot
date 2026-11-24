@@ -31,8 +31,12 @@ perf.data.old
 **/.cargo/config.toml
 **/.cargo/config
 
+# macOS finder metadata is never part of a firmware commit.
+**/.DS_Store
+
 # Firmware target settings are part of the build, not a local override.
 !firmware/pico2w/.cargo/config.toml
+!firmware/stm32f103/rust/f103_fw/.cargo/config.toml
 
 # Exported dependency / doc artifacts
 /doc/

@@ -130,7 +130,7 @@ mod tests {
 
     #[test]
     fn delay_is_clamped_to_the_ring() {
-        let mut p = predictor(MAX_DELAY_TICKS + 10);
+        let p = predictor(MAX_DELAY_TICKS + 10);
         assert_eq!(p.delay_ticks(), MAX_DELAY_TICKS - 1);
     }
 

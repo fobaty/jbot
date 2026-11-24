@@ -65,6 +65,7 @@ use jbot_pico_core::control::{
 };
 use jbot_pico_core::eferu::{Feedback, FeedbackParser};
 use jbot_pico_core::filters::{LowPass, SlewLimiter};
+use jbot_pico_core::hardened::{decode_feedback_data, CommandEncoder, FrameDecoder, ProtocolMode};
 use jbot_pico_core::mount::{self, Mount};
 use jbot_pico_core::plant::PlantParams;
 use jbot_pico_core::predictor::StatePredictor;
@@ -270,7 +271,8 @@ async fn imu_task(mut imu: Bno055<'static, I2C1>) {
 /// Parse feedback frames from the STM32 torque node.
 #[embassy_executor::task]
 async fn link_rx_task(mut rx: BufferedUartRx<'static, UART0>) {
-    let mut parser = FeedbackParser::new();
+    let mut legacy = FeedbackParser::new();
+    let mut hardened = FrameDecoder::new();
     let mut buffer = [0u8; 64];
 
     loop {
@@ -279,12 +281,26 @@ async fn link_rx_task(mut rx: BufferedUartRx<'static, UART0>) {
             Ok(len) => {
                 state::LINK_BYTES.fetch_add(len as u32, Ordering::Relaxed);
                 for &byte in &buffer[..len] {
-                    if let Some(feedback) = parser.push(byte) {
-                        state::count(&state::FB_FRAMES);
-                        FEEDBACK_SIGNAL.signal(feedback);
+                    // Both decoders are always available; only the active
+                    // protocol feeds the control loop. Switching mode also
+                    // resets the stale decoder's state on its next frame.
+                    match state::protocol_mode() {
+                        ProtocolMode::Legacy => {
+                            if let Some(feedback) = legacy.push(byte) {
+                                state::count(&state::FB_FRAMES);
+                                FEEDBACK_SIGNAL.signal(feedback);
+                            }
+                        }
+                        ProtocolMode::Hardened => hardened.feed(&[byte], &mut |frame| {
+                            if let Some(data) = decode_feedback_data(&frame) {
+                                state::count(&state::FB_FRAMES);
+                                FEEDBACK_SIGNAL.signal(data.to_eferu());
+                            }
+                        }),
                     }
                 }
-                state::FB_DISCARDED.store(parser.discarded_bytes, Ordering::Relaxed);
+                state::FB_DISCARDED.store(legacy.discarded_bytes, Ordering::Relaxed);
+                state::FB_CRC_ERRORS.store(hardened.crc_errors, Ordering::Relaxed);
             }
             Err(error) => {
                 defmt::warn!("link rx error: {}", error);
@@ -324,6 +340,7 @@ async fn control_task(
     let mut safe_fall_grace_s = 0.0_f32;
     let mut was_armed = false;
     let mut steps: u32 = 0;
+    let mut command_encoder = CommandEncoder::default();
     // Travel since arming, metres, from the wheel-speed feedback.
     let mut position_m = 0.0_f32;
     let mut feedback_gap_logged = false;
@@ -703,8 +720,21 @@ async fn control_task(
             safe_fall_grace_s = (safe_fall_grace_s - CONTROL_PERIOD_S).max(0.0);
         }
 
-        // The mainboard expects exactly eight bytes between two idle gaps.
-        let _ = tx.write_all(&command.encode()).await;
+        // Both wire contracts share this single TX choke point. The default is
+        // the legacy 8-byte frame so the pinned mainboard keeps working; the
+        // encoder can be switched without touching the control task.
+        command_encoder.set_mode(state::protocol_mode());
+        let mut wire = [0u8; 256];
+        let n = command_encoder
+            .encode(
+                steps as u16,
+                steps.wrapping_mul(5_000),
+                command.steer,
+                command.speed,
+                &mut wire,
+            )
+            .expect("control frame fits the wire buffer");
+        let _ = tx.write_all(&wire[..n]).await;
 
         marker.toggle();
         watchdog.feed();

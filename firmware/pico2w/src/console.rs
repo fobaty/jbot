@@ -636,6 +636,30 @@ async fn handle_command(class: &mut Console, flash: &mut Store, line: &[u8]) -> 
                 },
             }
         }
+        "protocol" => {
+            // Control-link frame format. Runtime-only, matching the STM32
+            // console switch, so a bench session cannot change the boot link.
+            match argument {
+                None => {
+                    reply(
+                        class,
+                        format_args!("ok protocol {}", state::protocol_mode().label()),
+                    )
+                    .await;
+                }
+                Some("legacy") => {
+                    state::set_protocol_mode(jbot_pico_core::hardened::ProtocolMode::Legacy);
+                    reply(class, format_args!("ok protocol LEGACY8")).await;
+                }
+                Some("hardened") => {
+                    state::set_protocol_mode(jbot_pico_core::hardened::ProtocolMode::Hardened);
+                    reply(class, format_args!("ok protocol HARDENED")).await;
+                }
+                _ => {
+                    reply(class, format_args!("err protocol needs legacy|hardened")).await;
+                }
+            }
+        }
         "pscale" => {
             // Bench power scale for the balance law: a runtime multiplier on
             // the angular-output gains (pitch kp/kd and the yaw differential).

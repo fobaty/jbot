@@ -12,6 +12,7 @@ pub mod calibration;
 pub mod control;
 pub mod eferu;
 pub mod filters;
+pub mod hardened;
 pub mod mount;
 pub mod nvm;
 pub mod plant;
