@@ -33,8 +33,8 @@ index 8f697f4..2b6c546 100644
 +  #define FILTER 19661
 +
 +  // Bench debug serial on USART3 (right cable). USART2 carries the control
-+  // link and feedback, so debug must not share it. The Pico bridges GP12/GP13
-+  // to this port and forwards the text to its USB console.
++  // link and feedback, so debug must not share it. Attach a 3.3 V USB-UART
++  // adapter to read this port.
 +  #define DEBUG_SERIAL_USART3
  #endif
  // ######################## END OF VARIANT_USART SETTINGS #########################

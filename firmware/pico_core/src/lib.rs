@@ -8,11 +8,13 @@
 #![cfg_attr(not(test), no_std)]
 
 pub mod bno055;
+pub mod calibration;
 pub mod control;
 pub mod eferu;
 pub mod filters;
 pub mod mount;
 pub mod nvm;
 pub mod plant;
+pub mod predictor;
 pub mod reference;
 pub mod spin;

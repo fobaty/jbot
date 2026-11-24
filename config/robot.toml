@@ -29,9 +29,10 @@ wheel_radius_m = 0.0825
 wheel_inertia_kg_m2 = 0.0078
 # Source: donor axle between wheel centres. Uncertainty: +/- 20 mm.
 track_width_m = 0.32
-# Source: packaging sketch with the pack and electronics above the axle.
-# Uncertainty: +/- 50 mm.
-com_height_m = 0.25
+# Source: bench measurement from the wheel axle to the gyroscope, 260 mm.
+# Used as the CoM proxy until the mass distribution is measured directly.
+# Uncertainty: the true CoM is at or below the gyroscope.
+com_height_m = 0.26
 
 [leg]
 # Stage 2 only. Planar four-bar in the fore-aft/vertical leg plane.

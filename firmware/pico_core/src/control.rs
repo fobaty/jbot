@@ -1070,7 +1070,9 @@ mod tests {
         assert_eq!(base.with_derivative_scale(1.0), base);
         assert_eq!(base.with_derivative_scale(f32::NAN), base);
         let capped = base.with_derivative_scale(99.0);
-        assert!((capped.pitch_kd_nm_per_rad_s - MAX_DSCALE * base.pitch_kd_nm_per_rad_s).abs() < 1e-6);
+        assert!(
+            (capped.pitch_kd_nm_per_rad_s - MAX_DSCALE * base.pitch_kd_nm_per_rad_s).abs() < 1e-6
+        );
     }
 
     #[test]
@@ -1217,21 +1219,21 @@ mod tests {
     #[test]
     fn derived_gains_match_the_design() {
         let t = tuning();
-        // 4x the stability floor of 5.39 Nm/rad.
+        // 4x the stability floor of 5.49 Nm/rad (0.26 m geometry).
         assert!(
-            (t.pitch_kp_nm_per_rad - 4.0 * 5.39).abs() < 0.3,
+            (t.pitch_kp_nm_per_rad - 4.0 * 5.49).abs() < 0.3,
             "{}",
             t.pitch_kp_nm_per_rad
         );
         // Damping ratio 1.6 on a better-than-1 Hz pitch mode.
         assert!(
-            (t.pitch_kd_nm_per_rad_s - 5.94).abs() < 0.3,
+            (t.pitch_kd_nm_per_rad_s - 5.99).abs() < 0.3,
             "{}",
             t.pitch_kd_nm_per_rad_s
         );
-        // (b1*floor - b2) * margin / (margin - 1) = 4.85 * 4/3.
+        // (b1*floor - b2) * margin / (margin - 1) = 5.59 * 4/3.
         assert!(
-            (t.accel_per_rad_mps2 - 7.33).abs() < 0.2,
+            (t.accel_per_rad_mps2 - 7.45).abs() < 0.2,
             "{}",
             t.accel_per_rad_mps2
         );
@@ -1410,7 +1412,9 @@ mod tests {
             "{}",
             peak_after(&log, 0.0, 1)
         );
-        assert!(last(&log, 2).abs() < 0.1, "{}", last(&log, 2));
+        // The faster 0.26 m plant leaves a slightly larger residual roll speed
+        // after the same 20 s recovery window, still well inside a safe crawl.
+        assert!(last(&log, 2).abs() < 0.15, "{}", last(&log, 2));
     }
 
     #[test]

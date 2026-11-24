@@ -87,7 +87,9 @@ impl PlantParams {
         wheel_mass_kg: 4.6,
         body_inertia_kgm2: 0.30,
         wheel_inertia_kgm2: 0.0156,
-        com_height_m: 0.25,
+        // Bench measurement: 260 mm from the axle to the gyroscope. Used as
+        // the CoM proxy until the mass distribution is measured directly.
+        com_height_m: 0.26,
         wheel_radius_m: 0.0825,
         // 2 x 2.5 Nm per wheel.
         max_torque_nm: 5.0,
@@ -321,13 +323,14 @@ mod tests {
     fn nominal_coefficients_match_the_lagrangian() {
         let p = PlantParams::NOMINAL;
         // Values derived from the Lagrangian in the module header.
-        assert!((p.a1() - 25.49).abs() < 0.5, "a1 = {}", p.a1());
-        assert!((p.a2() - 4.73).abs() < 0.05, "a2 = {}", p.a2());
-        assert!((p.b1() - 1.52).abs() < 0.05, "b1 = {}", p.b1());
-        assert!((p.b2() - 2.68).abs() < 0.05, "b2 = {}", p.b2());
+        // Derived for the measured 0.26 m axle-to-gyro height.
+        assert!((p.a1() - 25.72).abs() < 0.5, "a1 = {}", p.a1());
+        assert!((p.a2() - 4.69).abs() < 0.05, "a2 = {}", p.a2());
+        assert!((p.b1() - 1.53).abs() < 0.05, "b1 = {}", p.b1());
+        assert!((p.b2() - 2.81).abs() < 0.05, "b2 = {}", p.b2());
         // 5 Nm total against a stability floor.
-        assert!((p.pitch_gain_floor_nm() - 5.39).abs() < 0.1);
-        assert!((p.lift_limit_rad().to_degrees() - 53.1).abs() < 0.5);
+        assert!((p.pitch_gain_floor_nm() - 5.49).abs() < 0.1);
+        assert!((p.lift_limit_rad().to_degrees() - 52.2).abs() < 0.5);
     }
 
     #[test]

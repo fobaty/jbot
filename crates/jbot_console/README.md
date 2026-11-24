@@ -54,8 +54,13 @@ comparisons are not contaminated by the operator's hand:
 ```bash
 cargo run -q -p jbot_console --bin recovery_driver --release -- \
   --run --snap-ref --trials 1 --angle 1 --hold-ms 1000 \
-  --settle-ms 2000 --pscale 0.30 --slew 100
+  --settle-ms 2000 --pscale 0.30 --slew 100 --cal 35 50 --dither 30
 ```
+
+`--cal LEFT RIGHT` is optional; omit it for an uncalibrated baseline. The
+breakaway values come from `motor_cal` on the suspended stand. `--dither` adds
+a common-mode 12 Hz triangle wave that keeps the drive at the edge of stiction,
+so a balance correction does not have to wait for the ~270 ms breakaway delay.
 
 ## Runtime firmware knobs
 
@@ -65,13 +70,19 @@ cargo run -q -p jbot_console --bin recovery_driver --release -- \
 | `dscale <0..2>` | Scale on the pitch derivative gain only; runtime-only |
 | `db <Nm\|off>` | Drive dead-zone compensation; runtime-only |
 | `slew <100..10000>` | Torque ramp rate in command units per second |
-| `dbg on\|off` | Bridge the STM32 debug serial (USART3) to this console |
-| `dbg <text>` | Send a line to the STM32 debug serial |
+| `cal [left right]` | Per-wheel breakaway compensation in command units; runtime-only |
+| `cal l\|r <units>` | Set one wheel's breakaway; `cal off` clears both |
+| `dither <units\|off>` | 12 Hz common-mode dither amplitude; runtime-only, off at boot |
 
-`stat` reports `pscale`, `dscale`, `db`, `slew`. The debug bridge uses a PIO
-UART on GP12 (RX) and GP13 (TX); wire them to STM32 PB10/PB11 on the right
-cable with a common ground. It is a bench tool and never touches the control
-link on UART0. See `docs/drive-diagnosis-2026-11-23.md`.
+`cal` applies a smooth inverse of each motor's breakaway threshold (about 30–35
+units left, 40–50 right on this unit) at the single command choke point, so both
+`test` and the balance law see the same calibration. It is zero at boot. Use
+`cargo run -q -p jbot_console --example motor_cal` on the suspended stand to
+measure the thresholds and verify the linearised response before balancing.
+
+`stat` reports `pscale`, `dscale`, `db`, `slew`, `cbl`, `cbr`, `dth`. Telemetry
+carries `cbl`/`cbr` (configured thresholds), `cwl`/`cwr` (calibrated wheel
+commands actually sent) and `dth`/`dthv` (dither amplitude and applied value).
 
 ## Window
 

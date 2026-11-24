@@ -9,6 +9,7 @@ use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
 
+use jbot_pico_core::calibration::MAX_BREAKAWAY_UNITS;
 use jbot_pico_core::control::{StopReason, Tuning, MAX_DSCALE, MAX_PSCALE};
 use jbot_pico_core::mount::Mount;
 use jbot_pico_core::plant::PlantParams;
@@ -37,6 +38,18 @@ pub const CONTROL_HZ: u32 = 200;
 pub const MAX_STREAM_HZ: u32 = CONTROL_HZ;
 /// Default telemetry rate: one line per second.
 const DEFAULT_STREAM_HZ: u32 = 1;
+/// Whether the STM32 debug bridge is forwarded to the USB console. Bench only.
+static DEBUG_BRIDGE: AtomicBool = AtomicBool::new(false);
+
+/// Enable or disable forwarding of the debug UART to the USB console.
+pub fn set_debug_bridge(enabled: bool) {
+    DEBUG_BRIDGE.store(enabled, Ordering::Relaxed);
+}
+
+/// `true` while the debug UART is forwarded to the USB console.
+pub fn debug_bridge_enabled() -> bool {
+    DEBUG_BRIDGE.load(Ordering::Relaxed)
+}
 
 /// One telemetry snapshot, published by the control task.
 #[derive(Clone, Copy, Default)]
@@ -117,6 +130,18 @@ pub struct Telemetry {
     pub raise_grace_s: f32,
     /// Applied calibrated feedforward, command units.
     pub feedforward_units: f32,
+    /// Configured per-wheel breakaway compensation, command units.
+    pub cal_left_units: f32,
+    /// Configured per-wheel breakaway compensation, command units.
+    pub cal_right_units: f32,
+    /// Calibrated wheel torque actually sent on this tick, command units.
+    pub cmd_left_units: f32,
+    /// Calibrated wheel torque actually sent on this tick, command units.
+    pub cmd_right_units: f32,
+    /// Configured dither amplitude, command units.
+    pub dither_units: f32,
+    /// Dither actually added on this tick, command units.
+    pub dither_applied_units: f32,
 }
 
 /// Balance mode values carried by [`Telemetry::balance_mode`].
@@ -228,6 +253,25 @@ static DSCALE_BITS: AtomicU32 = AtomicU32::new(1.0f32.to_bits());
 static DEADBAND_NM_BITS: AtomicU32 = AtomicU32::new(0);
 /// Largest dead-zone compensation the console accepts, newton-metres.
 pub const MAX_DEADBAND_NM: f32 = 0.6;
+/// Per-wheel breakaway calibration, command units, stored as `f32` bits.
+/// Runtime-only: zero at boot, like [`PSCALE_BITS`] and [`DEADBAND_NM_BITS`].
+static CAL_LEFT_BITS: AtomicU32 = AtomicU32::new(0);
+static CAL_RIGHT_BITS: AtomicU32 = AtomicU32::new(0);
+/// Calibrated wheel torque sent on the latest control tick, `f32` bits.
+static CMD_LEFT_BITS: AtomicU32 = AtomicU32::new(0);
+static CMD_RIGHT_BITS: AtomicU32 = AtomicU32::new(0);
+/// Dither amplitude, command units, `f32` bits. Runtime-only and zero at boot.
+static DITHER_BITS: AtomicU32 = AtomicU32::new(0);
+/// Largest dither amplitude the console accepts, command units. Roughly the
+/// measured breakaway range, so the wave can reach the stiction threshold.
+pub const MAX_DITHER_UNITS: f32 = 60.0;
+/// Applied dither on the latest control tick, `f32` bits.
+static DITHER_APPLIED_BITS: AtomicU32 = AtomicU32::new(0);
+/// Smith-predictor horizon, milliseconds, stored as `f32` bits. Runtime-only
+/// and zero at boot: delay compensation must be measured, never assumed.
+static PREDICT_MS_BITS: AtomicU32 = AtomicU32::new(0);
+/// Longest predictor horizon the console accepts, milliseconds.
+pub const MAX_PREDICT_MS: f32 = 150.0;
 /// Default rate of change of the applied wheel torque, command units per
 /// second. The compiled value keeps the response snappy enough for balance.
 pub const DEFAULT_TORQUE_SLEW_PER_S: f32 = 3_000.0;
@@ -239,17 +283,6 @@ pub const MAX_TORQUE_SLEW_PER_S: f32 = 10_000.0;
 /// [`PSCALE_BITS`]: a bench session cannot leak a softened ramp into the
 /// next power-up.
 static TORQUE_SLEW_BITS: AtomicU32 = AtomicU32::new(DEFAULT_TORQUE_SLEW_PER_S.to_bits());
-/// Whether the STM32 debug bridge is forwarded to the USB console. Bench only.
-static DEBUG_BRIDGE: AtomicBool = AtomicBool::new(false);
-
-/// Enable or disable forwarding of the debug UART to the USB console.
-pub fn set_debug_bridge(enabled: bool) {
-    DEBUG_BRIDGE.store(enabled, Ordering::Relaxed);
-}
-
-pub fn debug_bridge_enabled() -> bool {
-    DEBUG_BRIDGE.load(Ordering::Relaxed)
-}
 
 /// IMU samples delivered to the control task.
 pub static IMU_SAMPLES: AtomicU32 = AtomicU32::new(0);
@@ -414,6 +447,103 @@ pub fn set_deadband_nm(value: f32) -> f32 {
     };
     DEADBAND_NM_BITS.store(clamped.to_bits(), Ordering::Relaxed);
     clamped
+}
+
+/// Configured left-wheel breakaway compensation, command units.
+pub fn cal_left_units() -> f32 {
+    f32::from_bits(CAL_LEFT_BITS.load(Ordering::Relaxed))
+}
+
+/// Configured right-wheel breakaway compensation, command units.
+pub fn cal_right_units() -> f32 {
+    f32::from_bits(CAL_RIGHT_BITS.load(Ordering::Relaxed))
+}
+
+/// Set one wheel's breakaway compensation, clamped to
+/// `0..=[`MAX_BREAKAWAY_UNITS`]`. Non-finite input disables it. Returns the
+/// stored value.
+fn set_cal_units(bits: &AtomicU32, value: f32) -> f32 {
+    let clamped = if value.is_finite() {
+        value.clamp(0.0, MAX_BREAKAWAY_UNITS)
+    } else {
+        0.0
+    };
+    bits.store(clamped.to_bits(), Ordering::Relaxed);
+    clamped
+}
+
+/// Set the left-wheel breakaway compensation.
+pub fn set_cal_left_units(value: f32) -> f32 {
+    set_cal_units(&CAL_LEFT_BITS, value)
+}
+
+/// Set the right-wheel breakaway compensation.
+pub fn set_cal_right_units(value: f32) -> f32 {
+    set_cal_units(&CAL_RIGHT_BITS, value)
+}
+
+/// Disable both per-wheel breakaway compensations.
+pub fn clear_cal() {
+    set_cal_units(&CAL_LEFT_BITS, 0.0);
+    set_cal_units(&CAL_RIGHT_BITS, 0.0);
+}
+
+/// Publish the calibrated wheel torque sent on this control tick.
+pub fn set_command_applied(left: f32, right: f32) {
+    CMD_LEFT_BITS.store(left.to_bits(), Ordering::Relaxed);
+    CMD_RIGHT_BITS.store(right.to_bits(), Ordering::Relaxed);
+}
+
+/// Configured dither amplitude, command units.
+pub fn dither_units() -> f32 {
+    f32::from_bits(DITHER_BITS.load(Ordering::Relaxed))
+}
+
+/// Set the dither amplitude, clamped to `0..=[`MAX_DITHER_UNITS`]`.
+/// Non-finite input disables it. Returns the stored value.
+pub fn set_dither_units(value: f32) -> f32 {
+    let clamped = if value.is_finite() {
+        value.clamp(0.0, MAX_DITHER_UNITS)
+    } else {
+        0.0
+    };
+    DITHER_BITS.store(clamped.to_bits(), Ordering::Relaxed);
+    clamped
+}
+
+/// Configured Smith-predictor horizon, milliseconds.
+pub fn predict_ms() -> f32 {
+    f32::from_bits(PREDICT_MS_BITS.load(Ordering::Relaxed))
+}
+
+/// Set the predictor horizon, clamped to `0..=[`MAX_PREDICT_MS`]`.
+/// Non-finite input disables it. Returns the stored value.
+pub fn set_predict_ms(value: f32) -> f32 {
+    let clamped = if value.is_finite() {
+        value.clamp(0.0, MAX_PREDICT_MS)
+    } else {
+        0.0
+    };
+    PREDICT_MS_BITS.store(clamped.to_bits(), Ordering::Relaxed);
+    clamped
+}
+
+/// Publish the dither added on this control tick.
+pub fn set_dither_applied(value: f32) {
+    DITHER_APPLIED_BITS.store(value.to_bits(), Ordering::Relaxed);
+}
+
+/// Dither added on the latest control tick.
+pub fn dither_applied() -> f32 {
+    f32::from_bits(DITHER_APPLIED_BITS.load(Ordering::Relaxed))
+}
+
+/// Calibrated wheel torque sent on the latest control tick.
+pub fn command_applied() -> (f32, f32) {
+    (
+        f32::from_bits(CMD_LEFT_BITS.load(Ordering::Relaxed)),
+        f32::from_bits(CMD_RIGHT_BITS.load(Ordering::Relaxed)),
+    )
 }
 
 /// Set the commanded reference rate, radians per second. Clamping is the

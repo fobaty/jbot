@@ -9,7 +9,9 @@
 //! * Host → Pico: `help`, `ping`, `stat`, `stream <hz>`, `trim <deg>`,
 //!   `reinit`, `estop`, `clear`, `stats reset`, `reboot`,
 //!   `test <units> [units]`, `home <deg>`, `vmax <deg/s>`, `pscale <0..2>`,
-//!   `db <Nm|off>`, `save`, `forget`.
+//!   `dscale <0..2>`, `slew <units/s>`, `ff [on|off]`, `db <Nm|off>`,
+//!   `cal [left right] | [l|r units] | off`, `dither <units|off>`,
+//!   `save`, `forget`.
 //! * Pico → host: `T key=value ...` telemetry, `ok ...` accepted, `err ...`
 //!   rejected, plus a banner on connect.
 //!
@@ -256,7 +258,7 @@ async fn handle_command(class: &mut Console, flash: &mut Store, line: &[u8]) -> 
             reply(
                 class,
                 format_args!(
-                    "ok help: ping | stat | stream <hz> | speed <mps> | steer <deg/s> | trim <deg> | zero | level | pose [back|face|home] [deg] | mount <name> | home [deg] | vmax [deg/s] | pscale [0..2] | slew [units/s] | ff [on|off] | db [Nm|off] | arm | disarm | fall | test <units> [units] | reinit | estop | clear | save | forget | stats reset | reboot"
+                    "ok help: ping | stat | stream <hz> | speed <mps> | steer <deg/s> | trim <deg> | zero | level | pose [back|face|home] [deg] | mount <name> | home [deg] | vmax [deg/s] | pscale [0..2] | dscale [0..2] | slew [units/s] | ff [on|off] | db [Nm|off] | cal [left right] | cal l|r <units> | cal off | dither <units|off> | predict <ms|off> | arm | disarm | fall | test <units> [units] | reinit | estop | clear | save | forget | stats reset | reboot"
                 ),
             )
             .await;
@@ -276,7 +278,7 @@ async fn handle_command(class: &mut Console, flash: &mut Store, line: &[u8]) -> 
             reply(
                 class,
                 format_args!(
-                    "stat up={:.1} loop={} stream={} trim={:.2} estop={} steps={} imu={} imu_err={} imu_code={} fb={} fb_drop={} rx={} fb_ok={} stop={} zero={:.2} zroll={:.2} level={:.2} mount={} nvm={} kpnm={:.1} kdnm={:.1} kpos={:.2} kv={:.2} ki={:.3} pdem={:.1} ptrm={:.1} armed={} zcapt={} lcapt={} home={:.2} fall={} vmax={:.2} pscale={:.2} dscale={:.2} slew={:.0} db={:.2}",
+                    "stat up={:.1} loop={} stream={} trim={:.2} estop={} steps={} imu={} imu_err={} imu_code={} fb={} fb_drop={} rx={} fb_ok={} stop={} zero={:.2} zroll={:.2} level={:.2} mount={} nvm={} kpnm={:.1} kdnm={:.1} kpos={:.2} kv={:.2} ki={:.3} pdem={:.1} ptrm={:.1} armed={} zcapt={} lcapt={} home={:.2} fall={} vmax={:.2} pscale={:.2} dscale={:.2} slew={:.0} db={:.2} cbl={:.0} cbr={:.0} dth={:.0}",
                     uptime_s,
                     state::loop_hz(),
                     state::stream_hz(),
@@ -316,6 +318,9 @@ async fn handle_command(class: &mut Console, flash: &mut Store, line: &[u8]) -> 
                     state::dscale(),
                     state::torque_slew_per_s(),
                     state::deadband_nm(),
+                    state::cal_left_units(),
+                    state::cal_right_units(),
+                    state::dither_units(),
                 ),
             )
             .await;
@@ -778,6 +783,119 @@ async fn handle_command(class: &mut Console, flash: &mut Store, line: &[u8]) -> 
                 },
             }
         }
+        "cal" => {
+            // Per-wheel breakaway compensation, in EFeru command units.
+            // Runtime-only and off at boot: a threshold measured on the bench
+            // must not leak into a fresh session. The control task applies it
+            // to both the `test` and the balance path at one choke point.
+            match argument {
+                None => {
+                    reply(
+                        class,
+                        format_args!(
+                            "ok cal l={:.0} r={:.0}",
+                            state::cal_left_units(),
+                            state::cal_right_units()
+                        ),
+                    )
+                    .await;
+                }
+                Some("off") => {
+                    state::clear_cal();
+                    reply(class, format_args!("ok cal off")).await;
+                }
+                Some(side @ ("l" | "r")) => match parts.next().and_then(parse_f32) {
+                    Some(units) if units.is_finite() => {
+                        let applied = if side == "l" {
+                            state::set_cal_left_units(units)
+                        } else {
+                            state::set_cal_right_units(units)
+                        };
+                        reply(class, format_args!("ok cal {side} {applied:.0}")).await;
+                    }
+                    _ => {
+                        reply(class, format_args!("err cal {side} needs units")).await;
+                    }
+                },
+                Some(left) => match (parse_f32(left), parts.next().and_then(parse_f32)) {
+                    (Some(l), Some(r)) if l.is_finite() && r.is_finite() => {
+                        let l = state::set_cal_left_units(l);
+                        let r = state::set_cal_right_units(r);
+                        reply(class, format_args!("ok cal l={l:.0} r={r:.0}")).await;
+                    }
+                    _ => {
+                        reply(
+                            class,
+                            format_args!("err cal needs 'left right' units, l|r <units>, or off"),
+                        )
+                        .await;
+                    }
+                },
+            }
+        }
+        "dither" => {
+            // Small common-mode triangle wave at DITHER_HZ, added after the
+            // breakaway inverse to keep the drive moving through stiction.
+            // Runtime-only and off at boot; the e-stop path never dither.
+            match argument {
+                None => {
+                    reply(
+                        class,
+                        format_args!("ok dither {:.0}", state::dither_units()),
+                    )
+                    .await;
+                }
+                Some("off") => {
+                    state::set_dither_units(0.0);
+                    reply(class, format_args!("ok dither off")).await;
+                }
+                Some(value) => match parse_f32(value) {
+                    Some(units) if units.is_finite() => {
+                        let applied = state::set_dither_units(units);
+                        reply(class, format_args!("ok dither {applied:.0}")).await;
+                    }
+                    _ => {
+                        reply(
+                            class,
+                            format_args!(
+                                "err dither needs 0..={:.0} units or off",
+                                state::MAX_DITHER_UNITS
+                            ),
+                        )
+                        .await;
+                    }
+                },
+            }
+        }
+        "predict" => {
+            // Smith-predictor horizon for the delayed hub drive. Runtime-only
+            // and off at boot: delay compensation has to be measured first.
+            match argument {
+                None => {
+                    reply(class, format_args!("ok predict {:.0}", state::predict_ms())).await;
+                }
+                Some("off") => {
+                    state::set_predict_ms(0.0);
+                    reply(class, format_args!("ok predict off")).await;
+                }
+                Some(value) => match parse_f32(value) {
+                    Some(ms) if ms.is_finite() => {
+                        let applied = state::set_predict_ms(ms);
+                        reply(class, format_args!("ok predict {applied:.0}")).await;
+                    }
+                    _ => {
+                        reply(
+                            class,
+                            format_args!(
+                                "err predict needs 0..={:.0} ms or off",
+                                state::MAX_PREDICT_MS
+                            ),
+                        )
+                        .await;
+                    }
+                },
+            }
+        }
         "mount" => {
             match argument {
                 None => {
@@ -932,7 +1050,7 @@ fn format_telemetry<'a>(buffer: &'a mut [u8], telemetry: &Telemetry) -> &'a [u8]
     format(
         buffer,
         format_args!(
-            "T step={} loop={} imu={} cal={} pitch={:.2} roll={:.2} hdg={:.2} gy={:.2} gx={:.2} gz={:.2} err=0x{:02x} mb={} L={} R={} bat={:.2} tmp={:.1} age={} estop={} vset={:.2} wset={:.2} mnt={} zof={:.2} lvl={:.2} zro={:.2} arm={} tsl={:.0} tsr={:.0} trq={:.0} ref={:.2} dem={:.2} trm={:.2} x={:.3} mode={} gtlt={:.2} opm={} grace={:.2} ff={:.0}",
+            "T step={} loop={} imu={} cal={} pitch={:.2} roll={:.2} hdg={:.2} gy={:.2} gx={:.2} gz={:.2} err=0x{:02x} mb={} L={} R={} bat={:.2} tmp={:.1} age={} estop={} vset={:.2} wset={:.2} mnt={} zof={:.2} lvl={:.2} zro={:.2} arm={} tsl={:.0} tsr={:.0} trq={:.0} ref={:.2} dem={:.2} trm={:.2} x={:.3} mode={} gtlt={:.2} opm={} grace={:.2} ff={:.0} cbl={:.0} cbr={:.0} cwl={:.1} cwr={:.1} dth={:.0} dthv={:.1}",
             telemetry.control_steps,
             telemetry.loop_hz,
             if telemetry.imu_fresh { "ok" } else { "stale" },
@@ -970,6 +1088,12 @@ fn format_telemetry<'a>(buffer: &'a mut [u8], telemetry: &Telemetry) -> &'a [u8]
             telemetry.op_mode,
             telemetry.raise_grace_s,
             telemetry.feedforward_units,
+            telemetry.cal_left_units,
+            telemetry.cal_right_units,
+            telemetry.cmd_left_units,
+            telemetry.cmd_right_units,
+            telemetry.dither_units,
+            telemetry.dither_applied_units,
         ),
     )
 }

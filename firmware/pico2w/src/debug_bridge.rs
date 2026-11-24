@@ -6,7 +6,7 @@
 
 use embassy_executor::Spawner;
 use embassy_rp::bind_interrupts;
-use embassy_rp::peripherals::{PIO0, PIN_12, PIN_13};
+use embassy_rp::peripherals::{PIN_12, PIN_13, PIO0};
 use embassy_rp::pio::{InterruptHandler, Pio};
 use embassy_rp::pio_programs::uart::{PioUartRx, PioUartRxProgram, PioUartTx, PioUartTxProgram};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;

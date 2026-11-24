@@ -294,9 +294,9 @@ mod tests {
     #[test]
     fn zero_captured_flag_round_trips() {
         for captured in [false, true] {
-            let record =
-                Record::new(0, 0.01, 0.0, 0.0, None, None, None).unwrap()
-                    .with_zero_captured(captured);
+            let record = Record::new(0, 0.01, 0.0, 0.0, None, None, None)
+                .unwrap()
+                .with_zero_captured(captured);
             let decoded = Record::decode(&record.encode()).unwrap();
             assert_eq!(decoded.zero_captured, captured);
             assert_eq!(decoded.zero_pitch_rad, 0.01);

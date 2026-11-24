@@ -18,7 +18,7 @@ use serialport::SerialPort;
 const BAUD: u32 = 115200;
 // The first 25 columns match spin_driver so `jbot-analyze` can score these
 // recordings with `oscillation`, `law_fit` and `breakaway` directly.
-const HEADER: &str = "t_ms,step,loop_hz,imu_fresh,pitch_deg,roll_deg,heading_deg,gy_dps,gx_dps,gz_dps,left_rpm,right_rpm,bat_v,age_ms,estop,vset,wset,torque_units,test_left_units,test_right_units,ref_deg,demand_deg,trim_deg,position_m,mode,trial,op_mode,grace_s,arm,ff";
+const HEADER: &str = "t_ms,step,loop_hz,imu_fresh,pitch_deg,roll_deg,heading_deg,gy_dps,gx_dps,gz_dps,left_rpm,right_rpm,bat_v,age_ms,estop,vset,wset,torque_units,test_left_units,test_right_units,ref_deg,demand_deg,trim_deg,position_m,mode,trial,op_mode,grace_s,arm,ff,cal_l,cal_r,cmd_l,cmd_r,dither,dither_applied";
 /// Beyond this angle the attempt is a fall, not a recovery.
 const PITCH_LIMIT_DEG: f64 = 25.0;
 /// Allowed residual pitch error after a trial, degrees.
@@ -74,6 +74,12 @@ fn row(trial: usize, line: &str, t_ms: u64) -> String {
         format!("{:.3}", n("grace")),
         (n("arm") as u64).to_string(),
         format!("{:.0}", n("ff")),
+        format!("{:.0}", n("cbl")),
+        format!("{:.0}", n("cbr")),
+        format!("{:.1}", n("cwl")),
+        format!("{:.1}", n("cwr")),
+        format!("{:.0}", n("dth")),
+        format!("{:.1}", n("dthv")),
     ];
     fields.join(",")
 }
@@ -180,9 +186,19 @@ fn wait_for_baseline(
     csv: &mut BufWriter<File>,
     started: &Instant,
     timeout: Duration,
+    loose: bool,
 ) -> Option<(f64, f64)> {
+    // The strict gate is the acceptance path. The loose variant is diagnostic
+    // only: this drive's breakaway jolts the body past 5 dps at the instant the
+    // wheels start turning, which the strict gate forbids by construction.
+    let (gy_limit, wheel_hits_needed, stable_ms, x_limit) = if loose {
+        (40.0, 3, 200, 0.05)
+    } else {
+        (5.0, 5, 500, 0.03)
+    };
     let deadline = Instant::now() + timeout;
     let mut stable_since: Option<Instant> = None;
+    let mut wheel_hits = 0_usize;
     let mut candidate: (f64, f64);
     while Instant::now() < deadline {
         let lines = pump(
@@ -205,18 +221,29 @@ fn wait_for_baseline(
                 && num(&line, "arm") > 0.5
                 && num(&line, "estop") < 0.5
                 && num(&line, "age") < 300.0
-                && num(&line, "x").abs() < 0.03
-                && num(&line, "gy").abs() < 5.0;
-            if standing {
-                candidate = (pitch, num(&line, "x"));
-                if stable_since.is_none() {
-                    stable_since = Some(Instant::now());
-                }
-                if stable_since.is_some_and(|since| since.elapsed() >= Duration::from_millis(500)) {
-                    return Some(candidate);
-                }
-            } else {
+                && num(&line, "x").abs() < x_limit
+                && num(&line, "gy").abs() < gy_limit;
+            if !standing {
                 stable_since = None;
+                wheel_hits = 0;
+                continue;
+            }
+            // An operator still holding the body produces a perfectly quiet
+            // baseline that no hold test can match. Require the wheels to
+            // actually be turning, so the driver waits until the robot stands
+            // on its own instead of timing the release against the console.
+            if num(&line, "left_rpm").abs() > 2.0 || num(&line, "right_rpm").abs() > 2.0 {
+                wheel_hits += 1;
+            }
+            candidate = (pitch, num(&line, "x"));
+            if stable_since.is_none() {
+                stable_since = Some(Instant::now());
+            }
+            if wheel_hits >= wheel_hits_needed
+                && stable_since
+                    .is_some_and(|since| since.elapsed() >= Duration::from_millis(stable_ms))
+            {
+                return Some(candidate);
             }
         }
     }
@@ -231,8 +258,10 @@ fn capture_level_when_still(
     csv: &mut BufWriter<File>,
     started: &Instant,
     timeout: Duration,
+    loose: bool,
 ) -> bool {
     let deadline = Instant::now() + timeout;
+    let level_limit = if loose { 5.0 } else { 2.0 };
     let mut window: Vec<(f64, f64)> = Vec::new();
     while Instant::now() < deadline {
         let lines = pump(
@@ -268,7 +297,7 @@ fn capture_level_when_still(
                 // The hold gate scores absolute pitch against level. Capturing
                 // a tilted pose would make that criterion impossible, so only
                 // accept a genuinely upright, still body.
-                if pitch.abs() <= 2.0 {
+                if pitch.abs() <= level_limit {
                     let _ = serial.write_all(b"level\n");
                     let _ = serial.flush();
                     return true;
@@ -360,12 +389,20 @@ fn main() {
     let mut relevel = false;
     let mut snap_ref = false;
     let mut hold_only = false;
+    let mut loose_baseline = false;
     let mut ff_enabled = false;
+    let mut cal = None;
+    let mut dither = 0.0_f64;
+    let mut predict = 0.0_f64;
     let mut port = None;
     // The compiled defaults (pscale 1.0, slew 3000) are not a safe bench
     // profile: every stable armed run in the audit used pscale 0.10-0.30.
     let mut pscale = 0.30_f64;
     let mut slew = 100.0_f64;
+    // A fast slew makes the initial breakaway violent enough to trip the
+    // baseline gate (gyro > 5 dps while the wheels start turning). Allow a
+    // separate, faster rate for the measured hold after the baseline is set.
+    let mut slew_after: Option<f64> = None;
     let mut trials = 3_usize;
     let mut angle = 5.0_f64;
     let mut hold_ms = 500_u64;
@@ -376,11 +413,39 @@ fn main() {
             "--relevel" => relevel = true,
             "--snap-ref" => snap_ref = true,
             "--hold-only" => hold_only = true,
+            "--loose-baseline" => loose_baseline = true,
             "--ff" => match args.next().as_deref() {
                 Some("on") => ff_enabled = true,
                 Some("off") => ff_enabled = false,
                 _ => {}
             },
+            "--cal" => {
+                let left = args.next().and_then(|v| v.parse::<f64>().ok());
+                let right = args.next().and_then(|v| v.parse::<f64>().ok());
+                if let (Some(l), Some(r)) = (left, right) {
+                    cal = Some((l, r));
+                } else {
+                    eprintln!("--cal needs two numbers (left right)");
+                    return;
+                }
+            }
+            "--dither" => {
+                if let Some(value) = args.next().and_then(|v| v.parse::<f64>().ok()) {
+                    if value.is_finite() && value >= 0.0 {
+                        dither = value.min(60.0);
+                    }
+                } else {
+                    eprintln!("--dither needs amplitude in 0..60 units");
+                    return;
+                }
+            }
+            "--predict" => {
+                if let Some(value) = args.next().and_then(|v| v.parse::<f64>().ok()) {
+                    if value.is_finite() && value >= 0.0 {
+                        predict = value.min(150.0);
+                    }
+                }
+            }
             "--port" => port = args.next(),
             "--pscale" => {
                 if let Some(value) = args.next().and_then(|v| v.parse::<f64>().ok()) {
@@ -399,6 +464,13 @@ fn main() {
                         slew = applied;
                     } else {
                         println!("warning: non-finite slew ignored, using {slew:.0}");
+                    }
+                }
+            }
+            "--slew-after" => {
+                if let Some(value) = args.next().and_then(|v| v.parse::<f64>().ok()) {
+                    if value.is_finite() {
+                        slew_after = Some(value.clamp(100.0, 1000.0));
                     }
                 }
             }
@@ -425,7 +497,7 @@ fn main() {
                 }
             }
             "--help" | "-h" => {
-                println!("usage: recovery_driver --run [--snap-ref] [--hold-only] [--ff on|off] [--trials 3] [--angle 5] [--hold-ms 500] [--settle-ms 2000] [--pscale 0.30] [--slew 100] [--port PATH]");
+                println!("usage: recovery_driver --run [--snap-ref] [--hold-only] [--ff on|off] [--cal LEFT RIGHT] [--dither 0..60] [--trials 3] [--angle 5] [--hold-ms 500] [--settle-ms 2000] [--pscale 0.30] [--slew 100] [--slew-after 100] [--loose-baseline] [--predict 100] [--port PATH]");
                 return;
             }
             other => {
@@ -484,12 +556,29 @@ fn main() {
     );
     send(&mut serial, "clear");
     println!(
-        "safe bench profile: pscale {pscale:.2}, slew {slew:.0}, ff {}",
-        if ff_enabled { "on" } else { "off" }
+        "safe bench profile: pscale {pscale:.2}, slew {slew:.0}, ff {}, cal {}, dither {dither:.0} u, predict {predict:.0} ms",
+        if ff_enabled { "on" } else { "off" },
+        cal.map_or_else(|| "off".to_owned(), |(l, r)| format!("{l:.0}/{r:.0}"))
     );
     send(&mut serial, if ff_enabled { "ff on" } else { "ff off" });
     send(&mut serial, &format!("pscale {pscale:.2}"));
     send(&mut serial, &format!("slew {slew:.0}"));
+    match cal {
+        Some((left, right)) => {
+            send(&mut serial, &format!("cal {left:.0} {right:.0}"));
+        }
+        None => send(&mut serial, "cal off"),
+    }
+    if dither > 0.0 {
+        send(&mut serial, &format!("dither {dither:.0}"));
+    } else {
+        send(&mut serial, "dither off");
+    }
+    if predict > 0.0 {
+        send(&mut serial, &format!("predict {predict:.0}"));
+    } else {
+        send(&mut serial, "predict off");
+    }
     pump(
         &mut serial,
         &mut buffer,
@@ -523,6 +612,7 @@ fn main() {
             &mut csv,
             &started,
             Duration::from_secs(12),
+            loose_baseline,
         ) {
             println!("pitch never settled; aborting without arming");
             send(&mut serial, "estop");
@@ -570,15 +660,21 @@ fn main() {
         &mut buffer,
         &mut csv,
         &started,
-        Duration::from_secs(8),
+        Duration::from_secs(15),
+        loose_baseline,
     ) else {
-        println!("no stable upright baseline; release the body and retry");
+        println!("no stable upright baseline with turning wheels; release the body and retry");
         send(&mut serial, "estop");
         let _ = csv.flush();
         println!("aborted; recording: {}", csv_path.display());
         return;
     };
     println!("baseline pitch {baseline_pitch:.2} deg, position {baseline_position:.3} m");
+
+    if let Some(rate) = slew_after {
+        send(&mut serial, &format!("slew {rate:.0}"));
+        println!("hold slew {rate:.0} units/s");
+    }
 
     if hold_only {
         println!("hold-only: recording 10 s with no disturbance");

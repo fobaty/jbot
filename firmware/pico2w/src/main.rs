@@ -21,7 +21,7 @@
 //! boot, so there is no magic gain table in this file.
 //!
 //! Safety: if the IMU sample is stale, or the emergency stop is latched, the
-//! task sends [`Command::ZERO`]. The mainboard independently stops on its own
+//! task sends a neutral wheel-torque pair. The mainboard independently stops on its own
 //! serial timeout. Arming is refused when the torque link is blind, when the
 //! pose is outside the lift budget of the torque available, or when the body
 //! is already on the ground; while armed, the same limits plus a travel limit
@@ -57,14 +57,17 @@ use embassy_time::{Duration, Instant, Ticker, Timer};
 use embedded_io_async::{Read, Write};
 use static_cell::StaticCell;
 
+use jbot_pico_core::calibration::{dither_wave, WheelCalibration, DITHER_HZ};
 use jbot_pico_core::control::{
     to_command, BalanceController, BalanceInput, BalanceMode, FadeGain, SafeFallReference,
     SafetyState, StopReason, WheelTorque, SAFE_FALL_FADE_S, SAFE_FALL_RATE_RAD_S,
     SAFE_FALL_TARGET_RAD,
 };
-use jbot_pico_core::eferu::{Command, Feedback, FeedbackParser};
+use jbot_pico_core::eferu::{Feedback, FeedbackParser};
 use jbot_pico_core::filters::{LowPass, SlewLimiter};
 use jbot_pico_core::mount::{self, Mount};
+use jbot_pico_core::plant::PlantParams;
+use jbot_pico_core::predictor::StatePredictor;
 use jbot_pico_core::reference::PitchReference;
 use jbot_pico_core::spin::SpinTest;
 
@@ -131,6 +134,9 @@ static FEEDBACK_SIGNAL: Signal<CriticalSectionRawMutex, Feedback> = Signal::new(
 
 static UART_TX_BUFFER: StaticCell<[u8; UART_TX_BUFFER_LEN]> = StaticCell::new();
 static UART_RX_BUFFER: StaticCell<[u8; UART_RX_BUFFER_LEN]> = StaticCell::new();
+// The predictor owns a command ring. Keep it out of the control task's stack:
+// this target shares one stack between tasks and it is already tight.
+static PREDICTOR: StaticCell<StatePredictor> = StaticCell::new();
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
@@ -304,6 +310,7 @@ async fn control_task(
     let mut last_feedback = Feedback::default();
     let mut last_feedback_at: Option<Instant> = None;
     let mut spin = SpinTest::new();
+    let predictor = PREDICTOR.init(StatePredictor::new(PlantParams::NOMINAL));
     let mut rate_lp = LowPass::new(D_FILTER_CUTOFF_HZ, CONTROL_PERIOD_S);
     let mut guard_tilt_lp = LowPass::new(GUARD_TILT_CUTOFF_HZ, CONTROL_PERIOD_S);
     let mut torque_slew_left = SlewLimiter::new(TORQUE_SLEW_PER_S);
@@ -312,6 +319,7 @@ async fn control_task(
     let mut reference = PitchReference::new();
     let mut safe_fall = SafeFallReference::new(SAFE_FALL_RATE_RAD_S, SAFE_FALL_TARGET_RAD);
     let mut safe_fall_fade = FadeGain::new(SAFE_FALL_FADE_S);
+    let mut dither_phase = 0.0_f32;
     let mut op_mode = BalanceMode::Balance;
     let mut safe_fall_grace_s = 0.0_f32;
     let mut was_armed = false;
@@ -335,11 +343,23 @@ async fn control_task(
             .with_deadband(state::deadband_nm())
             .with_derivative_scale(state::dscale());
 
+        // Per-wheel breakaway calibration, read per tick like the other bench
+        // knobs. Zero at boot, so an uncalibrated machine cannot get free
+        // torque, and both the `test` and balance paths share one choke point.
+        let cal = WheelCalibration::new(state::cal_left_units(), state::cal_right_units());
+
         // Softness knob, applied per tick like `pscale`: a console change to
         // the torque ramp takes effect on the very next step.
         let slew_rate = state::torque_slew_per_s();
         torque_slew_left.set_rate(slew_rate);
         torque_slew_right.set_rate(slew_rate);
+
+        // Delay compensation is a runtime experiment. Reconfigure only when
+        // the knob actually changes, so the model history survives the tick.
+        let predict_ticks = (state::predict_ms() / (CONTROL_PERIOD_S * 1_000.0)) as usize;
+        if predictor.delay_ticks() != predict_ticks {
+            predictor.set_delay_ticks(predict_ticks);
+        }
 
         if let Some(sample) = IMU_SIGNAL.try_take() {
             last_imu = sample;
@@ -415,7 +435,7 @@ async fn control_task(
         let spin_pair = spin.step(CONTROL_PERIOD_S, now_ms, armed, estop);
         state::set_spin_applied(spin_pair.left, spin_pair.right);
 
-        let command = if estop {
+        let wheel = if estop {
             reset_smoothing(
                 &mut rate_lp,
                 &mut guard_tilt_lp,
@@ -423,12 +443,13 @@ async fn control_task(
                 &mut torque_slew_right,
                 &mut balance,
                 &mut reference,
+                &mut *predictor,
             );
             position_m = 0.0;
             state::set_balance_applied(0.0);
             ref_moving = false;
             report = BalanceReport::idle();
-            Command::ZERO
+            WheelTorque::ZERO
         } else if armed {
             let attitude = attitude_of(&last_imu);
             let pitch_zero = attitude.pitch_deg.to_radians() - state::zero_pitch_rad();
@@ -470,12 +491,13 @@ async fn control_task(
                     &mut torque_slew_right,
                     &mut balance,
                     &mut reference,
+                    &mut *predictor,
                 );
                 position_m = 0.0;
                 state::set_balance_applied(0.0);
                 ref_moving = false;
                 report = BalanceReport::idle();
-                Command::ZERO
+                WheelTorque::ZERO
             } else if !imu_fresh {
                 // No attitude sample: no torque. This is not latched, because
                 // the mainboard stops on its own serial timeout and a single
@@ -483,7 +505,7 @@ async fn control_task(
                 state::set_balance_applied(0.0);
                 ref_moving = reference.velocity() != 0.0;
                 report = BalanceReport::idle();
-                Command::ZERO
+                WheelTorque::ZERO
             } else {
                 if !was_armed {
                     // Arming soft-start. The reference is anchored to the
@@ -519,6 +541,14 @@ async fn control_task(
                     safe_fall_fade.reset();
                 }
                 let filtered_rate = rate_lp.update(attitude.pitch_rate_dps.to_radians());
+                // The predictor is fed the torque from the previous tick: that
+                // is the command which is actually acting on the body now.
+                let (control_pitch, control_rate) = if predictor.delay_ticks() > 0 {
+                    let applied_nm = state::balance_applied() / tuning.units_per_nm;
+                    predictor.update(pitch_zero, filtered_rate, applied_nm, CONTROL_PERIOD_S)
+                } else {
+                    (pitch_zero, filtered_rate)
+                };
 
                 if feedback_fresh {
                     position_m += measured_speed * CONTROL_PERIOD_S;
@@ -531,8 +561,8 @@ async fn control_task(
                 }
 
                 let input = BalanceInput {
-                    pitch_rad: pitch_zero,
-                    pitch_rate_rad_s: filtered_rate,
+                    pitch_rad: control_pitch,
+                    pitch_rate_rad_s: control_rate,
                     pitch_ref_rad: applied_ref_rad,
                     position_m,
                     speed_mps: measured_speed,
@@ -593,11 +623,12 @@ async fn control_task(
                         &mut torque_slew_right,
                         &mut balance,
                         &mut reference,
+                        &mut *predictor,
                     );
                     position_m = 0.0;
                     state::set_balance_applied(0.0);
                     report = BalanceReport::idle();
-                    Command::ZERO
+                    WheelTorque::ZERO
                 } else {
                     let left = torque_slew_left.update(torque.left, CONTROL_PERIOD_S);
                     let right = torque_slew_right.update(torque.right, CONTROL_PERIOD_S);
@@ -613,7 +644,7 @@ async fn control_task(
                         raise_grace_s: safe_fall_grace_s,
                         feedforward_units: ff_units,
                     };
-                    to_command(WheelTorque { left, right })
+                    WheelTorque { left, right }
                 }
             }
         } else {
@@ -624,20 +655,49 @@ async fn control_task(
                 &mut torque_slew_right,
                 &mut balance,
                 &mut reference,
+                &mut *predictor,
             );
             position_m = 0.0;
             state::set_balance_applied(0.0);
             ref_moving = false;
             report = BalanceReport::idle();
             if spin_pair.left != 0.0 || spin_pair.right != 0.0 {
-                to_command(WheelTorque {
+                WheelTorque {
                     left: spin_pair.left,
                     right: spin_pair.right,
-                })
+                }
             } else {
-                Command::ZERO
+                WheelTorque::ZERO
             }
         };
+
+        // Single output choke point: apply the per-wheel breakaway inverse to
+        // the raw pair, then convert once to the EFeru wire command. Every
+        // safety path above produced WheelTorque::ZERO, so calibration cannot
+        // resurrect torque after an e-stop or a fall latch.
+        let (cal_left, cal_right) = cal.apply(wheel.left, wheel.right);
+        // Common-mode dither keeps the drive on the edge of breakaway so a
+        // correction does not have to wait for stiction to release. It cannot
+        // steer the machine, and an e-stop keeps the output strictly neutral.
+        let dither = if estop {
+            0.0
+        } else {
+            let amplitude = state::dither_units();
+            if amplitude > 0.0 {
+                dither_phase = (dither_phase + DITHER_HZ * CONTROL_PERIOD_S) % 1.0;
+                amplitude * dither_wave(dither_phase)
+            } else {
+                0.0
+            }
+        };
+        let wire_left = cal_left + dither;
+        let wire_right = cal_right + dither;
+        state::set_dither_applied(dither);
+        state::set_command_applied(wire_left, wire_right);
+        let command = to_command(WheelTorque {
+            left: wire_left,
+            right: wire_right,
+        });
 
         if op_mode == BalanceMode::SafeFall && safe_fall_grace_s > 0.0 {
             safe_fall_grace_s = (safe_fall_grace_s - CONTROL_PERIOD_S).max(0.0);
@@ -731,6 +791,7 @@ fn reset_smoothing(
     torque_slew_right: &mut SlewLimiter,
     balance: &mut BalanceController,
     reference: &mut PitchReference,
+    predictor: &mut StatePredictor,
 ) {
     rate_lp.reset();
     guard_tilt_lp.reset();
@@ -738,6 +799,7 @@ fn reset_smoothing(
     torque_slew_right.reset();
     balance.reset(0.0);
     reference.reset(0.0);
+    predictor.reset();
 }
 
 /// Torque scaling from the pack voltage.
@@ -774,6 +836,7 @@ fn snapshot(
     report: &BalanceReport,
 ) -> Telemetry {
     let attitude = attitude_of(sample);
+    let (cmd_left_units, cmd_right_units) = state::command_applied();
     let pitch_zero_deg = attitude.pitch_deg - state::zero_pitch_rad().to_degrees();
     let roll_zero_deg = attitude.roll_deg - state::zero_roll_rad().to_degrees();
     Telemetry {
@@ -815,6 +878,12 @@ fn snapshot(
         feedforward_units: report.feedforward_units,
         op_mode: report.op_mode,
         raise_grace_s: report.raise_grace_s,
+        cal_left_units: state::cal_left_units(),
+        cal_right_units: state::cal_right_units(),
+        cmd_left_units,
+        cmd_right_units,
+        dither_units: state::dither_units(),
+        dither_applied_units: state::dither_applied(),
     }
 }
 
