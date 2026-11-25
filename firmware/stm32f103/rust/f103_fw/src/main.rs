@@ -26,14 +26,14 @@ use cortex_m_rt::entry;
 use f103_core::alerts::{select_alert, Alert, AlertInputs, ArmBeep, BuzzerController};
 use f103_core::battery::{BatteryLevel, BatteryMonitor};
 use f103_core::config::{
-    BAT_DEAD_ENABLE, BAT_LVL1_ENABLE, BAT_LVL2_ENABLE, DC_TRIP_COUNTS, FOC_PERIOD_US,
-    FOC_TICKS_PER_MS, PWM_ARR, PWM_MARGIN, STANDSTILL_RPM, SYSTEM_HZ, TEMP_POWEROFF_DECIC,
-    TEMP_POWEROFF_ENABLE, TEMP_WARNING_DECIC, TEMP_WARNING_ENABLE, WIRE_MAX,
+    BAT_DEAD_ENABLE, BAT_LVL1_ENABLE, BAT_LVL2_ENABLE, BEEPS_BACKWARD, DC_TRIP_COUNTS,
+    FOC_PERIOD_US, FOC_TICKS_PER_MS, PWM_ARR, PWM_MARGIN, STANDSTILL_RPM, SYSTEM_HZ,
+    TEMP_POWEROFF_DECIC, TEMP_POWEROFF_ENABLE, TEMP_WARNING_DECIC, TEMP_WARNING_ENABLE, WIRE_MAX,
 };
 use f103_core::fixed::clamp_i32;
 use f103_core::foc_generated::{GeneratedMotor, GeneratedParams, Inputs};
 use f103_core::mixer::mix;
-use f103_core::monitors::InactivityMonitor;
+use f103_core::monitors::{InactivityMonitor, SerialTimeoutMonitor};
 use f103_core::parameters::Parameters;
 use f103_core::protocol::{
     encode_hardened_feedback, encode_legacy_feedback, encode_trace, CommandDecoder, FeedbackData,
@@ -336,8 +336,10 @@ fn USART2() {
         let _ = usart.dr().read();
         let dma = unsafe { &*pac::DMA1::ptr() };
         let remaining = dma.ch(5).ndtr().read().ndt().bits() as usize;
-        let used = 64usize.saturating_sub(remaining);
-        hal::RX_LEN.store(used as u32, Ordering::Relaxed);
+        // Circular DMA reloads NDTR at the buffer end, so publish the write
+        // position and let the main loop consume only the newly written span.
+        let pos = 64usize.saturating_sub(remaining);
+        hal::RX_POS.store(pos as u32, Ordering::Relaxed);
         hal::RX_READY.store(true, Ordering::Relaxed);
     } else if status.rxne().bit_is_set() {
         let _ = usart.dr().read();
@@ -439,6 +441,11 @@ fn main() -> ! {
     let mut dump_index: Option<usize> = None;
     let mut loop_index: u32 = 0;
     let mut inactivity = InactivityMonitor::new();
+    // The reference flags a missing serial command from the first main-loop
+    // tick, before any frame has been received. Feed it from every loop so the
+    // three-beep alert matches the flashed C build.
+    let mut serial_timeout = SerialTimeoutMonitor::new();
+    let mut rx_old_pos = 0usize;
     let mut arm_beep = ArmBeep::done();
     let mut button_seen = false;
     let mut press_start: u32 = 0;
@@ -548,41 +555,58 @@ fn main() -> ! {
             hal::BUZZER_FREQ_OVERRIDE.store(hal::BUZZER_NO_OVERRIDE, Ordering::Relaxed);
         }
 
+        let mut valid_command = false;
         if hal::RX_READY.swap(false, Ordering::Relaxed) {
-            let len = hal::RX_LEN.load(Ordering::Relaxed) as usize;
-            let source = hal::RX_BUFFER.0.get() as *const u8;
-            let mut chunk = [0u8; 64];
-            let count = len.min(chunk.len());
-            for (index, byte) in chunk[..count].iter_mut().enumerate() {
-                // SAFETY: the circular buffer is 64 bytes and count <= 64.
-                *byte = unsafe { core::ptr::read_volatile(source.add(index)) };
-            }
-            link.feed(&chunk[..count], now_us, &mut |setpoint, frame_seq| {
-                let effective_seq = match frame_seq {
-                    Some(received) => {
-                        last_frame_seq = received;
-                        received
-                    }
-                    None => {
-                        seq = seq.wrapping_add(1);
-                        seq
-                    }
+            let pos = hal::RX_POS.load(Ordering::Relaxed) as usize;
+            if pos != rx_old_pos {
+                // Circular DMA: consume only bytes written since the previous
+                // IDLE frame, wrapping once at the end of the 64-byte buffer.
+                let span = if pos > rx_old_pos {
+                    pos - rx_old_pos
+                } else {
+                    64 - rx_old_pos + pos
                 };
-                let accepted = safe.accept(now_us, effective_seq, setpoint);
-                // Stock auto-arming (`main.c:270-275`): no error and a near-zero
-                // command enables the motors, with the two short confirmation
-                // beeps. A fault is never cleared by this path.
-                if accepted.is_ok()
-                    && !safe.armed()
-                    && safe.fault().is_none()
-                    && setpoint.steer.unsigned_abs() < 50
-                    && setpoint.speed.unsigned_abs() < 50
-                {
-                    safe.arm();
-                    arm_beep = ArmBeep::new();
+                let source = hal::RX_BUFFER.0.get() as *const u8;
+                let mut chunk = [0u8; 64];
+                let mut index = rx_old_pos;
+                for byte in chunk[..span].iter_mut() {
+                    // SAFETY: index is normalised into the 64-byte DMA buffer.
+                    *byte = unsafe { core::ptr::read_volatile(source.add(index)) };
+                    index += 1;
+                    if index == 64 {
+                        index = 0;
+                    }
                 }
-            });
+                link.feed(&chunk[..span], now_us, &mut |setpoint, frame_seq| {
+                    valid_command = true;
+                    let effective_seq = match frame_seq {
+                        Some(received) => {
+                            last_frame_seq = received;
+                            received
+                        }
+                        None => {
+                            seq = seq.wrapping_add(1);
+                            seq
+                        }
+                    };
+                    let accepted = safe.accept(now_us, effective_seq, setpoint);
+                    // Stock auto-arming (`main.c:270-275`): no error and a near-zero
+                    // command enables the motors, with the two short confirmation
+                    // beeps. A fault is never cleared by this path.
+                    if accepted.is_ok()
+                        && !safe.armed()
+                        && safe.fault().is_none()
+                        && setpoint.steer.unsigned_abs() < 50
+                        && setpoint.speed.unsigned_abs() < 50
+                    {
+                        safe.arm();
+                        arm_beep = ArmBeep::new();
+                    }
+                });
+                rx_old_pos = if pos == 64 { 0 } else { pos };
+            }
         }
+        serial_timeout.tick(valid_command);
 
         // SafeController works in wire-channel units. Converting here keeps
         // the differential sign convention at a single actuator boundary.
@@ -606,7 +630,11 @@ fn main() -> ! {
             protocol: link.mode(),
             mode: safe.mode(),
             armed: safe.armed(),
-            fault: safe.fault(),
+            // Report a missing Pico link from the first tick, before any frame
+            // has been accepted and the SafeController can raise its own fault.
+            fault: safe
+                .fault()
+                .or(serial_timeout.flag.then_some(Fault::LinkTimeout)),
             faults: safe.faults,
             rejected: safe.rejected,
             link_age_us: safe.link_age_us(now_us),
@@ -634,7 +662,14 @@ fn main() -> ! {
         let batt = hal::BATT_RAW.load(Ordering::Relaxed);
         let temp = hal::TEMP_DECIC.load(Ordering::Relaxed);
         let battery_level = BatteryMonitor::level(batt);
-        let near_standstill = applied_speed.unsigned_abs() <= STANDSTILL_RPM as u16;
+        // `calcAvgSpeed()` (util.c:460-485) subtracts the right motor because
+        // the two wheels spin in opposite directions on this drivetrain.
+        let speed_avg = (i32::from(hal::SPEED_L.load(Ordering::Relaxed))
+            - i32::from(hal::SPEED_R.load(Ordering::Relaxed)))
+            / 2;
+        // Latch-off is gated by measured wheel speed, not by the command
+        // magnitude (util.c:566-577 uses `speedAvgAbs`).
+        let near_standstill = speed_avg.unsigned_abs() <= STANDSTILL_RPM as u32;
 
         // Stock hard latch-off (`util.c:1561-1575`, `main.c:570-577`): unlike the
         // torque-node variant, a full copy removes battery power on a dead pack,
@@ -672,13 +707,15 @@ fn main() -> ! {
                 && near_standstill,
             battery_dead: BAT_DEAD_ENABLE && battery_level == BatteryLevel::Dead && near_standstill,
             motor_error: safe.fault() == Some(Fault::MotorDiagnostic),
-            adc_timeout: false, // no ADC command input in serial-control builds
-            serial_timeout: safe.fault() == Some(Fault::LinkTimeout),
-            general_timeout: false,
+            adc_timeout: false, // CONTROL_ADC is not compiled in VARIANT_USART
+            serial_timeout: serial_timeout.flag,
+            general_timeout: false, // no PPM/PWM/Nunchuk input path was ported
             thermal_warning: TEMP_WARNING_ENABLE && i32::from(temp) >= TEMP_WARNING_DECIC,
             battery_lvl1: BAT_LVL1_ENABLE && battery_level == BatteryLevel::Level1,
             battery_lvl2: BAT_LVL2_ENABLE && battery_level == BatteryLevel::Level2,
-            backward: false,
+            // `BEEPS_BACKWARD` in main.c:591: a reverse command while still
+            // rolling forward. The multiple-tap brake path is not ported.
+            backward: BEEPS_BACKWARD && (right < -50 || left < -50) && speed_avg < 0,
         });
         hal::BUZZER_ALERT.store(alert.as_u8(), Ordering::Relaxed);
 

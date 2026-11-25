@@ -3,7 +3,9 @@
 //! These are pure counters so they can be tested against the exact 5 ms and
 //! 16 kHz qualification windows recorded in `config.h` and `util.c`.
 
-use crate::config::{ADC_PROTECT_TIMEOUT, INACTIVITY_CMD_THRESHOLD, INACTIVITY_TICKS};
+use crate::config::{
+    ADC_PROTECT_TIMEOUT, INACTIVITY_CMD_THRESHOLD, INACTIVITY_TICKS, SERIAL_TIMEOUT_TICKS,
+};
 
 /// Qualifies a raw control input against the configured range. The counter
 /// starts saturated, so the very first out-of-range sample raises the flag,
@@ -41,6 +43,58 @@ impl InputQualifier {
             }
         }
         self.fault
+    }
+}
+
+/// Mirrors `timeoutCntSerial_L` / `timeoutFlgSerial_L` from `util.c:148-149`
+/// and `:961-963`. The counter starts saturated, so the first tick without a
+/// valid command raises the flag, exactly as in the reference. A valid frame
+/// clears both the flag and the counter (`util.c:1282-1283`).
+///
+/// This is tracked independently of the `SafeController` fault latch: the
+/// buzzer must report a missing link from boot, before any frame has ever been
+/// received, while the safe state is already enforced by the command age check.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SerialTimeoutMonitor {
+    counter: u16,
+    pub flag: bool,
+}
+
+impl Default for SerialTimeoutMonitor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl SerialTimeoutMonitor {
+    pub const fn new() -> Self {
+        Self {
+            counter: SERIAL_TIMEOUT_TICKS,
+            flag: false,
+        }
+    }
+
+    /// One 5 ms main-loop tick. Returns true while the link is expired.
+    pub fn tick(&mut self, valid_command: bool) -> bool {
+        if valid_command {
+            self.flag = false;
+            self.counter = 0;
+            return self.flag;
+        }
+        if self.counter >= SERIAL_TIMEOUT_TICKS {
+            self.flag = true;
+            self.counter = SERIAL_TIMEOUT_TICKS;
+        } else {
+            self.counter += 1;
+            if self.counter >= SERIAL_TIMEOUT_TICKS {
+                self.flag = true;
+            }
+        }
+        self.flag
+    }
+
+    pub fn elapsed_ticks(&self) -> u16 {
+        self.counter
     }
 }
 
@@ -92,6 +146,28 @@ mod tests {
             assert!(!q.update(false));
         }
         assert!(q.update(false));
+    }
+
+    #[test]
+    fn serial_timeout_is_raised_on_the_first_tick_without_a_command() {
+        let mut m = SerialTimeoutMonitor::new();
+        assert!(!m.flag);
+        assert!(m.tick(false));
+        assert_eq!(m.elapsed_ticks(), SERIAL_TIMEOUT_TICKS);
+    }
+
+    #[test]
+    fn serial_timeout_is_cleared_only_by_a_valid_command() {
+        let mut m = SerialTimeoutMonitor::new();
+        assert!(m.tick(false));
+        assert!(!m.tick(true));
+        assert_eq!(m.elapsed_ticks(), 0);
+        for _ in 0..SERIAL_TIMEOUT_TICKS - 1 {
+            assert!(!m.tick(false));
+        }
+        assert!(m.tick(false));
+        assert!(m.flag);
+        assert!(!m.tick(true));
     }
 
     #[test]

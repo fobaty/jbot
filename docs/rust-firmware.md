@@ -44,14 +44,14 @@ Verification gates, from `firmware/stm32f103/rust`:
 
 ```sh
 cargo fmt --all -- --check
-cargo test -p f103_core                      # 69 tests
+cargo test -p f103_core                      # 78 tests
 cargo clippy -p f103_core --all-targets -- -D warnings
 cd f103_fw && cargo build --release
 cd f103_fw && cargo clippy --release -- -D warnings
 arm-none-eabi-size ../target/thumbv7m-none-eabi/release/f103_fw
 ```
 
-Latest sizes: `text 36 204 B`, `data 664 B`, `bss 948 B`. The Pico side is a
+Latest sizes: `text 50 640 B`, `data 672 B`, `bss 948 B`. The Pico side is a
 separate workspace: `firmware/pico_core` (142 tests) and `firmware/pico2w`
 (`cargo check` and `cargo clippy`; its `cargo test` target is an embedded binary
 and does not build on the host).
@@ -69,7 +69,9 @@ and does not build on the host).
   temp, l_rx2)`. Current is `offset - sample`; the third phase is `-a - b`.
 - Hall inputs are active low; generated code order is `A<<2 | B<<1 | C`.
 - USART2 PA2 TX / PA3 RX is the control link (not 5 V tolerant); USART3 PB10 TX /
-  PB11 RX is the debug console (5 V tolerant). Both 115200 8N1.
+  PB11 RX is the debug console (5 V tolerant). Both 115200 8N1. Both are on
+  APB1, so their BRR is computed from PCLK1 = 32 MHz (`0x0116` at 115200), not
+  from SYSCLK; using 64 MHz would halve both baud rates and break the Pico link.
 - PA4 buzzer, PB2 status LED, PA5 power latch held high by this firmware.
 
 ## 4. Runtime structure
@@ -78,12 +80,14 @@ and does not build on the host).
   gate, steps both generated controllers, publishes duty/DC/speed/diagnostics,
   drives the buzzer, and optionally encodes one trace frame. It never formats
   text or waits for a consumer.
-- **5 ms SysTick loop:** decodes control frames, runs `SafeController::tick`,
+- **5 ms DWT-timed main loop:** decodes control frames, runs `SafeController::tick`,
   applies the differential mixer, publishes wheel targets, evaluates battery,
-  temperature, inactivity and motor faults, selects the alert, emits 100 Hz
-  feedback, and drains console input.
-- **USART2 ISR:** circular DMA RX with IDLE detection publishes the frame length;
-  a TXE-driven ring emits feedback frames byte by byte.
+  temperature, inactivity, serial timeout and motor faults, selects the alert,
+  emits 100 Hz feedback, and drains console input.
+- **USART2 ISR:** circular DMA RX with IDLE detection publishes the write
+  position; the main loop consumes only bytes written since the previous IDLE
+  frame, wrapping at the end of the buffer, as in `usart2_rx_check()` in the C
+  reference. A TXE-driven ring emits feedback frames byte by byte.
 - **USART3 ISR:** RXNE feeds the console line buffer; TXE drains either the text
   reply ring or, when a trace is active, the binary trace ring.
 
@@ -135,6 +139,16 @@ torque-node variant:
   tick. The HIL checklist and sign-off form are in `docs/moe-hil-checklist.md`.
 - IWDG, DC overcurrent counting, current limits and DWT timing counters are
   active. `$GET` reports `cyc=`, `max=` and `miss=` (deadline is 4000 cycles).
+- Audible alerts keep the reference priority from `main.c:566-597`: thermal
+  poweroff, dead battery, motor diagnostic, ADC timeout, serial timeout, general
+  timeout, thermal warning, battery level 1/2, backward drive. The serial
+  timeout uses `SerialTimeoutMonitor` and is raised from the first tick without
+  a valid frame, so a missing Pico link beeps three low-pitch bursts even before
+  any command has been accepted. `ADC timeout`, `general timeout` and the input
+  index beeps are inactive because their input paths (`CONTROL_ADC`, PPM/PWM,
+  Nunchuk, sideboard) are not part of this build; temperature alerts stay
+  disabled as in `config.h`. `$GET` reports the same link timeout as
+  `fault=LINK_TIMEOUT`.
 
 ## 7. Calibration and debugging interface
 

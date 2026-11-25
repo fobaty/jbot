@@ -5,6 +5,9 @@
 
 /// HSI/2 (4 MHz) x PLL16, as flashed in `Src/main.c`.
 pub const SYSTEM_HZ: u32 = 64_000_000;
+/// APB1 runs at HCLK/2 (`RCC_CFGR.PPRE1 = div2` in `init_clocks`). USART2 and
+/// USART3 are clocked from PCLK1, not from SYSCLK.
+pub const APB1_HZ: u32 = SYSTEM_HZ / 2;
 pub const PWM_FREQ_HZ: u32 = 16_000;
 /// 64 MHz / 2 / 16 kHz, center-aligned.
 pub const PWM_ARR: u16 = 2_000;
@@ -47,6 +50,18 @@ pub const PROTOCOL_VERSION: u8 = 2;
 pub const WIRE_MAX: usize = 256;
 /// `SERIAL_TIMEOUT = 160` in the pinned `config.h:670`: 160 x 5 ms = 800 ms.
 pub const COMMAND_TIMEOUT_US: u32 = 800_000;
+/// Same timeout expressed in 5 ms main-loop ticks, as used by
+/// `timeoutCntSerial_L` in `util.c:961`.
+pub const SERIAL_TIMEOUT_TICKS: u16 = 160;
+/// `BEEPS_BACKWARD = 1` in the pinned `config.h:187`.
+pub const BEEPS_BACKWARD: bool = true;
+
+/// USARTDIV for 16x oversampling, written directly into `USART_BRR`. The half-baud
+/// rounding matches `UART_BRR_SAMPLING16()` used by the pinned HAL.
+pub const fn usart_brr(clock_hz: u32, baud: u32) -> u16 {
+    let divider = (clock_hz + baud / 2) / baud;
+    (((divider / 16) << 4) | (divider % 16)) as u16
+}
 
 /// PI gains are placeholders until they are re-derived from the generated C.
 /// They must not be treated as a tuned controller.
@@ -104,3 +119,15 @@ pub const BUZZER_HIGH_FREQ: u16 = 5;
 /// the same tone frequency, matching the reference waveform's pitch.
 pub const BUZZER_VOLUME_DIVISOR: u16 = 4;
 pub const FOC_TICKS_PER_MS: u32 = 16;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn usart_brr_matches_the_pinned_pclk1_baud() {
+        // The C HAL programs 0x0116 for 115200 on a 32 MHz PCLK1. Using SYSCLK
+        // here would halve both UART baud rates and break the Pico link.
+        assert_eq!(usart_brr(APB1_HZ, 115_200), 0x0116);
+    }
+}

@@ -11,7 +11,9 @@ use core::sync::atomic::{
 };
 
 use cortex_m::interrupt::Mutex;
-use f103_core::config::{ADC_TRIGGER_OFFSET, PWM_ARR, PWM_DEAD_TIME, SYSTEM_HZ};
+use f103_core::config::{
+    usart_brr, ADC_TRIGGER_OFFSET, APB1_HZ, PWM_ARR, PWM_DEAD_TIME, SYSTEM_HZ,
+};
 use f103_core::console::ByteRing;
 use f103_core::sensing::ADC_FIELDS;
 use stm32f1::stm32f103 as pac;
@@ -26,10 +28,12 @@ unsafe impl<T> Sync for DmaBuffer<T> {}
 /// both converters into one 32-bit word, so five ranks fill five words. A
 /// four-byte-aligned `[u32; 5]` is required by the 32-bit DMA transfer.
 pub static ADC_BUFFER: DmaBuffer<[u32; 5]> = DmaBuffer(UnsafeCell::new([0; 5]));
-/// USART2 circular RX destination; the IDLE ISR publishes the frame length.
+/// USART2 circular RX destination; the IDLE ISR publishes the write position.
 pub static RX_BUFFER: DmaBuffer<[u8; 64]> = DmaBuffer(UnsafeCell::new([0; 64]));
 pub static RX_READY: AtomicBool = AtomicBool::new(false);
-pub static RX_LEN: AtomicU32 = AtomicU32::new(0);
+/// DMA write position in `RX_BUFFER`. The main loop consumes only the span
+/// between two positions, like `old_pos` in `util.c:1091`.
+pub static RX_POS: AtomicU32 = AtomicU32::new(0);
 
 /// FOC observability counters, sampled by the debug console on request.
 pub static FOC_TICKS: AtomicU32 = AtomicU32::new(0);
@@ -372,13 +376,13 @@ pub fn start_pwm(afio: &pac::AFIO, tim1: &pac::TIM1, tim8: &pac::TIM8) {
 }
 
 fn init_uart(usart: &pac::usart1::RegisterBlock, baud: u32) {
-    let divider = SYSTEM_HZ / baud;
-    let mantissa = divider / 16;
-    let fraction = divider % 16;
+    // USART2 and USART3 hang off APB1 (PCLK1 = 32 MHz), not SYSCLK. Using
+    // SYSTEM_HZ here would program 57600 on a link pinned at 115200.
+    let brr = usart_brr(APB1_HZ, baud);
     usart.brr().write(|w| {
         // SAFETY: mantissa and fraction are within their 12-bit/4-bit fields.
-        unsafe { w.div_mantissa().bits(mantissa as u16) };
-        unsafe { w.div_fraction().bits(fraction as u8) };
+        unsafe { w.div_mantissa().bits((brr >> 4) as u16) };
+        unsafe { w.div_fraction().bits((brr & 0xF) as u8) };
         w
     });
     usart.cr1().modify(|_, w| {
@@ -520,7 +524,7 @@ pub fn init_usart2_rx_dma(dma1: &pac::DMA1, usart2: &pac::USART2) {
     });
     usart2.cr3().modify(|_, w| w.dmar().set_bit());
     usart2.cr1().modify(|_, w| w.idleie().set_bit());
-    RX_LEN.store(64, Ordering::Relaxed);
+    RX_POS.store(0, Ordering::Relaxed);
 }
 
 /// Start of the two flash pages reserved for parameters in `memory.x`. The
