@@ -44,7 +44,7 @@ itself and later accepts a mission computer for autonomous navigation.
 
 | Donor part | Specification | Role |
 |---|---|---|
-| Mainboard | STM32F103RCT6, Cortex-M3 at 72 MHz, 256 KB flash, 48 KB RAM, 12 MOSFETs in two 3-phase bridges | FOC current loop, current limits, power latch, telemetry; torque actuator node |
+| Mainboard | STM32F103RCT6, Cortex-M3 at 64 MHz in the flashed configuration (72 MHz capable), 256 KB flash, 48 KB RAM, 12 MOSFETs in two 3-phase bridges | FOC current loop, current limits, power latch, telemetry; torque actuator node |
 | Hub motors | 2× direct-drive brushless, about 350 W each, 15 hall states, 6.5 in wheels (radius 0.0825 m) | Drive and speed feedback |
 | Battery | 10s2p Li-ion, 36 V nominal, 42.0 V full, about 30 V cutoff, 4.4 A·h, ~158 W·h, integrated BMS | Energy |
 | Power button | Soft latch held by the firmware (PA5) | Power on/off |
@@ -187,16 +187,16 @@ jbot/
 │   ├── jbot_navigation/        # Costmaps, planners, navigation stack
 │   └── jbot_node/              # High-level executable for the mission computer
 ├── firmware/
-│   ├── README.md               # EFeru builds, flashing, Pico plan
+│   ├── README.md               # Both Rust firmware workspaces, hardware, wiring
 │   ├── stm32f103/              # STM32F103 hoverboard mainboard firmware
-│   │   ├── eferu-foc/          # Pinned EFeru C tree and JBOT patches
-│   │   │   ├── eferu/          # Upstream checkout (nested git, do not push)
-│   │   │   ├── eferu-config.patch
-│   │   │   ├── eferu-jbot-config.h
-│   │   │   ├── eferu-jbot.patch
-│   │   │   ├── eferu-bench.patch
-│   │   │   └── eferu-balance.patch
-│   │   └── rust/               # Rust torque-node firmware
+│   │   ├── rust/               # Active Rust torque node (core + fw + tools)
+│   │   └── eferu-foc/          # Pinned EFeru C reference and JBOT patches
+│   │       ├── eferu/          # Upstream checkout (nested git, do not push)
+│   │       ├── eferu-config.patch
+│   │       ├── eferu-jbot-config.h
+│   │       ├── eferu-jbot.patch
+│   │       ├── eferu-bench.patch
+│   │       └── eferu-balance.patch
 │   └── pico2w/                 # Pico 2 W Rust firmware (separate workspace)
 │       ├── fw/                 # Firmware crate: HAL, Embassy tasks, wiring
 │       └── core/               # Pure logic: control, filters, wire contracts
@@ -217,9 +217,10 @@ jbot/
 
 > **Dependency rule:** `jbot_common` stays free of I/O. Hardware and navigation
 > crates may depend on it; the node wires the pieces together. Both embedded
-> projects in `firmware/` are separate from the host workspace: the EFeru C tree
-> builds with PlatformIO, and `pico-bridge` is its own Cargo workspace for
-> `thumbv8m.main-none-eabihf`.
+> projects in `firmware/` are separate from the host workspace: the F103 torque
+> node builds for `thumbv7m-none-eabi`, and `pico-bridge` builds for
+> `thumbv8m.main-none-eabihf`. The pinned EFeru C tree in `eferu-foc/` is only a
+> hardware reference and rollback artifact.
 
 ---
 
@@ -229,10 +230,11 @@ jbot/
 
 - [Rust toolchain](https://rustup.rs/) 1.75+ (edition 2021)
 - A C linker (`cc` / `clang`) for the host build
-- For the hoverboard: `pipx install platformio`, plus an ST-Link probe and a
-  3.3 V USB-UART adapter
-- For the Pico: `rustup target add thumbv8m.main-none-eabihf`, `probe-rs`, and
-  either an SWD probe or the USB BOOTSEL path
+- For the mainboard: `rustup target add thumbv7m-none-eabi`, `arm-none-eabi-gcc`
+  / `arm-none-eabi-objcopy`, an ST-Link probe, and a 3.3 V USB-UART adapter for
+  the debug console
+- For the Pico: `rustup target add thumbv8m.main-none-eabihf` and `picotool`;
+  flash over USB BOOTSEL
 
 ### Build and test
 
@@ -245,30 +247,38 @@ cargo run -p jbot_node
 cargo test --workspace
 ```
 
-### Hoverboard firmware
+### Mainboard firmware (Rust torque node)
 
 ```bash
-cd firmware/stm32f103/eferu-foc/eferu
-git apply ../eferu-bench.patch      # once, on the pinned upstream commit
-pio run -e VARIANT_USART             # build
-pio run -e VARIANT_USART -t upload   # flash, board powered from its battery
-
-git apply ../eferu-balance.patch     # torque-node profile (not created yet)
-pio run -e VARIANT_USART -t upload
+cd firmware/stm32f103/rust
+cargo test -p f103_core
+cd f103_fw && cargo build --release
+cd ../tools/calibration
+./flash.sh            # dry run: build, size check, print flash command
+./flash.sh --flash    # actual write (needs explicit approval)
 ```
 
-Wiring, recovery from a read-protected chip, and the bench checklist are in
-[`firmware/README.md`](firmware/README.md).
+Use SWDIO, SWCLK and GND only (no NRST wire) and hold the board's power button
+during the whole write. The default image keeps MOE low, so no gate can be
+driven until HIL sign-off. The pinned C reference and its build commands are in
+`firmware/stm32f103/eferu-foc/`.
+
+Cross-board wiring, recovery notes and the bench checklist are in
+[`firmware/README.md`](firmware/README.md) and
+[`docs/wiring.md`](docs/wiring.md).
 
 ### Pico firmware
 
 ```bash
-cd firmware/pico2w/fw
-cargo run --release                  # flash over SWD via probe-rs, RTT attached
+cd firmware/pico2w/core && cargo test   # host tests for control and protocols
+cd ../fw
+cargo build --release
+cargo run --release                     # picotool load over USB BOOTSEL
 ```
 
 The pin map, the task schedule, the link protocols, and the state machine are in
-[`docs/pico-bridge.md`](docs/pico-bridge.md).
+[`docs/pico-bridge.md`](docs/pico-bridge.md); all board-to-board connections are
+in [`docs/wiring.md`](docs/wiring.md).
 
 ### Pico console
 
@@ -353,6 +363,7 @@ Two donor-specific hazards matter from day one:
 | [`docs/specification.md`](docs/specification.md) | Requirements, priorities (P1/P2/P3), traceability |
 | [`docs/architecture.md`](docs/architecture.md) | Compute tiers, interfaces, power, safety concept |
 | [`docs/hardware.md`](docs/hardware.md) | Donor hardware, Pico pin map, radio link, IMU, interfaces |
+| [`docs/wiring.md`](docs/wiring.md) | Single cross-board connection table: pins, directions, cables, safety |
 | [`docs/pico-bridge.md`](docs/pico-bridge.md) | Pico firmware: pins, links, tasks, state machine, tests |
 | [`docs/bom.md`](docs/bom.md) | Complete component and assembly list |
 | [`docs/system_requirements.md`](docs/system_requirements.md) | Hardware and software requirements |
@@ -361,7 +372,8 @@ Two donor-specific hazards matter from day one:
 | [`docs/agent_workflow.md`](docs/agent_workflow.md) | Contribution and review workflow |
 | [`docs/telemetry-analysis.md`](docs/telemetry-analysis.md) | `jbot-analyze`: offline axis, law, breakaway and ringing report |
 | [`crates/jbot_console/README.md`](crates/jbot_console/README.md) | Native Pico console: attitude, compass, drive controls |
-| [`firmware/README.md`](firmware/README.md) | EFeru builds, flash, wiring, Pico plan |
+| [`firmware/README.md`](firmware/README.md) | Active Rust firmware for both boards, hardware, wiring, open items |
+| [`firmware/stm32f103/README.md`](firmware/stm32f103/README.md) | F103 Rust torque node, flashing, EFeru reference and rollback |
 
 ---
 
