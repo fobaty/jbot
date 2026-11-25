@@ -168,5 +168,5 @@ as a fix until the release fixture exists.
 - `csv/jbot-hold-*`: hold trials with release grading fields.
 - `csv/jbot-recovery-*`: software-disturbance trials.
 - `/tmp/jbot_openloop_*`: suspended open-loop ramps (not committed).
-- `firmware/stm32f103/eferu-jbot.patch`: EFeru patch including
+- `firmware/stm32f103/eferu-foc/eferu-jbot.patch`: EFeru patch including
   `DEBUG_SERIAL_USART3` for the bench bridge.

@@ -124,7 +124,7 @@ raise gains or disable guards to force a pass.
 ## Mainboard filter change (flashed 2026-11-23)
 
 `FILTER=19661` (α=0.3, τ≈14 ms) was applied in the `VARIANT_USART` block of
-`firmware/stm32f103/eferu/Inc/config.h`, the reference snapshot was updated and
+`firmware/stm32f103/eferu-foc/eferu/Inc/config.h`, the reference snapshot was updated and
 the mainboard was reflashed with `make -e VARIANT=VARIANT_USART && make flash`.
 The nested EFeru repository was not pushed.
 

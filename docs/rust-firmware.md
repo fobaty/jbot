@@ -2,9 +2,9 @@
 
 This document describes the Rust firmware that replaces the EFeru C build on the
 STM32F103RCT6 hoverboard mainboard. It is an implementation note, not a release
-approval. The C tree at `firmware/stm32f103/eferu` stays the behavioural reference
+approval. The C tree at `firmware/stm32f103/eferu-foc/eferu` stays the behavioural reference
 and rollback path; the pinned commit `4f141cbc97b297e194fd58e56444bd0322f902ac`
-plus `firmware/stm32f103/eferu-jbot.patch` defines the flashed configuration.
+plus `firmware/stm32f103/eferu-foc/eferu-jbot.patch` defines the flashed configuration.
 
 Related documents: `docs/eferu-motor-interface-study.md` (measured interface
 facts), `docs/prompt-f103-rust-firmware.md` (accepted scope and decisions),

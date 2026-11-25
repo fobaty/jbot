@@ -1,4 +1,4 @@
-//! Constants derived from the pinned EFeru build in `firmware/stm32f103/eferu`.
+//! Constants derived from the pinned EFeru build in `firmware/stm32f103/eferu-foc/eferu`.
 //!
 //! These are hardware and contract facts, not tunable defaults. Changing them
 //! requires a new measurement and an ADR, not a local edit.

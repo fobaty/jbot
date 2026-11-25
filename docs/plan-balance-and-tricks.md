@@ -186,7 +186,7 @@ Local: `docs/design_balance_home.md`, `docs/audit-2026-11-22.md`,
 `docs/research-balancing-tricks-2026-11-22.md`, `config/robot.toml`,
 `firmware/pico_core/src/{control,plant,eferu}.rs`,
 `firmware/pico2w/src/{console,main,state}.rs`,
-`firmware/stm32f103/eferu-jbot-config.h`.
+`firmware/stm32f103/eferu-foc/eferu-jbot-config.h`.
 
 External: `github.com/mahowik/BalancingWii`, `github.com/mjbots/hoverbot`,
 `github.com/oyzlight/mujoco-lqr-vmc-wheel-legged-robot`,

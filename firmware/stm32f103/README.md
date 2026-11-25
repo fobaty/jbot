@@ -1,15 +1,22 @@
 # STM32F103 mainboard firmware (JBOT bench profile)
 
 This directory records the configuration that is actually flashed on the
-STM32F103RCT6 mainboard. The upstream EFeru sources are pinned as a gitlink in
-`eferu/` at commit `4f141cb`. That nested repository has `origin` set to
-`https://github.com/EFeru/hoverboard-firmware-hack-FOC.git`; **do not push
-there**. The JBOT changes are kept in this repository instead:
+STM32F103RCT6 mainboard. The upstream EFeru sources are kept in
+`eferu-foc/eferu/` at commit `4f141cb`. That nested repository has `origin` set
+to `https://github.com/EFeru/hoverboard-firmware-hack-FOC.git`; **do not push
+there**. The JBOT patches live next to it in `eferu-foc/`:
 
-- `eferu-jbot.patch` — diff of `Inc/config.h` against the pinned commit.
-- `eferu-jbot-config.h` — full snapshot of the flashed `Inc/config.h`.
+- `eferu-foc/eferu-config.patch` — current diff of `Inc/config.h` against the
+  pinned commit.
+- `eferu-foc/eferu-jbot-config.h` — full snapshot of the flashed `Inc/config.h`;
+  byte-identical to the patched file in the working tree.
+- `eferu-foc/eferu-jbot.patch` — earlier revision of the config change, kept for
+  history. Do not apply it on top of the current snapshot.
+- `eferu-foc/eferu-bench.patch` — bench-only Makefile `unlock` target fix; it is
+  not applied to the flashed source.
 
-When the mainboard is reflashed, update both files in the same commit.
+When the mainboard is reflashed, update the config snapshot and patch in the
+same commit.
 
 ## Flashed configuration (reflashed 2026-11-24)
 
@@ -39,17 +46,17 @@ temperatures. The bench profile is deliberately below the upstream defaults.
 From the repository root:
 
 ```
-cp firmware/stm32f103/eferu-jbot-config.h firmware/stm32f103/eferu/Inc/config.h
+cp firmware/stm32f103/eferu-foc/eferu-jbot-config.h firmware/stm32f103/eferu-foc/eferu/Inc/config.h
 ```
 
 Alternatively, start from the pinned `Inc/config.h` and apply
-`firmware/stm32f103/eferu-jbot.patch`. Do not apply the patch on top of the
+`firmware/stm32f103/eferu-foc/eferu-jbot.patch`. Do not apply the patch on top of the
 full snapshot.
 
 ## Building
 
 ```
-cd firmware/stm32f103/eferu
+cd firmware/stm32f103/eferu-foc/eferu
 make -e VARIANT=VARIANT_USART
 ```
 
@@ -69,7 +76,7 @@ Hardware: ST-Link V2 (verified with firmware V2J37S7), connected with
 2. Run:
 
 ```
-cd firmware/stm32f103/eferu
+cd firmware/stm32f103/eferu-foc/eferu
 make flash
 ```
 

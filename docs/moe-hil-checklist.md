@@ -24,7 +24,7 @@ true`, and both motor diagnostics clear. Any fault clears MOE on the next tick.
 - [ ] USB-UART on PB10/PB11 at 3.3 V for the console (not PA2/PA3).
 - [ ] Scope or logic analyzer on TIM8/TIM1 gate pins and PA4 buzzer.
 - [ ] Rollback available: the C firmware is in git at upstream `4f141cb` plus
-      `firmware/stm32f103/eferu-jbot.patch`.
+      `firmware/stm32f103/eferu-foc/eferu-jbot.patch`.
 
 ## MOE-off checks (run on the default image)
 

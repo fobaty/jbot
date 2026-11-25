@@ -3,7 +3,7 @@
 | Field | Value |
 |---|---|
 | Status | Read-only study. No firmware, protocol, or control-path code was changed. |
-| Source of truth | `firmware/stm32f103/eferu/` at pinned commit `4f141cbc97b297e194fd58e56444bd0322f902ac` plus `firmware/stm32f103/eferu-jbot.patch`, exactly the tree used for the flashed `VARIANT_USART` build. |
+| Source of truth | `firmware/stm32f103/eferu-foc/eferu/` at pinned commit `4f141cbc97b297e194fd58e56444bd0322f902ac` plus `firmware/stm32f103/eferu-foc/eferu-jbot.patch`, exactly the tree used for the flashed `VARIANT_USART` build. |
 | Upstream | `EFeru/hoverboard-firmware-hack-FOC`, C, GPL-3.0, 16 kHz FOC core generated from a Simulink model. |
 | Related evidence | `docs/latency-and-slew-2026-11-23.md`, `docs/drive-diagnosis-2026-11-23.md`, `docs/audit-2026-11-22.md`, `firmware/README.md`. |
 

@@ -189,10 +189,14 @@ jbot/
 ├── firmware/
 │   ├── README.md               # EFeru builds, flashing, Pico plan
 │   ├── stm32f103/              # STM32F103 hoverboard mainboard firmware
-│   │   ├── eferu/              # Upstream EFeru C (git-ignored)
-│   │   ├── eferu-jbot.patch
-│   │   ├── eferu-bench.patch
-│   │   └── eferu-balance.patch
+│   │   ├── eferu-foc/          # Pinned EFeru C tree and JBOT patches
+│   │   │   ├── eferu/          # Upstream checkout (nested git, do not push)
+│   │   │   ├── eferu-config.patch
+│   │   │   ├── eferu-jbot-config.h
+│   │   │   ├── eferu-jbot.patch
+│   │   │   ├── eferu-bench.patch
+│   │   │   └── eferu-balance.patch
+│   │   └── rust/               # Rust torque-node firmware
 │   └── pico2w/                 # Pico 2 W Rust firmware (separate workspace)
 └── docs/
     ├── specification.md        # System Requirements Specification (SRS-001)
@@ -241,12 +245,12 @@ cargo test --workspace
 ### Hoverboard firmware
 
 ```bash
-cd firmware/eferu
+cd firmware/stm32f103/eferu-foc/eferu
 git apply ../eferu-bench.patch      # once, on the pinned upstream commit
 pio run -e VARIANT_USART             # build
 pio run -e VARIANT_USART -t upload   # flash, board powered from its battery
 
-git apply ../eferu-balance.patch     # torque-node profile (TRQ_MODE, 100 ms)
+git apply ../eferu-balance.patch     # torque-node profile (not created yet)
 pio run -e VARIANT_USART -t upload
 ```
 

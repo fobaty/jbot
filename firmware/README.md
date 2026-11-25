@@ -24,10 +24,12 @@ never affect `cargo test --workspace`.
 
 | Path | Content |
 |---|---|
-| `stm32f103/eferu/` | Upstream clone of `EFeru/hoverboard-firmware-hack-FOC`, pinned commit `4f141cbc97b297e194fd58e56444bd0322f902ac` (2026-07-04). Git-ignored; recreate with the command in section 2. |
-| `stm32f103/eferu-jbot.patch` | Local configuration delta applied on top of the pinned commit (limits, variant, debug output). |
-| `stm32f103/eferu-bench.patch` | Bench-only delta: fixes the `unlock` target for the ST-Link clone. |
-| `stm32f103/eferu-balance.patch` | Production torque-node delta: `CTRL_MOD_REQ = TRQ_MODE`, `SERIAL_TIMEOUT` 160 → 20. Not created yet. |
+| `stm32f103/eferu-foc/eferu/` | Upstream clone of `EFeru/hoverboard-firmware-hack-FOC`, pinned commit `4f141cbc97b297e194fd58e56444bd0322f902ac` (2026-07-04), with the JBOT configuration applied to `Inc/config.h`. Vendored here; no need to recreate it. |
+| `stm32f103/eferu-foc/eferu-config.patch` | Current configuration delta against the pinned commit (limits, variant, debug output). |
+| `stm32f103/eferu-foc/eferu-jbot-config.h` | Full snapshot of the flashed `Inc/config.h`. |
+| `stm32f103/eferu-foc/eferu-jbot.patch` | Earlier revision of the configuration delta, kept for history. |
+| `stm32f103/eferu-foc/eferu-bench.patch` | Bench-only delta: fixes the `unlock` target for the ST-Link clone. |
+| `stm32f103/eferu-foc/eferu-balance.patch` | Production torque-node delta: `CTRL_MOD_REQ = TRQ_MODE`, `SERIAL_TIMEOUT` 160 → 20. Not created yet. |
 | `pico2w/` | Rust firmware for the Pico 2 W (section 5). Separate Cargo workspace. |
 | `pico_core/` | `no_std`, I/O-free logic shared with the Pico firmware and unit-tested on the host: EFeru frames, BNO055 decoding, cascade balance law. |
 
@@ -73,17 +75,21 @@ The purpose of this step is to prove the whole chain before any custom code:
 toolchain, SWD access, option bytes, motor phases, hall sensors, current
 sensors, battery measurement, and the radio link.
 
-### 2.1. Recreate the upstream tree
+### 2.1. Upstream tree
+
+The pinned tree is vendored at `stm32f103/eferu-foc/eferu/` with
+`eferu-config.patch` already applied, so normal work needs no clone or fetch.
+If the nested checkout is missing, recreate it inside `eferu-foc/`:
 
 ```sh
-cd firmware
-mkdir -p stm32f103 && cd stm32f103
-git init -q
-git remote add origin https://github.com/EFeru/hoverboard-firmware-hack-FOC.git
-git fetch -q --depth 1 origin 4f141cbc97b297e194fd58e56444bd0322f902ac
-git checkout -q FETCH_HEAD
-git apply ../eferu-jbot.patch
+cd firmware/stm32f103/eferu-foc
+git clone https://github.com/EFeru/hoverboard-firmware-hack-FOC.git eferu
+cd eferu
+git checkout -q 4f141cbc97b297e194fd58e56444bd0322f902ac
+git apply ../eferu-config.patch
 ```
+
+Do not push to that nested repository.
 
 ### 2.2. Toolchain
 
@@ -99,7 +105,7 @@ the first build.
 ### 2.3. Build
 
 ```sh
-cd firmware/eferu
+cd firmware/stm32f103/eferu-foc/eferu
 pio run -e VARIANT_PWM
 ```
 
@@ -203,7 +209,7 @@ PB10/PB11 and not to the 15 V pin.
 If the battery voltage reads zero or the buzzer and LED behave incorrectly, the
 board may be the alternate layout: set `BOARD_VARIANT 1` and rebuild.
 
-### 2.8. Profile applied by `eferu-jbot.patch`
+### 2.8. Profile applied by `eferu-config.patch`
 
 | Setting | Upstream | This profile | Reason |
 |---|---|---|---|
@@ -233,7 +239,7 @@ board.
 | Binary | 32 312 bytes, md5 `64ab7b58ceea8ba4a7c1f5ea3d6914d0` |
 
 ```sh
-cd firmware/stm32f103
+cd firmware/stm32f103/eferu-foc/eferu
 git apply ../eferu-bench.patch       # once, on top of the pinned upstream commit
 pio run -e VARIANT_USART             # .pio/build/VARIANT_USART/firmware.bin
 pio run -e VARIANT_USART -t upload
@@ -299,7 +305,7 @@ command is more dangerous than losing balance under operator control. Because of
 that, do **not** enable `ELECTRIC_BRAKE_ENABLE` for balance.
 
 ```sh
-cd firmware/stm32f103
+cd firmware/stm32f103/eferu-foc/eferu
 git apply ../eferu-balance.patch
 pio run -e VARIANT_USART
 pio run -e VARIANT_USART -t upload
@@ -439,8 +445,9 @@ Rules:
 `firmware/pico2w` is its own Cargo workspace so that the root workspace
 keeps building for the host. The root `.gitignore` ignores every
 `.cargo/config.toml`, so the embedded target configuration needs an explicit
-exception. `firmware/eferu` stays out of version control: it is recreated from
-the pinned upstream commit plus the patches.
+exception. `firmware/stm32f103/eferu-foc/` vendors the pinned C tree and the
+patches in this repository; its nested `eferu/.git` still points at upstream and
+must not be pushed.
 
 ### 5.8. Foundation firmware (implemented)
 

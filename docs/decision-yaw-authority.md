@@ -5,7 +5,7 @@
 The flashed mainboard runs the upstream EFeru `VARIANT_USART` build. In that
 variant `STEER_COEFFICIENT` has no override, so it falls back to
 `DEFAULT_STEER_COEFFICIENT = 8192`, i.e. 0.5
-(`firmware/stm32f103/eferu-jbot-config.h:202,688-690`; `platformio.ini:48-66`).
+(`firmware/stm32f103/eferu-foc/eferu-jbot-config.h:202,688-690`; `platformio.ini:48-66`).
 `SPEED_COEFFICIENT` stays 1.0. The 16384/16384 (both 1.0) override belongs to
 `VARIANT_PWM`, not to the flashed image.
 

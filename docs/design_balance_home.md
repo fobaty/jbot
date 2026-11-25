@@ -45,7 +45,7 @@ gain table and the inner law; this document is the record of what v2 is and why.
   `config/robot.toml`, the same value used in §10) needs roughly `m g L ≈ 24–25 Nm`,
   while `PlantParams::NOMINAL` assumes 5 Nm of common-mode torque. That number is
   **an assumption, not a measurement**: the donor drive is configured with a 10 A per
-  motor phase current limit (`firmware/stm32f103/eferu` `I_MOT_MAX`), and the torque
+  motor phase current limit (`firmware/stm32f103/eferu-foc/eferu` `I_MOT_MAX`), and the torque
   per amp of these hub motors has not been measured. If the real budget is
   substantially higher, the lift limit grows and flat recovery may become reachable,
   because the whole law scales with `max_torque_nm`. Until then the law refuses to

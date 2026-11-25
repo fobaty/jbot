@@ -707,7 +707,7 @@ Rules:
 - `firmware/pico-bridge/`: separate embedded Cargo workspace for the Pico 2 W
   balance controller; not a member of the host workspace. See
   [`docs/pico-bridge.md`](pico-bridge.md).
-- `firmware/eferu/`: upstream C firmware on the F103 mainboard, pinned and
+- `firmware/stm32f103/eferu-foc/eferu/`: upstream C firmware on the F103 mainboard, pinned and
   patched; the mainboard is not rewritten in Rust for stages 1-2.
 - `firmware/hoverboard-rs/`: deferred. Only created if the STM32 torque path or
   the 5 ms command quantization proves inadequate for the hips.
@@ -721,7 +721,7 @@ Rules:
 | `jbot_navigation` | Costmaps, global/local planning, path tracking | Skeleton |
 | `jbot_node` | Runtime composition, middleware, supervision, CLI | Skeleton |
 | `firmware/pico-bridge` | Pico 2 W balance controller: CRSF, BNO055, control, safety | Planned; see `docs/pico-bridge.md` |
-| `firmware/eferu` | F103 torque actuator node: FOC, limits, timeout | Pinned upstream C, patched |
+| `firmware/stm32f103/eferu-foc/eferu` | F103 torque actuator node: FOC, limits, timeout | Pinned upstream C, patched |
 | `firmware/hoverboard-rs` | Optional F103 Rust replacement | Deferred |
 
 ### 6.3. Runtime and task model (Tokio)
@@ -1121,5 +1121,5 @@ the IMU sample is fresh, and the mainboard link is valid.
 - `docs/tasks.md` — work breakdown by milestone.
 - `docs/bom.md` — bill of materials.
 - `firmware/README.md` — firmware layout, EFeru patches, and build instructions.
-- `firmware/eferu/` — pinned upstream EFeru C sources with jbot patches.
+- `firmware/stm32f103/eferu-foc/eferu/` — pinned upstream EFeru C sources with jbot patches.
 - `Cargo.toml` and `crates/*/Cargo.toml` — current workspace layout and dependencies.

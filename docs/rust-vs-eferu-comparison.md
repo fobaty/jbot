@@ -1,7 +1,7 @@
 # Rust torque node vs. pinned EFeru C firmware — full comparison
 
 Scope: the flashed C build is `VARIANT_USART` with `BOARD_VARIANT 0`
-(`firmware/stm32f103/eferu/Inc/config.h:66`, `:327-362`, patched by
+(`firmware/stm32f103/eferu-foc/eferu/Inc/config.h:66`, `:327-362`, patched by
 `eferu-jbot.patch`). The Rust build is
 `firmware/stm32f103/rust/f103_core` + `f103_fw` in its current
 **full-behaviour** configuration. Lines below cite the source of each fact.

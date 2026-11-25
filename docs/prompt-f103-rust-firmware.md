@@ -30,7 +30,7 @@ Pico 2 W and a dedicated debug UART).
 1. Read first and obey: `AGENTS.md`, `docs/skills/rust_robotics_guidelines.md`,
    `docs/eferu-motor-interface-study.md`, `docs/hardware.md`, `docs/pico-bridge.md`,
    `docs/architecture.md`, `firmware/README.md`, and the pinned reference tree
-   `firmware/stm32f103/eferu/` plus `firmware/stm32f103/eferu-jbot.patch`.
+   `firmware/stm32f103/eferu-foc/eferu/` plus `firmware/stm32f103/eferu-foc/eferu-jbot.patch`.
 2. Trace every change to a requirement or task ID (`SYS-*`, `INT-*`, `SAF-*`,
    `M3-*`). If you cannot find one, state the gap and ask before coding.
 3. **Stop and ask before any code** if any of these gates is unresolved:
@@ -55,7 +55,7 @@ Pico 2 W and a dedicated debug UART).
 
 ## 1. Reference firmware: what is proven, what is not
 
-`firmware/stm32f103/eferu/` is pinned at commit
+`firmware/stm32f103/eferu-foc/eferu/` is pinned at commit
 `4f141cbc97b297e194fd58e56444bd0322f902ac` with `eferu-jbot.patch`. It is a
 **validated motor drive** on the actual donor board: 16 kHz FOC, two 3-phase
 bridges, hall commutation, phase/DC-link current sensing, battery and temperature
