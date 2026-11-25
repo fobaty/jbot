@@ -14,6 +14,9 @@ stay separate so control and protocol changes can be verified without hardware.
 
 ![Pico 2 W pinout](pico2w-pinout.svg)
 
+The consolidated cross-board connection table is in `../../docs/wiring.md`; the
+hardware pin tables are in `../../docs/hardware.md`.
+
 ## Checks
 
 ```sh

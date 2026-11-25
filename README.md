@@ -204,6 +204,7 @@ jbot/
     ├── specification.md        # System Requirements Specification (SRS-001)
     ├── architecture.md         # System architecture and safety concept
     ├── hardware.md             # Donor hardware, Pico pin map, interfaces
+    ├── wiring.md               # Consolidated cross-board connection table
     ├── pico-bridge.md          # Pico 2 W firmware specification (FW-002)
     ├── bom.md                  # Component and assembly list
     ├── roadmap.md              # Phased delivery plan and gate criteria

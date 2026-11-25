@@ -4,7 +4,7 @@
 |---|---|
 | Document | Two-board firmware: Pico 2 W real-time controller, F103 torque node |
 | Code | FW-001 |
-| Version | 0.2 |
+| Version | 0.3 |
 
 | Status | Rust firmware is the active target for both boards; the pinned EFeru C tree is kept as hardware reference and rollback |
 | Scope | STM32F103RCT6 hoverboard mainboard (Rust torque node) and Raspberry Pi Pico 2 W (Rust balance controller) |
@@ -12,42 +12,33 @@
 This directory holds all robot firmware. The STM32F103 mainboard runs the Rust
 torque node in `stm32f103/rust/`; the Pico 2 W runs the Rust balance controller
 in `pico2w/`. The pinned EFeru C sources in `stm32f103/eferu-foc/` are a
-hardware reference and a known-good hoverboard build, not the firmware for this
-self-balancing robot. All firmware workspaces are separate from the `jbot`
+hardware reference and a known-good hoverboard build, **not** the firmware for
+this self-balancing robot. All firmware workspaces are separate from the `jbot`
 Cargo workspace, each with its own toolchain, so they never affect
 `cargo test --workspace`.
 
-> **Start here.** The active mainboard firmware, its build checks and the
-> flashing procedure are documented in
-> [`stm32f103/README.md`](stm32f103/README.md). Section 2 below describes the
-> historical EFeru C baseline and is kept as a hardware reference only.
-
-> **Change in 0.2 (ADR-011).** The balance loop moved off the mainboard to the
-> Pico 2 W. The mainboard is now a torque actuator node: it keeps the 16 kHz FOC
-> current loop, the current limits, the power latch, and an independent 100 ms
-> serial timeout. The BNO055 and the XR1 receiver are wired to the Pico. See
-> [`docs/pico-bridge.md`](../docs/pico-bridge.md).
+> **Start here.** For the active mainboard firmware, its checks and the flashing
+> procedure, see [`stm32f103/README.md`](stm32f103/README.md). Section 5 below
+> describes the reference C baseline and is kept for its hardware facts only.
 
 ## 1. Layout
 
 | Path | Content |
 |---|---|
-| `stm32f103/eferu-foc/eferu/` | Upstream clone of `EFeru/hoverboard-firmware-hack-FOC`, pinned commit `4f141cbc97b297e194fd58e56444bd0322f902ac` (2026-07-04), with the JBOT configuration applied to `Inc/config.h`. Vendored here; no need to recreate it. |
-| `stm32f103/eferu-foc/eferu-config.patch` | Current configuration delta against the pinned commit (limits, variant, debug output). |
-| `stm32f103/eferu-foc/eferu-jbot-config.h` | Full snapshot of the flashed `Inc/config.h`. |
-| `stm32f103/eferu-foc/eferu-jbot.patch` | Earlier revision of the configuration delta, kept for history. |
-| `stm32f103/eferu-foc/eferu-bench.patch` | Bench-only delta: fixes the `unlock` target for the ST-Link clone. |
-| `stm32f103/eferu-foc/eferu-balance.patch` | Production torque-node delta: `CTRL_MOD_REQ = TRQ_MODE`, `SERIAL_TIMEOUT` 160 → 20. Not created yet. |
-| `pico2w/fw/` | Rust firmware for the Pico 2 W (section 5). Separate Cargo workspace; owns the HAL and the Embassy tasks. |
-| `pico2w/core/` | `no_std`, I/O-free logic used by `fw/` and unit-tested on the host: EFeru frames, BNO055 decoding, cascade balance law. |
+| `stm32f103/rust/f103_core/` | Hardware-independent F103 logic: FOC port, protocol, alerts, safety, battery, thermal, console, trace. Host-tested. |
+| `stm32f103/rust/f103_fw/` | F103 PAC/HAL firmware: clocks, TIM1/TIM8, ADC/DMA, both UARTs, IWDG, ISRs. |
+| `stm32f103/rust/tools/` | FOC golden-vector recorder, console bridge, binary trace decoder, build/flash script. |
+| `stm32f103/eferu-foc/` | Pinned upstream C firmware, JBOT patches and upstream documentation. Reference and rollback only. |
+| `pico2w/fw/` | Pico 2 W firmware package: Embassy tasks, peripheral drivers, USB console, debug bridge. Owns `.cargo/config.toml` and `memory.x`. |
+| `pico2w/core/` | `no_std`, I/O-free logic used by `fw/` and unit-tested on the host: EFeru frames, hardened protocol, BNO055 decoding, cascade balance law, plant and predictor. |
 
-## 1.1. Hardware in scope
+## 2. Hardware in scope
 
 Reused from the hoverboard:
 
 | Part | Role | Notes |
 |---|---|---|
-| Mainboard, STM32F103RCT6, 12 MOSFETs | power stage, FOC, sensors, power latch | torque actuator node |
+| Mainboard, STM32F103RCT6, 12 MOSFETs | power stage, FOC, sensors, power latch | Rust torque actuator node |
 | Two hub motors with hall sensors | drive and speed feedback | about 350 W each, direct drive |
 | 10s2p 4.4 Ah pack with BMS | energy | 42 V full, about 30 V cutoff |
 | Power button and latch | on/off | PA5 latch, short press powers off, long press calibrates |
@@ -59,381 +50,136 @@ Added to the robot: **Pico 2 W (RP2350)**, XR1 receiver, BNO055, a 36 V to 5 V
 converter rated for at least 60 V input and 1.5 A, a main fuse, and a hardware
 kill switch in the battery line.
 
-Two consequences of this list:
+Important hardware consequences:
 
-- **Charging interlock.** The charge-detect input is initialised by EFeru but
-  never read. The patch forwards it and the Pico treats it as an interlock: the
-  motors stay off whenever the charger is plugged in, so the robot cannot be
-  armed while charging.
+- **Charging interlock.** The charge-detect line is PA12 on the mainboard and
+  has a candidate wire to the Pico. The robot must stay disabled while the
+  charger is plugged in.
 - **Regenerative braking.** A balancing robot regenerates every time it leans
-  back. With a full pack, the BMS can cut the charge path on overvoltage and the
-  DC link then spikes. Start runs at about 90 % charge and keep the regen
-  current limited until the behaviour is measured.
-- **The power button is not an E-stop.** The button is only read by the
-  firmware, and the firmware holds the power latch on PA5. If the firmware
-  hangs, the button no longer cuts power. It is also small and not reachable
-  during a fall. The kill switch in the battery line is the real safety path.
+  back. With a full pack the BMS can cut the charge path on overvoltage and the
+  DC link then spikes. Start runs at about 90 % charge and keep regen current
+  limited until it is measured.
+- **The power button is not an E-stop.** The firmware holds the latch on PA5;
+  if it hangs, the button no longer cuts power. The hardware kill switch in the
+  battery line is the real safety path.
 - **Two firmwares, two timeouts.** The Pico can hang; the mainboard cannot
-  depend on it. The mainboard's own serial timeout zeroes torque, and the
-  Pico's hardware watchdog resets the balance loop if it stalls. The timeout
-  value is a firmware contract, not a tuning knob; see `stm32f103/README.md`.
+  depend on it. The mainboard enforces its own serial timeout, and the Pico's
+  hardware watchdog resets the balance loop if it stalls. Timeout values are
+  firmware contracts, not tuning knobs; see `stm32f103/README.md`.
 
-## 2. EFeru baseline (historical reference)
+## 3. Active firmware
 
-This section documents the pinned C firmware that was used for the first
-bring-up. It is kept for its measured hardware facts and as a rollback path;
-the active mainboard firmware is the Rust torque node in `stm32f103/rust/`.
+### 3.1. Split of responsibilities
 
-The purpose of this step was to prove the whole chain before any custom code:
-toolchain, SWD access, option bytes, motor phases, hall sensors, current
-sensors, battery measurement, and the radio link.
+| Layer | Where | Implementation |
+|---|---|---|
+| FOC core, SVPWM, current PI, hall capture, power latch | STM32F103 | Rust port of the generated C controller, bit-exact against golden vectors |
+| Torque-command receive, limits, link-loss alarm, telemetry | STM32F103 | Rust (`f103_core` + `f103_fw`) |
+| CRSF parser, channel map, failsafe, arming | Pico 2 W | Rust (new functionality) |
+| BNO055 driver, attitude fusion, gyro propagation | Pico 2 W | Rust |
+| Balance, speed and yaw controllers | Pico 2 W | Rust, unit-tested on the host |
+| Safety state machine, limits, telemetry, blackbox | Pico 2 W | Rust |
+| Mission-computer link, parameter get/set | Pico 2 W | Rust, schema shared with the host workspace |
 
-### 2.1. Upstream tree
+The two boards meet at one protocol: the stock 8-byte command and 18-byte
+feedback frames on USART2. They share no memory and no code.
 
-The pinned tree is vendored at `stm32f103/eferu-foc/eferu/` with
-`eferu-config.patch` already applied, so normal work needs no clone or fetch.
-If the nested checkout is missing, recreate it inside `eferu-foc/`:
+### 3.2. STM32F103 Rust torque node
 
-```sh
-cd firmware/stm32f103/eferu-foc
-git clone https://github.com/EFeru/hoverboard-firmware-hack-FOC.git eferu
-cd eferu
-git checkout -q 4f141cbc97b297e194fd58e56444bd0322f902ac
-git apply ../eferu-config.patch
-```
+- 16 kHz FOC from a fixed-point port of the generated C controller, replayed
+  against the golden vectors in `stm32f103/rust/tools/foc_golden/`.
+- USART2 (PA2/PA3, 115200 8N1) carries commands and 100 Hz feedback. USART3
+  (PB10/PB11, 115200 8N1) is an independent text/binary console with `$GET`,
+  `$GETP`, `$WATCH`, `$TRACE`, `$DUMP`, `$ADC` and `$SAVE`.
+- A missing serial link raises the three low-pitch buzzer beeps from the first
+  main-loop tick and forces the safe output. Battery, temperature, motor and
+  backward-drive alerts keep the reference priority.
+- The default build keeps **MOE low**: the torque loop can be observed on the
+  bench, but no gate can be driven until HIL validation and explicit sign-off.
 
-Do not push to that nested repository.
-
-### 2.2. Toolchain
-
-PlatformIO is installed with pipx, so it stays isolated from the system Python:
-
-```sh
-pipx install platformio
-```
-
-The `ststm32` platform and the `arm-none-eabi-gcc` toolchain are downloaded on
-the first build.
-
-### 2.3. Build
+Checks and build (from `firmware/stm32f103/rust`):
 
 ```sh
-cd firmware/stm32f103/eferu-foc/eferu
-pio run -e VARIANT_PWM
+cargo fmt --all -- --check
+cargo test -p f103_core
+cargo clippy -p f103_core --all-targets -- -D warnings
+cd f103_fw && cargo build --release
 ```
 
-Artifacts:
+`firmware/stm32f103/rust/tools/calibration/flash.sh` builds the image, checks
+the application size and prints the flash command; `--flash` performs the write
+and needs explicit approval. SWDIO, SWCLK and GND only, no NRST; hold the board's
+power button during the whole write. Full details are in
+[`stm32f103/README.md`](stm32f103/README.md).
 
-- `.pio/build/VARIANT_PWM/firmware.elf`
-- `.pio/build/VARIANT_PWM/firmware.bin`
+### 3.3. Pico 2 W Rust balance controller
 
-Expected size for the current profile: about 30 KB flash, 5% RAM.
+Stack: `thumbv8m.main-none-eabihf`, `no_std`, `embassy-rp`/`embassy-time`/
+`embassy-sync`, `defmt`, `heapless`, `micromath`, COBS/CRC16 for hardened frames.
+No heap, dynamic dispatch or blocking waits in the 200 Hz path. Flashing uses
+`picotool` via `cargo run --release`; `defmt` over RTT is available for a future
+debug probe.
 
-### 2.4. Flash
+`pico2w/fw/` owns the hardware. Embassy tasks:
 
-The board must be powered from its own battery while flashing. The MCU has no
-power when the hoverboard is switched off, so connect the battery, switch the
-board on, and only then attach the probe.
+| Task | Rate | Work |
+|---|---|---|
+| `imu_task` | 100 Hz | Resets the BNO055, selects `IMUPLUS`, publishes the latest Euler/gyro/calibration sample |
+| `link_rx_task` | event | Reads bytes from UART0 and resynchronises the 18-byte feedback parser |
+| `control_task` | 200 Hz | Computes the cascade command, sends the 8-byte frame, toggles GP10, feeds the watchdog |
+| `usb_task` | event | RP2350 USB CDC-ACM console |
+| `console_task` | event | Line protocol: commands in, telemetry out |
+
+`pico2w/core/` owns the control law, filters, BNO055 decoding, EFeru and
+hardened wire formats, NVM schema, plant model and predictor. It has no I/O and
+is host-tested:
 
 ```sh
-pio run -e VARIANT_PWM -t upload
+cd firmware/pico2w/core
+cargo test
+cargo clippy --all-targets -- -D warnings
+cd ../fw
+cargo check
+cargo build --release
 ```
 
-Wiring: SWDIO = PA13, SWCLK = PA14, GND, and optionally 3.3 V sense. Do not
-feed 3.3 V from the probe into a board that is already powered.
-
-### 2.5. Recovering a read-protected chip
-
-Hoverboard mainboards are normally shipped with RDP level 1. The first attach
-then fails with a protection error instead of flashing. Unlocking performs a
-mass erase and **destroys the stock firmware permanently**; this is accepted,
-there is no stock binary to go back to.
-
-OpenOCD ships as a PlatformIO tool; it is already installed on this machine
-(`pio pkg install --global --tool platformio/tool-openocd` reinstalls it):
+Put the board into BOOTSEL mode before flashing. The image enumerates as a USB
+CDC-ACM port; telemetry is visible without a probe:
 
 ```sh
-~/.platformio/packages/tool-openocd/bin/openocd \
-  -f interface/stlink.cfg -f target/stm32f1x.cfg \
-  -c "init; reset halt; stm32f1x unlock 0; reset halt; shutdown"
+python3 -m serial.tools.miniterm /dev/cu.usbmodemJBOT_PICO_011 115200
 ```
 
-Equivalent with stlink-tools (`brew install stlink`):
+Console commands include `help`, `ping`, `stat`, `stream <hz>`, `speed <mps>`,
+`steer <deg/s>`, `trim <deg>`, `reinit`, `estop`, `clear`, `stats reset` and
+`reboot`. A telemetry line looks like:
 
-```sh
-st-flash --connect-under-reset erase
+```
+T step=19043 loop=200 imu=ok cal=3 pitch=1.50 roll=-2.25 hdg=87.40 gy=0.06 gx=-0.12 gz=0.03 err=0x00 mb=ok L=0 R=0 bat=41.50 tmp=39.3 age=3 estop=0 vset=0.00 wset=0.00
 ```
 
-After the erase, repeat the upload. If OpenOCD cannot halt the core at all,
-retry with `-c "reset_config srst_only srst_nogate"` or hold the reset pad while
-connecting.
+`estop` latches a firmware-side emergency stop: the control task keeps sending
+zero torque at 200 Hz until `clear`. The full protocol, `stat` fields and IMU
+error codes are in [`docs/pico-bridge.md`](../docs/pico-bridge.md) §8.1.
 
-### 2.6. Bench wiring for the link test
+Bench check after flashing: 200 control steps per second with no watchdog
+reset, `imu=ok`, `err=0x00`, and `mb=ok` with `age` of 0–10 ms. Common faults:
 
-This is a pre-Pico bench test of the `VARIANT_PWM` build. The production wiring
-is different: the left cable goes to the Pico and the right cable is free. Do not
-copy this table into the robot harness.
-
-Wheels off the ground for every test until the direction and the limits are
-verified. Disconnect both sideboards first (section 5.5); the right cable is
-where the PWM input goes and the sideboard would otherwise drive the same wire.
-
-| Signal | Mainboard pin | Cable | Notes |
-|---|---|---|---|
-| PWM channel 1 (steering) | PB10 | right | from the CRSF/ELRS to PWM adapter |
-| PWM channel 2 (throttle) | PB11 | right | from the adapter |
-| GND | GND | right | common ground with the adapter |
-| Debug UART TX | PA2 | left | mainboard TX to a 3.3 V USB-UART RX |
-| GND | GND | left | |
-
-The two signal wires are the ones that are neither 15 V nor GND; identify them
-with a multimeter before connecting anything. The red wire carries about 15 V
-when the board is on and must never touch logic.
-
-Do not power the radio adapter or the receiver from the 15 V rail. Use a
-separate DC-DC rated for at least 60 V input.
-
-Debug UART: 115200 8N1.
-
-### 2.7. Expected behaviour
-
-1. Power on: startup melody, then the board waits for the inputs to be near
-   neutral.
-2. With the radio on and both sticks centred, the board beeps twice and enables
-   the motors.
-3. Every 125 ms the debug UART prints:
-
-   ```
-   in1:%i in2:%i cmdL:%i cmdR:%i BatADC:%i BatV:%i TempADC:%i Temp:%i
-   ```
-
-4. `in1`/`in2` must move between about -1000 and +1000 with the sticks and
-   return to about 0 when centred.
-5. `cmdL`/`cmdR` must follow: right stick vertical moves both wheels the same
-   way, right stick horizontal moves them in opposite directions.
-6. `BatV` is the calibrated pack voltage multiplied by 100. A full 10s pack
-   reads about 4200. If it does not match a multimeter reading, recalibrate
-   `BAT_CALIB_REAL_VOLTAGE` / `BAT_CALIB_ADC` in `Inc/config.h`.
-
-If every input reads zero and the motors never enable, the PWM signal is not
-arriving: check the adapter output with a scope, and confirm that the wires go to
-PB10/PB11 and not to the 15 V pin.
-
-If the battery voltage reads zero or the buzzer and LED behave incorrectly, the
-board may be the alternate layout: set `BOARD_VARIANT 1` and rebuild.
-
-### 2.8. Profile applied by `eferu-config.patch`
-
-| Setting | Upstream | This profile | Reason |
-|---|---|---|---|
-| `I_MOT_MAX` | 15 A | 10 A | Original 10s2p 4.4 Ah pack; raise only after thermal measurement |
-| `I_DC_MAX` | 17 A | 12 A | Keep `I_DC_MAX = I_MOT_MAX + 2 A` |
-| `N_MOT_MAX` | 1000 rpm | 400 rpm | About 3.5 m/s with 6.5 inch wheels |
-| `DEBUG_SERIAL_USART2` | off | on | Left cable free in `VARIANT_PWM`; right cable is the PWM input |
-
-`VARIANT_PWM` is selected through the PlatformIO environment, not through
-`config.h`.
-
-### 2.9. Bench link-test build (`VARIANT_USART`)
-
-Before the radio link existed, the board was driven over its own cable from a
-host console through a 3.3 V USB-UART adapter, using the same wire protocol the
-Pico bridge later speaks on USART2. This was the build used for the first bench
-link test, not the active firmware.
-
-| Item | Value |
+| Symptom | Meaning |
 |---|---|
-| Variant | `VARIANT_USART` (`-D VARIANT_USART`) |
-| Source delta | `eferu-bench.patch`: unlock target only, `config.h` is upstream stock |
-| Input | USART2, PA3 RX / PA2 TX, 115200 8N1, left cable |
-| Limits | stock: `I_MOT_MAX` 15 A, `N_MOT_MAX` 1000 rpm |
-| Control | `VLT_MODE`, `FOC_CTRL` |
-| Silent-input timeout | `SERIAL_TIMEOUT` 160 x 5 ms, about 0.8 s |
-| Binary | 32 312 bytes, md5 `64ab7b58ceea8ba4a7c1f5ea3d6914d0` |
+| `mb=none`, `fb=0`, `fb_drop` rising | Mainboard link down; check power and GP16/GP17 ↔ PA3/PA2 |
+| `imu=stale`, `imu_code=1` | I2C failure to the BNO055; check wiring and address strap |
+| `loop` below 195 | 5 ms tick missing deadlines; suspect USB or `defmt` cost |
 
-```sh
-cd firmware/stm32f103/eferu-foc/eferu
-git apply ../eferu-bench.patch       # once, on top of the pinned upstream commit
-pio run -e VARIANT_USART             # .pio/build/VARIANT_USART/firmware.bin
-pio run -e VARIANT_USART -t upload
-```
+The pinned wire contract, pin tables and task model are in
+[`docs/hardware.md`](../docs/hardware.md) and
+[`docs/pico-bridge.md`](../docs/pico-bridge.md). The native console in
+`crates/jbot_console` drives the same commands from the mission computer.
 
-The stock `unlock` target fails on the ST-Link clone with `init mode failed`; the
-patch switches it to `interface/stlink.cfg`, adds `shutdown` and reminds you to
-power-cycle. On a protected chip also run OpenOCD with `-c "adapter speed 100"`.
+## 4. Command arbitration
 
-Command frames are 8 bytes (`<HhhH`: `0xABCD`, steer, speed, checksum), sent at
-200-400 Hz; feedback frames are 18 bytes (`<HhhhhhhHH`) at 100 Hz. There is no
-sequence number, so leave a small inter-frame gap: `usart2_rx_check` accepts a
-frame only when exactly 8 bytes arrived since the last idle line. The host side -
-the Pico bridge, the Mac console and the wire protocol - lives in
-[`archive/python-tools/hover/`](../archive/python-tools/hover/README.md).
-
-Live check on the bench board (Pico 2 W, MicroPython, UART0 GP16/GP17 at
-115200 8N1, 1 s capture): 97 frames, exactly 18 bytes apart, every checksum
-valid. Representative frame:
-
-```
-cd ab 00 00 00 00 00 00 00 00 39 10 5d 01 00 00 a9 ba
-start  cmd1 cmd2  spdR spdL  batV  temp  led   chk
-```
-
-`batV` 4153 means 41.53 V. `temp` is **tenths of a degree** (349 means 34.9 °C)
-because `TEMP_CAL_*_DEG_C` in `config.h` is specified in °C × 10; do not read it
-as whole degrees. `jbot_pico_core::eferu::Feedback::board_temp_celsius` applies
-the scale.
-
-`VLT_MODE` with the stock 1000 rpm scale means commands below about 30 units can
-stall on cogging. The balancing controller uses `TRQ_MODE` instead (section 2.10),
-where the command is a torque request and cogging does not gate the low end.
-
-### 2.10. Torque-node build (`eferu-balance.patch`)
-
-The production stage 1 build. Same `VARIANT_USART`, with these configuration changes:
-
-| Setting | Upstream | This profile | Reason |
-|---|---|---|---|
-| `CTRL_MOD_REQ` | `VLT_MODE` | `TRQ_MODE` | The Pico sends a torque request; the F103 runs the current loop |
-| `SERIAL_TIMEOUT` | 160 (800 ms) | 20 (100 ms) | Bound the age of a stale torque command |
-| `I_MOT_MAX` | 15 A | 10 A | Original 10s2p pack; raise only after thermal measurement |
-| `I_DC_MAX` | 17 A | 12 A | Keep `I_DC_MAX = I_MOT_MAX + 2 A` |
-| `N_MOT_MAX` | 1000 rpm | 400 rpm | About 3.5 m/s with 6.5 in wheels |
-| `ENABLE_ODOMETRY` | off | off (open) | Extends feedback to 22 bytes when enabled |
-| `SPEED_COEFFICIENT` | 16384 (1.0) | 16384 (1.0) | Keep the Pico's unit-mixer inverse valid |
-| `STEER_COEFFICIENT` | 8192 (0.5) | 16384 (1.0) | The Pico maps wheel torque with `cmdL = speed + steer`, `cmdR = speed - steer` |
-
-`TRQ_MODE` exists upstream and is valid only with `CTRL_FOC`. The command scale is
-±1000 = ±`I_MOT_MAX`; there is no ramp, no interlock, and no arming in the F103 —
-that is all on the Pico.
-
-**Mixer contract.** `jbot_pico_core::eferu::Command::from_wheel_torque` inverts a
-unit mixer. With the upstream `STEER_COEFFICIENT = 0.5` the yaw differential is
-halved, which is a silent authority loss rather than a fault. The production
-profile must set both coefficients to `16384`, or the Pico mapping must be
-changed to match the mixer.
-
-When the serial timeout expires, EFeru falls back to `OPEN_MODE`, i.e. freewheel.
-For a balancing robot that means a fall, and it is accepted: a stale torque
-command is more dangerous than losing balance under operator control. Because of
-that, do **not** enable `ELECTRIC_BRAKE_ENABLE` for balance.
-
-```sh
-cd firmware/stm32f103/eferu-foc/eferu
-git apply ../eferu-balance.patch
-pio run -e VARIANT_USART
-pio run -e VARIANT_USART -t upload
-```
-
-## 3. Known constraints of the stock EFeru behaviour
-
-- No balancing controller. `VARIANT_HOVERBOARD` in `config.h` is marked
-  `Balancing controller: [TODO]`; the balance loop lives on the Pico instead.
-- No CRSF input. Only PWM, PPM, ADC, iBUS and a custom UART protocol exist; the
-  XR1 is therefore wired to the Pico, not to the mainboard.
-- The right sensor cable is shared between USART3 and I2C2 (PB10/PB11). Because
-  the IMU moved to the Pico, USART3 is free for the stage 2 hip link with no
-  soldering.
-- The command path is quantized to the 5 ms main loop, whatever rate the Pico
-  sends at. Budget that delay into the controller.
-- The F103 has no FPU. Do not move attitude estimation or the balance loop back
-  onto it.
-
-## 4. Bring-up step 1 exit criteria
-
-This step is done when all of the following hold on the bench:
-
-- [ ] Firmware uploads and boots from the battery.
-- [ ] Debug UART prints the expected line.
-- [ ] Both sticks map to `in1`/`in2` and to `cmdL`/`cmdR` with the correct sign.
-- [ ] Both wheels spin in the correct direction with the wheels lifted.
-- [ ] `BatV` matches a multimeter within 0.2 V.
-- [ ] No MOSFET or motor overheating after two minutes at low load.
-
-## 5. Bring-up step 2: Pico 2 W firmware
-
-The balance controller is Rust on the Pico 2 W, in `firmware/pico2w/fw/`. The
-mainboard is not rewritten: it keeps the pinned EFeru C and its validated 16 kHz
-FOC core.
-
-### 5.1. Split of responsibilities
-
-| Layer | Where | Language | Rationale |
-|---|---|---|---|
-| FOC core, SVPWM, current PI, hall capture, power latch | STM32F103 | generated C (EFeru) | Proven at 16 kHz; a rewrite would have to be re-validated from scratch |
-| Torque-command receive, limits, 100 ms timeout | STM32F103 | C (EFeru) | Small, local, and independent of the Pico |
-| CRSF parser, channel map, failsafe, arming | Pico 2 W | Rust | New functionality; the radio is the only arm source |
-| BNO055 driver, attitude fusion, gyro propagation | Pico 2 W | Rust | New functionality |
-| Balance, speed and yaw controllers | Pico 2 W | Rust | New functionality; unit-tested on the host |
-| Safety state machine, limits, telemetry, blackbox | Pico 2 W | Rust | New functionality; the Pico is Tier 1 |
-| Mission-computer link, parameter get/set | Pico 2 W | Rust | New functionality, shared schema with the host workspace |
-
-The two boards meet at exactly one protocol: the stock EFeru 8-byte command and
-18-byte feedback frames on USART2. Neither board shares memory or code with the
-other.
-
-### 5.2. Stack
-
-- `thumbv8m.main-none-eabihf` (Cortex-M33 with FPU), `no_std`.
-- `embassy-rp` (rp235x) for the HAL and the async executor; `embassy-time` for
-  tickers; `embassy-sync` for `watch`/`signal`/bounded channels.
-- `probe-rs` for flashing and RTT; `defmt` for logs; `panic-probe` for panics.
-- `heapless` for fixed buffers, `micromath` for scalar math, `cobs` and `crc` for
-  the mission link.
-- No heap, no dynamic dispatch, no blocking waits in the 200 Hz path.
-
-The full task table, state machine, protocol details, and test plan are in
-[`docs/pico-bridge.md`](../docs/pico-bridge.md).
-
-### 5.3. Milestones
-
-1. **Blink and clock tree.** Rust binary that boots, sets 150 MHz, and blinks the
-   LED. Proves the linker script, vector table, and flashing path.
-2. **Mainboard link.** Sends stock torque frames and parses feedback; wheels
-   lifted, torque verified against the echoed command.
-3. **I2C + BNO055.** Reads calibrated accel and gyro at 100 Hz at 400 kHz.
-4. **UART1 + CRSF.** Prints channels, link quality, and the arm switch.
-5. **Balance loop.** PD on pitch with the robot held by a safety rig; GP10 marker
-   on the scope for jitter.
-6. **Speed and yaw loops.** Drive, reverse, steer, spin in place.
-7. **Safety and telemetry.** Tilt cutoff, link-loss policy, watchdog, charge
-   interlock, battery telemetry to the handset.
-8. **Mission link.** Framed setpoints/telemetry over the PIO UART.
-
-### 5.4. Wiring
-
-The pin map is in [`docs/hardware.md`](../docs/hardware.md) §3.2, and the link
-table is in `docs/pico-bridge.md` §3. In short: UART0 to the mainboard's left
-cable, I2C1 to the BNO055, UART1 to the XR1, one PIO UART to the mission
-computer, USB for the console.
-
-Run the BNO055 in accelerometer-gyro fusion mode (`IMUPLUS`): the magnetometer
-sees motor current and DC-DC fields as heading changes, which corrupts the yaw
-reference.
-
-### 5.5. Sideboards
-
-The two sideboards are UART slaves with their own MCU, an IMU (MPU6050,
-MPU6052C or ICM-20689 depending on the revision), the battery LEDs and the
-optical footpad sensors. They do not control the motors.
-
-They must be disconnected: they transmit their own protocol on the same two
-signal wires that now carry the Pico link, and two transmitters on one line is a
-contention, not a bus.
-
-Disconnecting them is safe on this build:
-
-- The power button and the power latch are on the mainboard (PA5 on board
-  variant 0).
-- Motor phases and hall sensors are wired directly to the mainboard.
-- The status LED is on the mainboard.
-- The 15 V pins of both cables stay live; insulate them.
-
-The only loss is the sideboard battery LEDs, which the CRSF telemetry replaces.
-
-### 5.6. Command arbitration
-
-Both links are inputs to one setpoint inside the Pico. Neither link ever drives
-the motors directly, and the mainboard only ever sees a torque request.
+Both links feed one setpoint inside the Pico. Neither drives the motors
+directly; the mainboard only sees a torque request.
 
 | Condition | Authority |
 |---|---|
@@ -443,133 +189,50 @@ the motors directly, and the mainboard only ever sees a torque request.
 | Otherwise, radio link up | radio |
 | Neither link | zero setpoints, keep balancing |
 
-Rules:
+Only the radio can arm. Tilt cutoff overrides every source. Mission frames carry
+a CRC and a sequence counter; stale frames are rejected like corrupt ones.
 
-- Only the radio can arm. Neither the mission computer nor any host process can
-  enable the motors.
-- The balance loop depends on neither link. Losing both means standing still,
-  not falling.
-- Tilt cutoff overrides every source.
-- Mission frames carry a CRC and a sequence counter; a stale frame is rejected
-  the same way as a corrupt one.
+## 5. Reference C firmware (`eferu-foc/`)
 
-### 5.7. Repository rules
+The pinned upstream tree is kept because it records measured hardware facts the
+Rust port depends on: timer topology, ADC/DMA trigger alignment, dead time,
+hall/phase mapping, current scales, board variants, schematics and photos under
+`eferu-foc/eferu/docs/`. The annotated board pinout is in
+[`stm32f103/README.md`](stm32f103/README.md).
 
-`firmware/pico2w/fw` is its own Cargo workspace so that the root workspace
-keeps building for the host. The root `.gitignore` ignores every
-`.cargo/config.toml`, so the embedded target configuration needs an explicit
-exception. `firmware/stm32f103/eferu-foc/` vendors the pinned C tree and the
-patches in this repository; its nested `eferu/.git` still points at upstream and
-must not be pushed.
+It is a working `VARIANT_USART` / `FOC_CTRL` / `TRQ_MODE` hoverboard build
+(10 A / 12 A / 400 rpm, 115200 8/18-byte frames), but it is not suitable for a
+self-balancing robot: link loss ends in `OPEN_MODE` freewheel only after about
+800 ms, inactivity or low battery latches power off, the protocol has only an
+XOR checksum, and balancing is marked `TODO` upstream. Build, restore and
+flashing details are in `eferu-foc/README.md`. Do not push to its upstream
+remote.
 
-### 5.8. Foundation firmware (implemented)
+## 6. Wiring and sideboards
 
-The first Rust image is in `firmware/pico2w/fw/`. It owns the clock tree
-(150 MHz), UART0, I2C1, USB, GPIO and the hardware watchdog. Five embassy tasks
-run:
+In short: UART0 on the Pico goes to the mainboard's left cable (GP16 TX → PA3,
+GP17 RX ← PA2, 115200 8N1), I2C1 to the BNO055, UART1 to the XR1, one PIO UART
+to the mission computer, USB for the console. The full cross-board table with
+every pin, direction and cable is in [`docs/wiring.md`](../docs/wiring.md).
 
-| Task | Rate | Work |
-|---|---|---|
-| `imu_task` | 100 Hz | Resets the BNO055, selects `IMUPLUS`, publishes the latest Euler/gyro/calibration sample |
-| `link_rx_task` | event | Reads bytes from UART0 and resynchronises the 18-byte EFeru feedback parser |
-| `control_task` | 200 Hz | Computes the cascade command, sends the 8-byte EFeru frame, toggles GP10, feeds the watchdog |
-| `usb_task` | event | Runs the RP2350 USB stack for the CDC-ACM console |
-| `console_task` | event | Serves the line protocol: commands in, telemetry out at the requested rate |
+Run the BNO055 in accelerometer-gyro fusion mode (`IMUPLUS`): the magnetometer
+sees motor current and DC-DC fields as heading changes, which corrupts the yaw
+reference.
 
-The balance law and the wire format live in `firmware/pico2w/core`, a separate
-`no_std` crate with host tests, so control and protocol changes are verified
-without hardware.
+Both sideboards must stay disconnected. They are UART slaves with their own
+MCU, IMU, battery LEDs and footpad sensors; they transmit their own protocol on
+the same two signal wires that now carry the Pico link. The power button, latch,
+motor phases, hall sensors and status LED are all on the mainboard, so nothing
+is lost except the sideboard battery LEDs. The 15 V pins on both cables stay
+live — insulate them.
 
-> **Safe state.** `Gains::SAFE` is all-zero, and a missing or stale IMU sample
-> also forces zero torque. The firmware therefore sends `Command::ZERO` at
-> 200 Hz while the board is on the bench. The F103 keeps its independent
-> serial timeout as the second line of defence.
+## 7. Repository rules and open items
 
-Build and flash (the Pico must be in BOOTSEL mode: hold BOOTSEL while plugging
-USB in, or hold it while pressing RUN):
+Embedded firmware targets are selected by `.cargo/config.toml` in each firmware
+workspace; the root `.gitignore` needs explicit exceptions for them and for the
+`pico2w/core/` crate (the generic `core` rule is for crash dumps). The nested
+`eferu-foc/eferu/.git` still points at upstream and must not be pushed.
 
-```sh
-cd firmware/pico2w/fw
-cargo build --release
-cargo run --release          # picotool load -u -v -x -t elf
-```
-
-There is no `probe-rs` installation on the bench machine; `picotool` is used
-instead. The release ELF is `target/thumbv8m.main-none-eabihf/release/pico-bridge`.
-Flashing replaces MicroPython, which also removes the temporary
-`archive/python-tools/hover/hover_bridge.py` console; reflash MicroPython if that console is
-needed again.
-
-Once flashed, the image enumerates as a USB CDC-ACM port, so the telemetry is
-visible without any probe:
-
-```sh
-ls /dev/cu.usbmodem*                 # /dev/cu.usbmodemJBOT_PICO_011
-python3 -m serial.tools.miniterm /dev/cu.usbmodemJBOT_PICO_011 115200
-```
-
-The console is bidirectional. Telemetry lines look like this:
-
-```
-T step=19043 loop=200 imu=ok cal=3 pitch=1.50 roll=-2.25 hdg=87.40 gy=0.06 gx=-0.12 gz=0.03 err=0x00 mb=ok L=0 R=0 bat=41.50 tmp=39.3 age=3 estop=0 vset=0.00 wset=0.00
-```
-
-and the commands are `help`, `ping`, `stat`, `stream <hz>`, `speed <mps>`,
-`steer <deg/s>`, `trim <deg>`, `reinit`, `estop`, `clear`, `stats reset` and
-`reboot`. The full protocol, including the `stat` fields and the IMU error
-codes, is in `docs/pico-bridge.md` section 8.1. `roll`, `hdg`, `gx` and `gz`
-come from the fused BNO055 frame; `vset` and `wset` echo the speed and steering
-setpoints. In `IMUPLUS` mode `hdg` is relative to power-on and drifts slowly, so
-it is a heading, not a magnetic compass.
-
-A quick check without a terminal UI:
-
-```sh
-python3 - <<'PY'
-import serial, time
-port = serial.Serial("/dev/cu.usbmodemJBOT_PICO_011", 115200, timeout=1)
-port.write(b"ping\nstat\n")
-time.sleep(0.4)
-print(port.read(4096).decode("ascii", "replace"))
-PY
-```
-
-`estop` latches a firmware-side emergency stop: the control task keeps sending
-`Command::ZERO` at 200 Hz until `clear`. It is independent of the mainboard's
-own serial timeout and of the host process, so killing the console cannot
-release it.
-
-`defmt` over RTT stays enabled for a future debug probe; the USB console is the
-channel that works today.
-
-Bench run after flashing: the control counter advances by exactly 200 per
-second with no watchdog reset, `imu=ok`, `err=0x00`, and `mb=ok` with `age` of
-0-10 ms. That also proves the resynchronising 18-byte parser against real
-mainboard frames, not just the unit-test vectors. The `stat` reply exposes the
-same evidence as counters (`steps`, `imu`, `imu_err`, `fb`, `fb_drop`), so the
-run can be checked from a script instead of by eye.
-
-| Symptom | Meaning |
-|---|---|
-| `mb=none`, `fb=0`, `fb_drop` rising at ~1600 B/s | The mainboard is not talking: the parser sees the Pico's own 200 Hz × 8 B command stream coupled back, or nothing at all. Check that the F103 is powered and that GP16/GP17 are still on PA3/PA2. |
-| `imu=stale`, `imu_code=1` | I2C failure to the BNO055; check the four wires and the address strap. |
-| `loop` below 195 | The 5 ms tick is missing deadlines; suspect USB or `defmt` cost before the control law. |
-
-The archived Python bench console lived in `archive/python-tools/pico` (see `archive/python-tools/pico/README.md`):
-`jbot_console.py` is a curses application with telemetry panels, an event log,
-CSV recording and hotkeys for the commands above, and `--no-ui` gives a plain
-text mode for scripts. `jbot_link.py` holds the protocol layer, so the same code
-runs in tests and headless jobs. The native Rust console in `crates/jbot_console`
-(see its README) adds the artificial horizon and compass view and drives the same
-`stream`, `speed`, `steer`, `trim`, `estop` and `clear` commands.
-
-Host checks for the shared logic:
-
-```sh
-cd firmware/pico2w/core
-cargo test
-cargo clippy --all-targets -- -D warnings
-```
-
-Not implemented yet: CRSF/XR1 ingest, arming, the mission link, non-zero
-balance gains, and the production `TRQ_MODE` mainboard patch.
+Not done yet: MOE enable and HIL validation for the F103, CRSF/XR1 ingest,
+arming, the mission link, non-zero balance gains, and bench verification of the
+charge interlock. The F103 default image cannot energize the bridge.

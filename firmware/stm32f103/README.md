@@ -20,8 +20,9 @@ self-balancing robot.
 
 ![STM32F103 mainboard pinout](mainboard_pinout.png)
 
-The same image and the pin tables are in `../docs/hardware.md`. The upstream
-reference also contains schematics and photos under
+The same image and the pin tables are in `../../docs/hardware.md`. The
+consolidated cross-board connection table is in `../../docs/wiring.md`. The
+upstream reference also contains schematics and photos under
 `eferu-foc/eferu/docs/`.
 
 ## Active firmware (Rust)

@@ -12,8 +12,9 @@
 This document is the single description of the physical robot. Every value here
 must match `config/robot.toml`, [`docs/bom.md`](bom.md), and the firmware pin maps
 in [`docs/pico-bridge.md`](pico-bridge.md) and
-[`firmware/README.md`](../firmware/README.md). Items marked **open** may change;
-items marked **donor** are fixed by the hoverboard.
+[`firmware/README.md`](../firmware/README.md). The consolidated cross-board
+connection table is in [`docs/wiring.md`](wiring.md). Items marked **open** may
+change; items marked **donor** are fixed by the hoverboard.
 
 > **Change in 0.3 (ADR-011).** The real-time controller is a Raspberry Pi Pico 2 W
 > (RP2350). The hoverboard mainboard keeps the power stage and the 16 kHz FOC

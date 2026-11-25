@@ -63,7 +63,12 @@ EMI budget.
 | Mission computer | GP6 TX → RPi GPIO15, GP7 RX ← RPi GPIO14 | PIO UART | Raspberry Pi 5 | 460800 8N1 |
 | Balance marker | GP10 | GPIO | Logic analyzer | One toggle per balance step |
 | Charge detect (candidate) | GP11 | GPIO in | Mainboard PA12 | Event |
+| Debug bridge RX | GP12 | PIO UART RX | Mainboard USART3 TX (PB10) | 115200 8N1, `dbg on` |
+| Debug bridge TX | GP13 | PIO UART TX | Mainboard USART3 RX (PB11) | 115200 8N1, `dbg on` |
 | Debug console | USB CDC, SWD | USB, SWD | Host / probe | — |
+
+The consolidated cross-board wiring table, including the mainboard pin
+reference, is in [`docs/wiring.md`](wiring.md).
 
 All GPIO are 3.3 V and not 5 V tolerant. The XR1 output is 3.3 V. Do not connect
 the 12/15 V cable rail to any Pico pin.
