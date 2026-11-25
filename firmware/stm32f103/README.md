@@ -11,7 +11,7 @@ there**. The JBOT changes are kept in this repository instead:
 
 When the mainboard is reflashed, update both files in the same commit.
 
-## Flashed configuration (2026-11-22)
+## Flashed configuration (reflashed 2026-11-24)
 
 | Parameter | Value | Note |
 |---|---|---|
@@ -23,7 +23,7 @@ When the mainboard is reflashed, update both files in the same commit.
 | `N_MOT_MAX` | `400` rpm | Bench speed ceiling |
 | `SERIAL_TIMEOUT` | `160` ticks (about 0.8 s) | `160 x 5 ms`; about 2 s to a full stop including wheel coast; the 100 ms target is not met |
 | USART2 | `FEEDBACK_SERIAL_USART2` | Left cable, PA2/PA3, 115200 8N1, 8-byte command / 18-byte feedback frames |
-| Debug serial | Not enabled in this build | The `DEBUG_SERIAL_USART2` line added by the patch is inside `VARIANT_PWM` and does not apply to `VARIANT_USART` |
+| Debug serial | `DEBUG_SERIAL_USART3` | Right cable, PB10/PB11, 115200 8N1; prints the boot configuration on startup. The Pico PIO bridge on GP12/GP13 forwards it to the USB console (`dbg on`). The `DEBUG_SERIAL_USART2` line added by the patch is inside `VARIANT_PWM` and does not apply to `VARIANT_USART` |
 | Inputs | `PRI_INPUT1/2 = 3, -1000, 0, 1000, 0` | Serial input, no deadband |
 | `FLASH_WRITE_KEY` | `0x1002` | `VARIANT_USART`, no dual inputs |
 | `FILTER` | `19661` | 0.3 (α), tau ~14 ms; reflashed 2026-11-23, previously 6553 / 0.1 |

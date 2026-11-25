@@ -354,6 +354,11 @@
   // dominates the measured 190-230 ms command-to-wheel dead time; 0.3 gives
   // tau ~14 ms while keeping the current loop damped.
   #define FILTER 19661
+
+  // Bench debug serial on USART3 (right cable). USART2 carries the control
+  // link and feedback, so debug must not share it. The Pico bridges GP12/GP13
+  // to this port and forwards the text to its USB console.
+  #define DEBUG_SERIAL_USART3
 #endif
 // ######################## END OF VARIANT_USART SETTINGS #########################
 
