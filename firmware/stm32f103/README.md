@@ -1,10 +1,95 @@
-# STM32F103 mainboard firmware (JBOT bench profile)
+# STM32F103 mainboard firmware
 
-This directory records the configuration that is actually flashed on the
-STM32F103RCT6 mainboard. The upstream EFeru sources are kept in
-`eferu-foc/eferu/` at commit `4f141cb`. That nested repository has `origin` set
-to `https://github.com/EFeru/hoverboard-firmware-hack-FOC.git`; **do not push
-there**. The JBOT patches live next to it in `eferu-foc/`:
+The active firmware for the STM32F103RCT6 torque node is the Rust workspace in
+`rust/`. The C tree in `eferu-foc/` is a pinned upstream reference with the JBOT
+patches. It stays in the repository because it documents the hardware and is a
+known-good hoverboard build, **not** because it is the firmware for this
+self-balancing robot.
+
+## Layout
+
+| Path | Role |
+|---|---|
+| `rust/f103_core/` | Hardware-independent logic: FOC port, protocol, alerts, safety, battery, thermal, console, trace. Host-tested. |
+| `rust/f103_fw/` | PAC/HAL firmware for the F103: clocks, TIM1/TIM8, ADC/DMA, both UARTs, IWDG, ISRs. |
+| `rust/tools/calibration/` | Console bridge, binary trace decoder, build/flash script. |
+| `rust/tools/foc_golden/` | Host recorder and golden vectors from the unmodified generated C controller. |
+| `eferu-foc/` | Pinned EFeru C firmware, JBOT patches and upstream documentation. Reference and rollback only. |
+
+## Board pinout
+
+![STM32F103 mainboard pinout](mainboard_pinout.png)
+
+The same image and the pin tables are in `../docs/hardware.md`. The upstream
+reference also contains schematics and photos under
+`eferu-foc/eferu/docs/`.
+
+## Active firmware (Rust)
+
+- The 16 kHz FOC controller is a bit-exact fixed-point port of the generated C
+  controller, replayed against golden vectors in `rust/tools/foc_golden/`.
+- USART2 (PA2/PA3, 115200 8N1) carries the stock 8-byte command and 18-byte
+  feedback frames used by the Pico link. USART3 (PB10/PB11, 115200 8N1) is a
+  separate text/binary debug console (`$GET`, `$GETP`, `$WATCH`, `$TRACE`,
+  `$DUMP`, `$ADC`, `$SAVE`, ...).
+- The link-loss timeout is monitored from boot and drives the three low-pitch
+  buzzer beeps, matching the old firmware's warning. Missing or stale commands
+  always force the safe output.
+- The default build keeps **MOE low**: the torque loop can be observed on the
+  bench, but no gate can be driven until HIL validation and explicit sign-off.
+  The `moe` Cargo feature is the only path that writes `BDTR.MOE`.
+
+### Checks and build
+
+From `firmware/stm32f103/rust`:
+
+```sh
+cargo fmt --all -- --check
+cargo test -p f103_core
+cargo clippy -p f103_core --all-targets -- -D warnings
+cd f103_fw && cargo build --release
+```
+
+The release image is built and packaged by `rust/tools/calibration/flash.sh`.
+Run it without arguments to build, check the size limit and print the flash
+command; `--flash` performs the write and needs explicit approval.
+
+### Flashing the mainboard
+
+Hardware: ST-Link V2, **SWDIO, SWCLK and GND only**. There is no NRST wire.
+
+1. Power the mainboard and hold its power button during the whole write. The
+   firmware-owned latch on PA5 is released on reset; without the button held,
+   `st-flash` reports `NRST is not connected` and `Failed to connect to target`.
+2. Run `./flash.sh --flash` from `rust/tools/calibration/`.
+3. Confirm the Pico bridge reports a fresh feedback frame after boot.
+
+Do not use `st-flash --connect-under-reset` with this wiring.
+
+## Reference C firmware (`eferu-foc/`)
+
+The nested checkout `eferu-foc/eferu/` is pinned at commit `4f141cb` from
+`https://github.com/EFeru/hoverboard-firmware-hack-FOC.git`. **Do not push
+there.** It is kept because it contains measured hardware facts that the Rust
+port depends on: timer topology, ADC/DMA trigger alignment, dead time, hall and
+phase mappings, current scales, board variants, schematics, pinout photos and a
+working `VARIANT_USART` configuration.
+
+It is a working hoverboard controller, but it is not suitable for this robot:
+
+- on serial-link loss it requests `OPEN_MODE` (freewheel) only after about
+  800 ms, which lets a balancing robot fall;
+- it latches power off on inactivity, dead battery or overheat, removing torque
+  while the robot still needs it;
+- the wire protocol has only an XOR checksum, no sequence, timestamp or version,
+  and very little telemetry;
+- balancing is marked `TODO` for `VARIANT_HOVERBOARD`, and the generated C FOC
+  core cannot be tuned or extended without re-validating the Simulink output.
+
+The Rust firmware replaces those behaviours while keeping the validated pin
+map and 16 kHz current-loop structure.
+
+### JBOT patches in the reference tree
 
 - `eferu-foc/eferu-config.patch` — current diff of `Inc/config.h` against the
   pinned commit.
@@ -15,90 +100,42 @@ there**. The JBOT patches live next to it in `eferu-foc/`:
 - `eferu-foc/eferu-bench.patch` — bench-only Makefile `unlock` target fix; it is
   not applied to the flashed source.
 
-When the mainboard is reflashed, update the config snapshot and patch in the
-same commit.
+### Historical C build profile
 
-## Board pinout
-
-![STM32F103 mainboard pinout](mainboard_pinout.png)
-
-## Flashed configuration (reflashed 2026-11-24)
+This table documents the last known-good C image, **not** the active firmware:
 
 | Parameter | Value | Note |
 |---|---|---|
-| Build variant | `VARIANT_USART` | Passed on the command line with `make -e VARIANT=VARIANT_USART` |
-| Control type | `FOC_CTRL` | Upstream default |
-| Control mode | `TRQ_MODE` | Torque commands from the Pico bridge |
-| `I_MOT_MAX` | `10` A | Conservative limit for the original 10s2p 4.4 Ah pack |
-| `I_DC_MAX` | `12` A | Kept at `I_MOT_MAX + 2 A` |
-| `N_MOT_MAX` | `400` rpm | Bench speed ceiling |
-| `SERIAL_TIMEOUT` | `160` ticks (about 0.8 s) | `160 x 5 ms`; about 2 s to a full stop including wheel coast; the 100 ms target is not met |
-| USART2 | `FEEDBACK_SERIAL_USART2` | Left cable, PA2/PA3, 115200 8N1, 8-byte command / 18-byte feedback frames |
-| Debug serial | `DEBUG_SERIAL_USART3` | Right cable, PB10/PB11, 115200 8N1; prints the boot configuration on startup. The Pico PIO bridge on GP12/GP13 forwards it to the USB console (`dbg on`). The `DEBUG_SERIAL_USART2` line added by the patch is inside `VARIANT_PWM` and does not apply to `VARIANT_USART` |
-| Inputs | `PRI_INPUT1/2 = 3, -1000, 0, 1000, 0` | Serial input, no deadband |
-| `FLASH_WRITE_KEY` | `0x1002` | `VARIANT_USART`, no dual inputs |
-| `FILTER` | `19661` | 0.3 (α), tau ~14 ms; reflashed 2026-11-23, previously 6553 / 0.1 |
-| `SPEED_COEFFICIENT` | `16384` | 1.0 |
-| `STEER_COEFFICIENT` | `8192` | 0.5 from `DEFAULT_STEER_COEFFICIENT`; `VARIANT_USART` has no override. The Pico mixer inverse now compensates for 0.5 (WP2, not yet flashed); differential saturates at +/-1000 units. Do not change this without revisiting the Pico side. |
-| `TANK_STEERING`, `INVERT_L/R_DIRECTION` | Not defined | Stock mixer and motor directions |
+| Build variant | `VARIANT_USART` | `make -e VARIANT=VARIANT_USART` |
+| Control | `FOC_CTRL`, `TRQ_MODE` | ±1000 → ±`I_MOT_MAX` |
+| `I_MOT_MAX` / `I_DC_MAX` | 10 A / 12 A | Conservative bench limits |
+| `N_MOT_MAX` | 400 rpm | Bench speed ceiling |
+| `SERIAL_TIMEOUT` | 160 ticks ≈ 0.8 s | Too slow for balancing |
+| USART2 | `FEEDBACK_SERIAL_USART2` | PA2/PA3, 115200 8N1, 8-byte command / 18-byte feedback |
+| USART3 | `DEBUG_SERIAL_USART3` | PB10/PB11, 115200 8N1, text debug |
+| Inputs | `PRI_INPUT1/2 = 3, -1000, 0, 1000, 0` | Serial, no deadband |
+| `FLASH_WRITE_KEY` | `0x1002` | No dual inputs |
+| `FILTER` | `19661` | α ≈ 0.3 |
+| `SPEED_COEFFICIENT` / `STEER_COEFFICIENT` | 16384 / 8192 | 0.5 yaw halves differential |
+| `TANK_STEERING`, `INVERT_L/R_DIRECTION` | Not defined | Stock mixer and directions |
 
 Do not raise `I_MOT_MAX` towards 15 A without measured MOSFET and pack
-temperatures. The bench profile is deliberately below the upstream defaults.
+temperatures.
 
-## Restoring the configuration
+### Reference build and restore
 
-From the repository root:
-
-```
-cp firmware/stm32f103/eferu-foc/eferu-jbot-config.h firmware/stm32f103/eferu-foc/eferu/Inc/config.h
-```
-
-Alternatively, start from the pinned `Inc/config.h` and apply
-`firmware/stm32f103/eferu-foc/eferu-jbot.patch`. Do not apply the patch on top of the
-full snapshot.
-
-## Building
-
-```
+```sh
 cd firmware/stm32f103/eferu-foc/eferu
-make -e VARIANT=VARIANT_USART
+make -e VARIANT=VARIANT_USART          # build/hover.bin
+make flash                             # same button-held SWD procedure
 ```
 
-The build produces `build/hover.bin`. A PlatformIO environment
-`VARIANT_USART` also exists but the Makefile flow is the one used for the
-flashed image.
+To restore the patched configuration:
 
-## Flashing (wiki Method 4, macOS CLI)
-
-Hardware: ST-Link V2 (verified with firmware V2J37S7), connected with
-**SWDIO, SWCLK and GND only**. There is no NRST wire.
-
-1. Power the mainboard and **hold its power button during the whole write**.
-   The STM32 releases the power latch on reset; without the button held,
-   `st-flash` reports `NRST is not connected`, `Soft reset failed: error
-   write to AIRCR` and `Failed to connect to target`.
-2. Run:
-
-```
-cd firmware/stm32f103/eferu-foc/eferu
-make flash
+```sh
+cp firmware/stm32f103/eferu-foc/eferu-jbot-config.h \
+   firmware/stm32f103/eferu-foc/eferu/Inc/config.h
 ```
 
-   This executes `st-flash --reset write build/hover.bin 0x8000000`.
-3. Success looks like `Flash written and verified!`; release the button.
-4. Confirm the Pico bridge reports `fb_ok=1` after the board boots.
-
-Do not use `st-flash --connect-under-reset` with this wiring: NRST is absent,
-so that path fails. Reference:
-https://github.com/EFeru/hoverboard-firmware-hack-FOC/wiki/Compiling-and-flashing-the-firmware
-(Method 4: MacOS CLI).
-
-## Safety notes
-
-- The mainboard enters sleep after about 8 minutes idle when the command
-  magnitude stays at or below 50 units. Hold the power button for 2-3 s to
-  wake it.
-- Loss of the serial link zeroes the command after roughly 0.8 s plus wheel
-  coast-down. Keep the rope and hands on the body during every powered test.
-- The flashed image is torque mode. A wrong sign or an unlocked current limit
-  can make the wheels accelerate without warning.
+Alternatively, apply `eferu-foc/eferu-config.patch` to the pinned `Inc/config.h`.
+Do not apply the patch on top of the full snapshot.

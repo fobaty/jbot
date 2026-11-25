@@ -6,13 +6,16 @@
 | Code | FW-001 |
 | Version | 0.2 |
 
-| Status | Mainboard bring-up step 1 flashed; USART link verified both ways; Pico foundation firmware flashed and streaming telemetry |
-| Scope | STM32F103RCT6 hoverboard mainboard (EFeru C) and Raspberry Pi Pico 2 W (Rust) |
+| Status | Rust firmware is the active target for both boards; the pinned EFeru C tree is kept as hardware reference and rollback |
+| Scope | STM32F103RCT6 hoverboard mainboard (Rust torque node) and Raspberry Pi Pico 2 W (Rust balance controller) |
 
-This directory holds all robot firmware: the upstream EFeru C on the hoverboard
-mainboard and the Rust balance controller on the Pico 2 W. Both are deliberately
-separate from the `jbot` Cargo workspace, each with its own toolchain, so they
-never affect `cargo test --workspace`.
+This directory holds all robot firmware. The STM32F103 mainboard runs the Rust
+torque node in `stm32f103/rust/`; the Pico 2 W runs the Rust balance controller
+in `pico2w/`. The pinned EFeru C sources in `stm32f103/eferu-foc/` are a
+hardware reference and a known-good hoverboard build, not the firmware for this
+self-balancing robot. All firmware workspaces are separate from the `jbot`
+Cargo workspace, each with its own toolchain, so they never affect
+`cargo test --workspace`.
 
 > **Change in 0.2 (ADR-011).** The balance loop moved off the mainboard to the
 > Pico 2 W. The mainboard is now a torque actuator node: it keeps the 16 kHz FOC
@@ -66,12 +69,17 @@ Two consequences of this list:
   hangs, the button no longer cuts power. It is also small and not reachable
   during a fall. The kill switch in the battery line is the real safety path.
 - **Two firmwares, two timeouts.** The Pico can hang; the mainboard cannot
-  depend on it. The EFeru 100 ms serial timeout zeroes torque on its own, and the
-  Pico's hardware watchdog resets the balance loop if it stalls.
+  depend on it. The mainboard's own serial timeout zeroes torque, and the
+  Pico's hardware watchdog resets the balance loop if it stalls. The timeout
+  value is a firmware contract, not a tuning knob; see `stm32f103/README.md`.
 
-## 2. Bring-up step 1: EFeru baseline
+## 2. EFeru baseline (historical reference)
 
-The purpose of this step is to prove the whole chain before any custom code:
+This section documents the pinned C firmware that was used for the first
+bring-up. It is kept for its measured hardware facts and as a rollback path;
+the active mainboard firmware is the Rust torque node in `stm32f103/rust/`.
+
+The purpose of this step was to prove the whole chain before any custom code:
 toolchain, SWD access, option bytes, motor phases, hall sensors, current
 sensors, battery measurement, and the radio link.
 
@@ -223,10 +231,10 @@ board may be the alternate layout: set `BOARD_VARIANT 1` and rebuild.
 
 ### 2.9. Bench link-test build (`VARIANT_USART`)
 
-Before the radio link exists, the board is driven over its own cable from a host
-console through a 3.3 V USB-UART adapter, using the same wire protocol the Pico
-bridge later speaks on USART2. This is the build currently flashed on the bench
-board.
+Before the radio link existed, the board was driven over its own cable from a
+host console through a 3.3 V USB-UART adapter, using the same wire protocol the
+Pico bridge later speaks on USART2. This was the build used for the first bench
+link test, not the active firmware.
 
 | Item | Value |
 |---|---|
