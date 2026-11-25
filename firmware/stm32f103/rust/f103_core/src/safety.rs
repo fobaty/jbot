@@ -2,7 +2,7 @@
 //!
 //! The reference requests `OPEN_MODE` as soon as its serial timeout expires.
 //! For a balancing robot that is a fall, so the safe state is an explicit,
-//! selected contract (see `docs/prompt-f103-rust-firmware.md` section 2.4).
+//! selected contract rather than an implicit side effect of a timer.
 
 use crate::config::{COMMAND_TIMEOUT_US, FILTER_ALPHA_Q16, MAIN_LOOP_MS, RATE_Q4};
 use crate::fixed::{low_pass_q16, rate_limit};
