@@ -693,7 +693,10 @@ mod tests {
         let frame = Frame::command(9, 1_000, 2_000, 0);
         assert_eq!(validate(&frame, 1_010, None), Err(CommandError::OutOfRange));
         let good = Frame::command(9, 1_000, 100, 0);
-        assert_eq!(validate(&good, 200_000, None), Err(CommandError::Stale));
+        assert_eq!(
+            validate(&good, COMMAND_TIMEOUT_US + 1_001, None),
+            Err(CommandError::Stale)
+        );
         assert_eq!(
             validate(&good, 1_010, Some(9)),
             Err(CommandError::BadSequence)

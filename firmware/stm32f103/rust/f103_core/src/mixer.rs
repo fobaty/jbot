@@ -42,17 +42,17 @@ mod tests {
 
     #[test]
     fn yaw_request_is_differential_with_unit_coefficient() {
-        assert_eq!(mix_default(0, 500), (500, -500));
+        assert_eq!(mix(0, 500, SPEED_COEFF_Q14, 16_384), (500, -500));
     }
 
     #[test]
-    fn legacy_half_coefficient_halves_yaw() {
-        assert_eq!(mix(0, 500, SPEED_COEFF_Q14, 8192), (250, -250));
+    fn reference_default_coefficient_halves_yaw() {
+        assert_eq!(mix_default(0, 500), (250, -250));
     }
 
     #[test]
     fn output_is_clamped() {
-        assert_eq!(mix_default(1000, 1000), (1000, 0));
+        assert_eq!(mix(1000, 1000, SPEED_COEFF_Q14, 16_384), (1000, 0));
     }
 
     #[test]

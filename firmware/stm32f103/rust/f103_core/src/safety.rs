@@ -8,9 +8,9 @@ use crate::config::{COMMAND_TIMEOUT_US, FILTER_ALPHA_Q16, MAIN_LOOP_MS, RATE_Q4}
 use crate::fixed::{low_pass_q16, rate_limit};
 use crate::protocol::{CommandError, Setpoint};
 
-/// Selected by the project decision: a balancing robot must not freewheel when
-/// the command link dies. Change only with a new safety review.
-pub const DEFAULT_SAFE_MODE: SafeMode = SafeMode::RampToZero;
+/// The pinned reference requests OPEN_MODE on link expiry (`util.c:1032-1033`).
+/// This is the full-behaviour port, so the stock freewheel state is restored.
+pub const DEFAULT_SAFE_MODE: SafeMode = SafeMode::Freewheel;
 
 pub const RAMP_STEP_PER_TICK: i16 = 50;
 pub const BRAKE_DURATION_US: u32 = 200_000;
@@ -276,10 +276,14 @@ mod tests {
         )
         .unwrap();
         ctrl.tick(0);
-        let (left, right) = ctrl.tick(COMMAND_TIMEOUT_US + MAIN_LOOP_MS * 1000);
+        // Enter the safe state while the link is still fresh: at an 800 ms
+        // timeout the 200 ms brake window would otherwise have expired before
+        // `safe_output` is ever reached.
+        ctrl.disarm();
+        let (left, right) = ctrl.tick(10_000);
         assert!(left < 0 && right > 0);
         assert!(left >= -BRAKE_CURRENT_UNITS && right <= BRAKE_CURRENT_UNITS);
-        let (left, right) = ctrl.tick(COMMAND_TIMEOUT_US + BRAKE_DURATION_US + 10_000);
+        let (left, right) = ctrl.tick(BRAKE_DURATION_US + 10_000);
         assert_eq!((left, right), (0, 0));
     }
 

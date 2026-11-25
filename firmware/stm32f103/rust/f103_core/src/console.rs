@@ -144,6 +144,9 @@ pub enum Command<'a> {
     SetParam(Tunable, u32),
     /// Zero disables the binary trace, N streams one frame every N FOC ticks.
     Trace(u8),
+    /// Bench-only arming of the generated current loop. Never touches MOE.
+    Arm,
+    Disarm,
     Init,
     Save,
     Dump,
@@ -171,6 +174,12 @@ pub fn parse_command(line: &str) -> Command<'_> {
             Some(decimation) => Command::Trace(decimation),
             None => Command::Rejected(line),
         };
+    }
+    if head.eq_ignore_ascii_case("$ARM") {
+        return Command::Arm;
+    }
+    if head.eq_ignore_ascii_case("$DISARM") {
+        return Command::Disarm;
     }
     if head.eq_ignore_ascii_case("$WATCH") {
         return Command::WatchToggle;
@@ -353,7 +362,7 @@ fn fault_label(fault: Option<Fault>) -> &'static str {
 pub fn format_help(f: &mut Formatter<'_>) {
     f.put_str(
         "HELP GET GETP WATCH SET WATCH <0-255> SET PROTOCOL LEGACY|HARDENED \
-         SET <KEY> <VALUE> TRACE <0-255> INIT SAVE DUMP ADC",
+         SET <KEY> <VALUE> TRACE <0-255> ARM DISARM INIT SAVE DUMP ADC",
     );
     f.line();
 }
@@ -644,6 +653,8 @@ mod tests {
         assert_eq!(parse_command("$TRACE 0"), Command::Trace(0));
         assert_eq!(parse_command("$TRACE 16"), Command::Trace(16));
         assert_eq!(parse_command("$TRACE"), Command::Rejected("$TRACE"));
+        assert_eq!(parse_command("$arm"), Command::Arm);
+        assert_eq!(parse_command("$DISARM"), Command::Disarm);
         assert_eq!(parse_command("$INIT"), Command::Init);
         assert_eq!(parse_command("$SAVE"), Command::Save);
         assert_eq!(parse_command("$DUMP"), Command::Dump);

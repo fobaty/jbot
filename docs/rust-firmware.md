@@ -19,14 +19,14 @@ robot needs:
   non-volatile parameters, 100 Hz feedback and a high-detail calibration trace;
 - two independent UART roles: USART2 control link, USART3 debug console;
 - both wire contracts with a runtime switch: legacy 8-byte frames for the pinned
-  Pico link, hardened COBS/CRC16 frames with version, sequence and age;
-- a bounded, explicit safe state on control-link loss (`RAMP_TO_ZERO` default),
-  100 ms timeout and fresh-command-plus-arm recovery.
+  Pico link (compiled but disabled in this full-behaviour build);
+- the stock safe state on control-link loss (`FREEWHEEL`), 800 ms timeout,
+  auto-arming on a near-zero command, and the stock hard latch-off.
 
 Not ported: variant-specific inputs (Nunchuk/PPM/PWM, Hovercar, LCD, cruise,
-sideboard) and the hard latch-off on battery/temperature/inactivity. On a
-balancing robot a hard latch removes torque and causes a fall; those conditions
-raise a safe-state fault and an alert instead.
+sideboard). The previous torque-node variant with `RAMP_TO_ZERO`, 100 ms timeout
+and no hard latch-off is superseded by this full-behaviour copy. Enabling MOE is
+still gated behind HIL validation and Safety-Reviewer sign-off.
 
 ## 2. Workspace and build
 
@@ -115,14 +115,24 @@ command `03 02 01 09 02 01 06 05 04 03 04 64 05 38 FF C4 40 00`, CRC check
 
 ## 6. Safety model
 
-- Default safe mode `RAMP_TO_ZERO`; `FREEWHEEL` and `ACTIVE_BRAKE` remain
-  available but are not selected.
-- A command is accepted only after CRC, length, version, sequence and age pass;
-  a rejected or stale frame never partially updates the setpoint.
-- Recovery from a fault requires a fresh valid command **and** a fresh arm; there
-  is no automatic resume.
-- **MOE is never set.** The generated controller has real gains but stays in
-  OPEN mode because nothing calls `arm()`. No torque can be produced yet.
+This is a full behavioural copy of the pinned reference, not the earlier
+torque-node variant:
+
+- Default safe mode is `FREEWHEEL` (`util.c:1032-1033`), with `RAMP_TO_ZERO` and
+  `ACTIVE_BRAKE` still selectable in code. The command timeout is 800 ms
+  (`SERIAL_TIMEOUT = 160` in `config.h:670`).
+- Auto-arming is restored (`main.c:270-275`): no fault plus a near-zero command
+  sets `enable = 1` and plays the two short confirmation beeps. A latched fault
+  is never cleared by this path.
+- Hard latch-off is restored: a dead pack, overheat or inactivity releases the
+  PA5 latch after the reference power-off sweep (`util.c:1561-1575`).
+- Mixer defaults match the reference: speed 1.0, yaw 0.5.
+- The wire contract is legacy-only: `$SET PROTOCOL HARDENED` is refused. The
+  hardened codec remains compiled but is not used by this build.
+- **MOE is still never set by default.** Gate drive lives behind the optional
+  `moe` Cargo feature of `f103_fw`; the default image cannot energize the bridge.
+  Even the `moe` image requires armed + calibrated + fault-free at every FOC
+  tick. The HIL checklist and sign-off form are in `docs/moe-hil-checklist.md`.
 - IWDG, DC overcurrent counting, current limits and DWT timing counters are
   active. `$GET` reports `cyc=`, `max=` and `miss=` (deadline is 4000 cycles).
 
@@ -139,6 +149,8 @@ USART3 console commands:
 | `$SET WATCH <0-255>` | blackbox decimation; `0` disables |
 | `$SET PROTOCOL LEGACY\|HARDENED` | runtime wire switch |
 | `$TRACE <0-255>` | binary trace every N FOC ticks; `0` disables |
+| `$ARM` | bench arm: run the generated torque loop with MOE still low; requires ADC calibration |
+| `$DISARM` | return the generated controller to OPEN mode |
 | `$INIT` | re-run ADC offset calibration and reset both controllers |
 | `$SAVE` | write the active parameters to NVM; refused while armed |
 | `$DUMP` | 32-sample blackbox, one ASCII line per 5 ms tick |
@@ -157,6 +169,28 @@ so scripts see the exact fixed-point state. At 115200 8N1 one frame costs about
 (100 Hz) so console replies are not starved. `TRACE_DROPPED` reports ring
 overflow. The layout, round-trip tests and a golden vector are in
 `f103_core/src/trace.rs`.
+
+`$ARM` is a bench-only switch that lets the generated current loop run so HIL
+can observe `iq`/`id`, the PI integrators and the computed duty. It never writes
+the timer `BDTR.MOE` register, so no gate can be driven and no torque can be
+produced; `$DISARM` returns the controller to OPEN mode.
+
+### 7.1 Host calibration tools
+
+`firmware/stm32f103/rust/tools/calibration` contains dependency-free Python
+helpers that talk to USART3 (115200 8N1, configured with `termios`):
+
+- `f103_trace.py` mirrors the hardened COBS/CRC16 frame codec and the 88-byte
+  trace payload. `--selftest` checks the CRC check value, both protocol golden
+  vectors, a full trace round trip and a chunked-stream demultiplexer.
+- `f103_bridge.py` exposes `get`, `getp`, `set <KEY> <VALUE>`, `save`, `arm`,
+  `disarm`, `adc`, `dump`, `init`, `protocol` and `trace`. The `trace` subcommand
+  writes one CSV row per frame with all internal FOC fields.
+- `flash.sh` builds, runs `objcopy`, checks the image against the 252 KiB
+  application slot and flashes with `st-flash --reset write ... 0x8000000`.
+  It defaults to a dry run; `--flash` performs the write.
+
+The MOE-off HIL checklist is in `tools/calibration/README.md`.
 
 ## 8. Golden vectors and NVM
 

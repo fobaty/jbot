@@ -38,6 +38,11 @@ perf.data.old
 !firmware/pico2w/.cargo/config.toml
 !firmware/stm32f103/rust/f103_fw/.cargo/config.toml
 
+# Python bytecode and generated firmware images are build artifacts.
+__pycache__/
+*.pyc
+firmware/stm32f103/rust/tools/calibration/f103_fw.bin
+
 # Exported dependency / doc artifacts
 /doc/
 /deny.toml.bak

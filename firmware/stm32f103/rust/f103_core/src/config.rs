@@ -36,15 +36,17 @@ pub const DC_TRIP_COUNTS: i32 = I_DC_MAX_A * A2BIT_CONV;
 pub const FILTER_ALPHA_Q16: u16 = 19_661;
 /// Rate limit per 5 ms tick, fixdt(1,16,4). 480 >> 4 = 30 units/tick.
 pub const RATE_Q4: i16 = 480;
-/// Mixer coefficients, fixdt(0,16,14). The robot uses yaw coefficient 1.0;
-/// the flashed reference left it at 0.5, which halves differential torque.
+/// Mixer coefficients, fixdt(0,16,14), copied from the pinned reference:
+/// `DEFAULT_SPEED_COEFFICIENT = 16384` (1.0) and
+/// `DEFAULT_STEER_COEFFICIENT = 8192` (0.5) in `config.h:201-202`.
 pub const SPEED_COEFF_Q14: i16 = 16_384;
-pub const STEER_COEFF_Q14: i16 = 16_384;
+pub const STEER_COEFF_Q14: i16 = 8_192;
 
 pub const LEGACY_START_FRAME: u16 = 0xABCD;
 pub const PROTOCOL_VERSION: u8 = 2;
 pub const WIRE_MAX: usize = 256;
-pub const COMMAND_TIMEOUT_US: u32 = 100_000;
+/// `SERIAL_TIMEOUT = 160` in the pinned `config.h:670`: 160 x 5 ms = 800 ms.
+pub const COMMAND_TIMEOUT_US: u32 = 800_000;
 
 /// PI gains are placeholders until they are re-derived from the generated C.
 /// They must not be treated as a tuned controller.
@@ -98,4 +100,7 @@ pub const BUZZER_BURST_TICKS: u32 = 5_000;
 pub const BUZZER_LOW_FREQ: u16 = 24;
 pub const BUZZER_MED_FREQ: u16 = 10;
 pub const BUZZER_HIGH_FREQ: u16 = 5;
+/// Short high pulse instead of a 50% duty square wave. Four times quieter at
+/// the same tone frequency, matching the reference waveform's pitch.
+pub const BUZZER_VOLUME_DIVISOR: u16 = 4;
 pub const FOC_TICKS_PER_MS: u32 = 16;

@@ -63,6 +63,10 @@ pub static HALL_R: AtomicU8 = AtomicU8::new(0);
 pub static ARMED: AtomicBool = AtomicBool::new(false);
 /// Selected alert as `Alert::as_u8`; the FOC ISR drives the buzzer from it.
 pub static BUZZER_ALERT: AtomicU8 = AtomicU8::new(0);
+/// 0xFF = no override, otherwise a forced buzzer divider (0 = silence). The
+/// power-on/off sweeps use this so an alert cannot interrupt their timing.
+pub const BUZZER_NO_OVERRIDE: u8 = 0xFF;
+pub static BUZZER_FREQ_OVERRIDE: AtomicU8 = AtomicU8::new(BUZZER_NO_OVERRIDE);
 
 /// Packed ADC snapshot, replaced atomically (inside a critical section) once
 /// per FOC tick so `$ADC` sees a consistent field set.
@@ -134,6 +138,7 @@ unsafe extern "C" fn _critical_section_1_0_release(primask: u32) {
 enum PinMode {
     Analog,
     FloatingInput,
+    /// MODE=00, CNF=10 with ODR=0: input with pull-down on F103.
     AltPushPull,
     PushPullOutput,
 }
@@ -173,7 +178,12 @@ fn set_mode(gpio: &pac::gpioa::RegisterBlock, pin: u8, mode: PinMode) {
 }
 
 /// HSI/2 x PLL16 = 64 MHz, APB1 /2, APB2 /1, matching the flashed reference.
-pub fn init_clocks(rcc: &pac::RCC) {
+pub fn init_clocks(rcc: &pac::RCC, flash: &pac::FLASH) {
+    // 64 MHz needs two flash wait states. Without this the core faults on
+    // instruction fetch as soon as the PLL becomes the system clock.
+    flash
+        .acr()
+        .modify(|_, w| w.latency().ws2().prftbe().set_bit());
     rcc.cr().modify(|_, w| w.hsion().on());
     while !rcc.cr().read().hsirdy().is_ready() {}
 
@@ -244,11 +254,36 @@ pub fn init_power_and_gpio(
     }
     set_mode(gpioa, 0, PinMode::Analog);
 
-    // Status LED PB2, buzzer PA4, firmware-held power latch PA5.
+    // The power button is active high. The reference uses GPIO_NOPULL here
+    // (setup.c:401-404): the sense line is weak, and an internal pull-down can
+    // hold it below the logic threshold even while the button is pressed.
+    set_mode(gpioa, 1, PinMode::FloatingInput);
     set_mode(gpiob, 2, PinMode::PushPullOutput);
     set_mode(gpioa, 4, PinMode::PushPullOutput);
     set_mode(gpioa, 5, PinMode::PushPullOutput);
+    // The reference waits 500 ms before latching and lights the LED only after
+    // the startup melody. Both are driven from main, not from GPIO setup.
+}
+
+/// Latch power on (PA5). Called after the reference 500 ms startup delay.
+pub fn latch_power(gpioa: &pac::gpioa::RegisterBlock) {
     gpioa.odr().modify(|_, w| w.odr5().set_bit());
+}
+
+/// Board-ready LED (PB2), lit after the startup melody like `main.c:222`.
+pub fn led_on(gpiob: &pac::gpiob::RegisterBlock) {
+    gpiob.odr().modify(|_, w| w.odr2().set_bit());
+}
+
+/// The power button is active high on the v2 board (`defines.h:141-142`).
+pub fn power_button_pressed(gpioa: &pac::gpioa::RegisterBlock) -> bool {
+    gpioa.idr().read().idr1().bit()
+}
+
+/// Releases the firmware-held latch (`util.c:1573`). After this the board only
+/// stays alive while the button is physically held or the probe back-powers it.
+pub fn release_power_latch(gpioa: &pac::gpioa::RegisterBlock) {
+    gpioa.odr().modify(|_, w| w.odr5().clear_bit());
 }
 
 fn init_timer(tim: &pac::tim1::RegisterBlock) {
@@ -621,6 +656,33 @@ pub fn init_iwdg(iwdg: &pac::IWDG) {
     iwdg.rlr().write(|w| unsafe { w.bits(625) });
     iwdg.kr().write(|w| w.key().feed());
     iwdg.kr().write(|w| w.key().start());
+}
+
+/// Main output enable for both three-phase bridges (TIM1 right, TIM8 left).
+/// This is the single point that can energize the gate drivers; the default
+/// build never calls it with `true`.
+#[cfg(feature = "moe")]
+pub fn set_output_enable(
+    tim1: &pac::tim1::RegisterBlock,
+    tim8: &pac::tim8::RegisterBlock,
+    on: bool,
+) {
+    tim1.bdtr().modify(|_, w| {
+        if on {
+            w.moe().set_bit();
+        } else {
+            w.moe().clear_bit();
+        }
+        w
+    });
+    tim8.bdtr().modify(|_, w| {
+        if on {
+            w.moe().set_bit();
+        } else {
+            w.moe().clear_bit();
+        }
+        w
+    });
 }
 
 /// Drive the active-high buzzer gate on PA4. Called from the FOC ISR so the

@@ -4,6 +4,11 @@ version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 
+[features]
+# Gate-drive enable. Off by default: no build produced by this workspace drives
+# the motor bridge until HIL validation and an explicit Safety-Reviewer sign-off.
+moe = []
+
 [dependencies]
 f103_core = { path = "../f103_core" }
 cortex-m = "0.7"

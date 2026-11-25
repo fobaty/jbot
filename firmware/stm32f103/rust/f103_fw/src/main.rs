@@ -23,7 +23,7 @@ use f103_core::console::{
 
 use cortex_m::interrupt::Mutex;
 use cortex_m_rt::entry;
-use f103_core::alerts::{select_alert, Alert, AlertInputs, BuzzerController};
+use f103_core::alerts::{select_alert, Alert, AlertInputs, ArmBeep, BuzzerController};
 use f103_core::battery::{BatteryLevel, BatteryMonitor};
 use f103_core::config::{
     BAT_DEAD_ENABLE, BAT_LVL1_ENABLE, BAT_LVL2_ENABLE, DC_TRIP_COUNTS, FOC_PERIOD_US,
@@ -229,8 +229,13 @@ fn DMA1_CHANNEL1() {
         let gpioa = unsafe { &*pac::GPIOA::ptr() };
         let gpiob = unsafe { &*pac::GPIOB::ptr() };
         let gpioc = unsafe { &*pac::GPIOC::ptr() };
-        let alert = Alert::from_u8(hal::BUZZER_ALERT.load(Ordering::Relaxed));
-        pair.monitors.buzzer.set(alert);
+        let forced = hal::BUZZER_FREQ_OVERRIDE.load(Ordering::Relaxed);
+        if forced == hal::BUZZER_NO_OVERRIDE {
+            let alert = Alert::from_u8(hal::BUZZER_ALERT.load(Ordering::Relaxed));
+            pair.monitors.buzzer.set(alert);
+        } else {
+            pair.monitors.buzzer.set_frequency(forced);
+        }
         if let Some(level) = pair.monitors.buzzer.tick() {
             hal::set_buzzer(gpioa, level);
         }
@@ -255,8 +260,23 @@ fn DMA1_CHANNEL1() {
             // SAFETY: duty is already clamped into the 16-bit ARR range.
             tim1.ccr(index).write(|w| unsafe { w.ccr().bits(*duty) });
         }
+        // The FOC tick is the only reliably scheduled context, so the watchdog
+        // is fed here as well as at the end of the slower main loop.
+        unsafe { (*pac::IWDG::ptr()).kr().write(|w| w.key().feed()) };
         let tick = hal::FOC_TICKS.fetch_add(1, Ordering::Relaxed);
-        // MOE is deliberately not touched: no gate drive before HIL validation.
+        // Gate drive is a single, auditable point. Without the `moe` feature this
+        // is compiled out entirely and MOE stays low at reset. With the feature
+        // built, it still requires an armed, calibrated, fault-free controller.
+        #[cfg(feature = "moe")]
+        {
+            let armed = hal::ARMED.load(Ordering::Relaxed);
+            let calibrated = hal::CAL_READY.load(Ordering::Relaxed);
+            let healthy = hal::DIAG_LEFT.load(Ordering::Relaxed) == 0
+                && hal::DIAG_RIGHT.load(Ordering::Relaxed) == 0;
+            hal::set_output_enable(tim1, tim8, armed && calibrated && healthy);
+        }
+        #[cfg(not(feature = "moe"))]
+        let _ = (tim1, tim8);
 
         // Stream the full internal state at a decimated rate. Encoding happens
         // here because this is the only context that owns the FOC state; the
@@ -345,8 +365,15 @@ fn USART3() {
     }
 }
 
+#[used]
+pub static mut DEBUG_MAIN_COUNT: u32 = 0;
+
 #[entry]
 fn main() -> ! {
+    // The IWDG survives a system reset. Feed it before any long startup work so
+    // a watchdog inherited from a previous image cannot reset us mid-init.
+    unsafe { (*pac::IWDG::ptr()).kr().write(|w| w.key().feed()) };
+
     let Some(peripherals) = pac::Peripherals::take() else {
         loop {
             cortex_m::asm::wfi();
@@ -358,7 +385,7 @@ fn main() -> ! {
         }
     };
 
-    hal::init_clocks(&peripherals.RCC);
+    hal::init_clocks(&peripherals.RCC, &peripherals.FLASH);
     hal::init_power_and_gpio(
         &peripherals.RCC,
         &peripherals.GPIOA,
@@ -375,8 +402,15 @@ fn main() -> ! {
     );
     hal::init_usart2_rx_dma(&peripherals.DMA1, &peripherals.USART2);
     hal::start_pwm(&peripherals.AFIO, &peripherals.TIM1, &peripherals.TIM8);
-    hal::init_iwdg(&peripherals.IWDG);
     hal::init_dwt();
+
+    // Latch early so the board stays alive when the button is released right
+    // after flashing. The reference 500 ms wait is kept as a short guard here;
+    // a long blocking loop was measured to brown out the supply on this board.
+    cortex_m::asm::delay(100);
+    let gpioa_init = unsafe { &*pac::GPIOA::ptr() };
+    hal::latch_power(gpioa_init);
+    hal::init_iwdg(&peripherals.IWDG);
 
     // Restore is informational until HIL approves runtime-settable limits:
     // the active drive values stay fixed in `f103_core::config`.
@@ -405,10 +439,15 @@ fn main() -> ! {
     let mut dump_index: Option<usize> = None;
     let mut loop_index: u32 = 0;
     let mut inactivity = InactivityMonitor::new();
+    let mut arm_beep = ArmBeep::done();
+    let mut button_seen = false;
+    let mut press_start: u32 = 0;
+    let mut long_beep_done = false;
 
-    core.SYST.set_reload(SYSTEM_HZ / 1000 * 5 - 1);
-    core.SYST.clear_current();
-    core.SYST.enable_counter();
+    // The 5 ms cadence is driven by the DWT cycle counter in the loop below.
+    // SysTick's default handler is a fault loop, so keep that interrupt off
+    // rather than relying on its clock-source configuration.
+    core.SYST.disable_counter();
 
     // SAFETY: the FOC ISR owns only MOTORS; the USART2 ISR only DMA state and
     // atomics. Giving the FOC tick the highest priority prevents either the
@@ -424,10 +463,90 @@ fn main() -> ! {
             .set_priority(cortex_m::peripheral::scb::SystemHandler::SysTick, 3);
     }
 
+    // `poweronMelody()` in util.c blocks for nine 100 ms steps, then lights the
+    // LED. Driving it here keeps the sweep exact even though the main loop is
+    // slowed by the FOC ISR. The buzzer itself is toggled by that ISR.
+    for tone in [8u8, 7, 6, 5, 4, 3, 2, 1, 0] {
+        hal::BUZZER_FREQ_OVERRIDE.store(tone, Ordering::Relaxed);
+        let start = core.DWT.cyccnt.read();
+        while core.DWT.cyccnt.read().wrapping_sub(start) < SYSTEM_HZ / 10 {
+            hal::feed_iwdg(&peripherals.IWDG);
+        }
+    }
+    hal::BUZZER_FREQ_OVERRIDE.store(hal::BUZZER_NO_OVERRIDE, Ordering::Relaxed);
+    hal::led_on(unsafe { &*pac::GPIOB::ptr() });
+
+    // `main.c:252` waits for the button to be released before the loop starts.
+    // This consumes a press held through flashing, so the operator's release
+    // after programming never becomes a shutdown request.
+    let gpioa = unsafe { &*pac::GPIOA::ptr() };
+    while hal::power_button_pressed(gpioa) {
+        hal::feed_iwdg(&peripherals.IWDG);
+    }
+
     loop {
-        while !core.SYST.has_wrapped() {}
+        unsafe { DEBUG_MAIN_COUNT += 1 };
+        let tick_start = core.DWT.cyccnt.read();
+        while core.DWT.cyccnt.read().wrapping_sub(tick_start) < SYSTEM_HZ / 1000 * 5 {
+            hal::feed_iwdg(&peripherals.IWDG);
+        }
         now_us = now_us.wrapping_add(5_000);
         loop_index = loop_index.wrapping_add(1);
+
+        // Restore the board's power-button UX: the pedal-style button is a soft
+        // input, and a debounced short press releases the PA5 latch after the
+        // reference power-off sweep. Torque is disarmed before any of this.
+        if hal::power_button_pressed(gpioa) {
+            safe.disarm();
+            if !button_seen {
+                press_start = core.DWT.cyccnt.read();
+                button_seen = true;
+                long_beep_done = false;
+            }
+            // `util.c:1584`: a five-second hold emits a short 5 beep and is
+            // no longer treated as a shutdown request.
+            if !long_beep_done && core.DWT.cyccnt.read().wrapping_sub(press_start) >= SYSTEM_HZ * 5
+            {
+                long_beep_done = true;
+                hal::BUZZER_FREQ_OVERRIDE.store(5, Ordering::Relaxed);
+                let start = core.DWT.cyccnt.read();
+                while core.DWT.cyccnt.read().wrapping_sub(start) < SYSTEM_HZ / 10 {
+                    hal::feed_iwdg(&peripherals.IWDG);
+                }
+                hal::BUZZER_FREQ_OVERRIDE.store(hal::BUZZER_NO_OVERRIDE, Ordering::Relaxed);
+            }
+        } else if button_seen {
+            // `poweroffPressCheck()` (util.c:1580-1608): a press longer than
+            // 80 ms but shorter than five seconds triggers poweroff on release.
+            // DWT cycles keep the debounce exact regardless of loop speed.
+            let held_cycles = core.DWT.cyccnt.read().wrapping_sub(press_start);
+            if held_cycles > SYSTEM_HZ * 8 / 100 && held_cycles < SYSTEM_HZ * 5 {
+                for tone in [0u8, 1, 2, 3, 4, 5, 6, 7] {
+                    hal::BUZZER_FREQ_OVERRIDE.store(tone, Ordering::Relaxed);
+                    let start = core.DWT.cyccnt.read();
+                    while core.DWT.cyccnt.read().wrapping_sub(start) < SYSTEM_HZ / 10 {
+                        hal::feed_iwdg(&peripherals.IWDG);
+                    }
+                }
+                hal::BUZZER_FREQ_OVERRIDE.store(hal::BUZZER_NO_OVERRIDE, Ordering::Relaxed);
+                // No flash write here: a page erase on this board has been
+                // observed to clear the boot vector, leaving the next power-on
+                // with an empty reset handler.
+                hal::release_power_latch(gpioa);
+                loop {
+                    hal::feed_iwdg(&peripherals.IWDG);
+                    cortex_m::asm::nop();
+                }
+            }
+            button_seen = false;
+            long_beep_done = false;
+        }
+
+        if let Some(freq) = arm_beep.tick() {
+            hal::BUZZER_FREQ_OVERRIDE.store(freq, Ordering::Relaxed);
+        } else if hal::BUZZER_FREQ_OVERRIDE.load(Ordering::Relaxed) != hal::BUZZER_NO_OVERRIDE {
+            hal::BUZZER_FREQ_OVERRIDE.store(hal::BUZZER_NO_OVERRIDE, Ordering::Relaxed);
+        }
 
         if hal::RX_READY.swap(false, Ordering::Relaxed) {
             let len = hal::RX_LEN.load(Ordering::Relaxed) as usize;
@@ -449,7 +568,19 @@ fn main() -> ! {
                         seq
                     }
                 };
-                let _ = safe.accept(now_us, effective_seq, setpoint);
+                let accepted = safe.accept(now_us, effective_seq, setpoint);
+                // Stock auto-arming (`main.c:270-275`): no error and a near-zero
+                // command enables the motors, with the two short confirmation
+                // beeps. A fault is never cleared by this path.
+                if accepted.is_ok()
+                    && !safe.armed()
+                    && safe.fault().is_none()
+                    && setpoint.steer.unsigned_abs() < 50
+                    && setpoint.speed.unsigned_abs() < 50
+                {
+                    safe.arm();
+                    arm_beep = ArmBeep::new();
+                }
             });
         }
 
@@ -505,14 +636,29 @@ fn main() -> ! {
         let battery_level = BatteryMonitor::level(batt);
         let near_standstill = applied_speed.unsigned_abs() <= STANDSTILL_RPM as u16;
 
-        if inactivity.tick(left, right, false) {
-            safe.raise_fault(Fault::Inactivity);
-        }
-        if BAT_DEAD_ENABLE && battery_level == BatteryLevel::Dead && near_standstill {
-            safe.raise_fault(Fault::BatteryCritical);
-        }
-        if TEMP_POWEROFF_ENABLE && i32::from(temp) >= TEMP_POWEROFF_DECIC && near_standstill {
-            safe.raise_fault(Fault::ThermalCritical);
+        // Stock hard latch-off (`util.c:1561-1575`, `main.c:570-577`): unlike the
+        // torque-node variant, a full copy removes battery power on a dead pack,
+        // overheat or inactivity. These are deliberate shutdowns, not faults
+        // that merely zero the setpoint.
+        let latch_off = inactivity.tick(left, right, false)
+            || (BAT_DEAD_ENABLE && battery_level == BatteryLevel::Dead && near_standstill)
+            || (TEMP_POWEROFF_ENABLE && i32::from(temp) >= TEMP_POWEROFF_DECIC && near_standstill);
+        if latch_off {
+            safe.disarm();
+            for tone in [0u8, 1, 2, 3, 4, 5, 6, 7] {
+                hal::BUZZER_FREQ_OVERRIDE.store(tone, Ordering::Relaxed);
+                let start = core.DWT.cyccnt.read();
+                while core.DWT.cyccnt.read().wrapping_sub(start) < SYSTEM_HZ / 10 {
+                    hal::feed_iwdg(&peripherals.IWDG);
+                }
+            }
+            hal::BUZZER_FREQ_OVERRIDE.store(hal::BUZZER_NO_OVERRIDE, Ordering::Relaxed);
+            // Keep the boot vector intact; see the button poweroff path above.
+            hal::release_power_latch(gpioa);
+            loop {
+                hal::feed_iwdg(&peripherals.IWDG);
+                cortex_m::asm::nop();
+            }
         }
         if hal::DIAG_LEFT.load(Ordering::Relaxed) != 0
             || hal::DIAG_RIGHT.load(Ordering::Relaxed) != 0
@@ -641,12 +787,16 @@ fn main() -> ! {
                     hal::debug_write(f.as_str().as_bytes());
                 }
                 Command::SetProtocol(mode) => {
-                    // A live switch is diagnostic only until it is persisted in
-                    // NVM; the next power cycle still uses ProtocolMode::DEFAULT.
-                    link.set_mode(mode);
+                    // Full-behaviour port: the reference only speaks the legacy
+                    // 8-byte contract, so the hardened switch is refused.
                     let mut f = Formatter::new(&mut reply);
-                    f.put_str("PROTOCOL ");
-                    f.put_str(mode.label());
+                    if mode == ProtocolMode::Legacy {
+                        link.set_mode(mode);
+                        f.put_str("PROTOCOL ");
+                        f.put_str(mode.label());
+                    } else {
+                        f.put_str("PROTOCOL refused: legacy only");
+                    }
                     f.line();
                     hal::debug_write(f.as_str().as_bytes());
                 }
@@ -669,6 +819,25 @@ fn main() -> ! {
                     f.put_str("TRACE ");
                     f.put_i32(decimation as i32);
                     f.line();
+                    hal::debug_write(f.as_str().as_bytes());
+                }
+                Command::Arm => {
+                    let mut f = Formatter::new(&mut reply);
+                    if !hal::CAL_READY.load(Ordering::Relaxed) {
+                        f.put_str("ARM refused: ADC calibration not ready\n");
+                    } else {
+                        // Bench-only: let the generated torque loop run so HIL can
+                        // observe iq/id, integrators and duty. MOE is never written,
+                        // so no gate can be driven and no torque can be produced.
+                        safe.arm();
+                        f.put_str("ARM bench: torque loop live, MOE low, no torque\n");
+                    }
+                    hal::debug_write(f.as_str().as_bytes());
+                }
+                Command::Disarm => {
+                    safe.disarm();
+                    let mut f = Formatter::new(&mut reply);
+                    f.put_str("DISARM: torque loop open\n");
                     hal::debug_write(f.as_str().as_bytes());
                 }
                 Command::Init => {
