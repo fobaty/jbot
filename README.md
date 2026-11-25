@@ -188,15 +188,12 @@ jbot/
 │   └── jbot_node/              # High-level executable for the mission computer
 ├── firmware/
 │   ├── README.md               # Both Rust firmware workspaces, hardware, wiring
-│   ├── stm32f103/              # STM32F103 hoverboard mainboard firmware
-│   │   ├── rust/               # Active Rust torque node (core + fw + tools)
-│   │   └── eferu-foc/          # Pinned EFeru C reference and JBOT patches
-│   │       ├── eferu/          # Upstream checkout (nested git, do not push)
-│   │       ├── eferu-config.patch
-│   │       ├── eferu-jbot-config.h
-│   │       ├── eferu-jbot.patch
-│   │       ├── eferu-bench.patch
-│   │       └── eferu-balance.patch
+│   ├── stm32f103/              # Active Rust torque node for the mainboard
+│   │   ├── rust/               # Active firmware workspace
+│   │   │   ├── f103_core/      # Pure logic, host-tested
+│   │   │   ├── f103_fw/        # PAC/HAL firmware
+│   │   │   └── tools/          # Golden vectors, console bridge, flash.sh
+│   │   └── eferu-foc/          # Reference only: pinned EFeru C + patches
 │   └── pico2w/                 # Pico 2 W Rust firmware (separate workspace)
 │       ├── fw/                 # Firmware crate: HAL, Embassy tasks, wiring
 │       └── core/               # Pure logic: control, filters, wire contracts
