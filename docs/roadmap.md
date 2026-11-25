@@ -220,7 +220,7 @@ CRSF receiver and the BNO055 to the Pico, then bring up the balance controller a
 
 ### 3.5. Pico controller
 
-- [ ] Create `firmware/pico-bridge` as its own workspace: `thumbv8m.main-none-eabihf`, `embassy-rp`,
+- [ ] Create `firmware/pico2w/fw` as its own workspace: `thumbv8m.main-none-eabihf`, `embassy-rp`,
       `embassy-executor`, `embassy-sync`, `defmt`, `probe-rs`, with a tracked `.cargo/config.toml`.
 - [ ] Implement the clock tree, the 200 Hz hardware timer, UART0/UART1, I2C1, the PIO UART, GPIO, and the
       hardware watchdog.
@@ -250,7 +250,7 @@ CRSF receiver and the BNO055 to the Pico, then bring up the balance controller a
 ### 3.7. Stage artifacts
 
 - Donor board with the EFeru baseline, the torque-node profile, and the rebuild instructions.
-- `firmware/pico-bridge`: balance controller with CRSF, BNO055, torque link, safety, telemetry.
+- `firmware/pico2w/fw`: balance controller with CRSF, BNO055, torque link, safety, telemetry.
 - Wiring diagram for the bench: left cable Pico link, Pico I2C1 to the IMU, Pico UART1 to the XR1,
   DC-DC branch, fuse, kill switch.
 - Calibration records: battery divider, BNO055 offsets, channel map.
@@ -820,6 +820,6 @@ compromising balancing, safety, and baseline navigation.
 - [ ] Mount the BNO055 on the Pico I2C1 and run the calibration.
 - [ ] Complete `docs/bom.md` for the added parts (Pico, fuse, kill switch, DC-DC, receiver, IMU) and
       place that order.
-- [ ] Start `firmware/pico-bridge`: workspace, clocks, `embassy` tasks, EFeru framing.
+- [ ] Start `firmware/pico2w/fw`: workspace, clocks, `embassy` tasks, EFeru framing.
 - [ ] Set up the safety rig and the first-power-on checklist.
 - [ ] Start hazard analysis and the E-stop specification.

@@ -112,7 +112,7 @@ The project already runs Rust on the Pico 2 W; the F103 still runs generated C. 
 
 | Option | Scope | Assessment |
 |---|---|---|
-| **A. Keep the F103 C FOC core** (recommended baseline) | Do all protocol, telemetry, tuning, and control work in `firmware/pico2w` and `firmware/pico_core`, which are already `no_std`, host-tested, and own the wire contract. Change the F103 only through the pinned patch for the two config fixes. | Lowest risk. Preserves the validated 16 kHz current loop. Matches `firmware/README.md` section 5.1. Does not require repatriating a Simulink model. |
+| **A. Keep the F103 C FOC core** (recommended baseline) | Do all protocol, telemetry, tuning, and control work in `firmware/pico2w/fw` and `firmware/pico2w/core`, which are already `no_std`, host-tested, and own the wire contract. Change the F103 only through the pinned patch for the two config fixes. | Lowest risk. Preserves the validated 16 kHz current loop. Matches `firmware/README.md` section 5.1. Does not require repatriating a Simulink model. |
 | **B. Rust protocol shell around the C FOC core** | Reimplement framing, CRC, sequence, timeouts, and the debug console on the F103 in `no_std` Rust (Embassy or RTIC), calling the generated controller through a small reviewed FFI boundary. | Medium risk. Gives typed validation and latest-value command semantics; keeps the proven current loop. Still needs a hardware-validated FFI/HAL layer, bounded queues, and a full bench regression. `unsafe` policy and stop-and-escalate triggers apply. |
 | **C. Full Rust FOC rewrite on the STM32F103** | Replace the generated C controller with Rust: ADC/DMA phase currents, hall capture, Clarke/Park, current PI, SVPWM, 16 kHz scheduling, limits, diagnostics. | High risk, not justified by current evidence. The F103 has no FPU, so fixed-point discipline is mandatory (`docs/skills/rust_robotics_guidelines.md` sections 2.3, 2.6, 6.2). The generated C has no corresponding model in this repo, so correctness would have to be re-derived and re-validated on hardware. It also reverses the explicit architecture decision in `firmware/README.md` section 5.1. Requires Architect and Safety approval before any code. |
 
@@ -120,7 +120,7 @@ Additional constraints for any port:
 
 - Upstream is **GPL-3.0**; a derived Rust implementation that is distributed stays under GPL-3.0. Do not copy generated C comments or structures into the workspace without that license obligation being explicit.
 - The wire contract is shared with `jbot_pico_core`; one change must be mirrored with golden vectors and host tests, per `docs/skills/rust_robotics_guidelines.md` sections 3 and 7.
-- Quality gates for any change: `cargo fmt --all -- --check`, `cargo check --workspace --all-targets`, `cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`, plus `cargo test` in `firmware/pico_core` and a cross-build if firmware is touched.
+- Quality gates for any change: `cargo fmt --all -- --check`, `cargo check --workspace --all-targets`, `cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`, plus `cargo test` in `firmware/pico2w/core` and a cross-build if firmware is touched.
 
 ## 6. Decisions needed before implementation
 

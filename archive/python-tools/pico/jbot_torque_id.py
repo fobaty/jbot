@@ -26,7 +26,7 @@ BAUD = 115200
 DEFAULT_PORT = "/dev/cu.usbmodemJBOT_PICO_011"
 # Per-wheel inertia from config/robot.toml [mechanical]. Uncertainty +/-20 %.
 WHEEL_INERTIA_KG_M2 = 0.0078
-# Spin-test limits from firmware/pico_core/src/spin.rs.
+# Spin-test limits from firmware/pico2w/core/src/spin.rs.
 SPIN_LIMIT_UNITS = 300
 RPM_TO_RAD_S = 2.0 * math.pi / 60.0
 

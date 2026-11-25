@@ -35,7 +35,7 @@ perf.data.old
 **/.DS_Store
 
 # Firmware target settings are part of the build, not a local override.
-!firmware/pico2w/.cargo/config.toml
+!firmware/pico2w/fw/.cargo/config.toml
 !firmware/stm32f103/rust/f103_fw/.cargo/config.toml
 
 # Python bytecode and generated firmware images are build artifacts.
@@ -160,6 +160,12 @@ config.local.*
 *.sock
 core
 core.*
+# `core` above is for crash dumps; the Pico core crate is source code.
+!firmware/pico2w/core/
+!firmware/pico2w/core/src/
+!firmware/pico2w/core/src/**
+!firmware/pico2w/core/Cargo.toml
+!firmware/pico2w/core/Cargo.lock
 crash-*.dmp
 *.dmp
 recordings/

@@ -81,7 +81,7 @@ Scope: the flashed C build is `VARIANT_USART` with `BOARD_VARIANT 0`
 - **Trace frame**, msg type 3, 88-byte native-width payload of both motors'
   internal FOC state (`trace.rs:12-140`), streamed at ≤100 Hz because
   `$TRACE` clamps non-zero decimation to ≥160 (`main.rs:653-673`).
-- Pico mirror lives in `firmware/pico_core/src/hardened.rs`.
+- Pico mirror lives in `firmware/pico2w/core/src/hardened.rs`.
 
 ## 4. User controls and indications
 

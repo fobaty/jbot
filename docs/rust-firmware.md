@@ -52,7 +52,7 @@ arm-none-eabi-size ../target/thumbv7m-none-eabi/release/f103_fw
 ```
 
 Latest sizes: `text 50 640 B`, `data 672 B`, `bss 948 B`. The Pico side is a
-separate workspace: `firmware/pico_core` (142 tests) and `firmware/pico2w`
+separate workspace: `firmware/pico2w/core` (142 tests) and `firmware/pico2w/fw`
 (`cargo check` and `cargo clippy`; its `cargo test` target is an embedded binary
 and does not build on the host).
 
@@ -115,7 +115,7 @@ Golden vectors are pinned on both sides: command `CD AB 34 12 78 56 81 EF`,
 feedback `CD AB 64 00 9C FF C8 00 38 FF 36 10 5D 01 00 00 AE BA`, hardened
 command `03 02 01 09 02 01 06 05 04 03 04 64 05 38 FF C4 40 00`, CRC check
 `crc16(b"123456789") == 0x29B1`. The Pico mirror lives in
-`firmware/pico_core/src/hardened.rs`.
+`firmware/pico2w/core/src/hardened.rs`.
 
 ## 6. Safety model
 

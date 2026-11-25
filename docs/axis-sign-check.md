@@ -41,7 +41,7 @@ a single `PASS`/`FAIL` per convention:
 | Line | Pass condition | Remedy when it fails |
 |---|---|---|
 | `pitch` | forward delta ≥ +3°, backward delta ≤ −3° | wrong mount selector or a zero captured in the wrong pose: re-run the guided axis calibration, then `zero` and `level` |
-| `rate` | correlation ≥ 0.7 and slope ≥ 0.3 | the damper reads the wrong raw axis or the wrong sign: check the mount selector and the raw channel pairing in `firmware/pico_core/src/mount.rs` |
+| `rate` | correlation ≥ 0.7 and slope ≥ 0.3 | the damper reads the wrong raw axis or the wrong sign: check the mount selector and the raw channel pairing in `firmware/pico2w/core/src/mount.rs` |
 | `yaw` | counter-clockwise mean `gz` ≥ +5 dps | inverted yaw sign: the yaw loop would drive the spin, not damp it |
 | `wheels` | `test 50 50` gives `L > 0`, `R < 0` and the pivot gives negative `gz` | mixer sign or motor wiring; see `docs/design_balance_home.md` §8.2 |
 

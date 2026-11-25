@@ -30,8 +30,8 @@ never affect `cargo test --workspace`.
 | `stm32f103/eferu-foc/eferu-jbot.patch` | Earlier revision of the configuration delta, kept for history. |
 | `stm32f103/eferu-foc/eferu-bench.patch` | Bench-only delta: fixes the `unlock` target for the ST-Link clone. |
 | `stm32f103/eferu-foc/eferu-balance.patch` | Production torque-node delta: `CTRL_MOD_REQ = TRQ_MODE`, `SERIAL_TIMEOUT` 160 → 20. Not created yet. |
-| `pico2w/` | Rust firmware for the Pico 2 W (section 5). Separate Cargo workspace. |
-| `pico_core/` | `no_std`, I/O-free logic shared with the Pico firmware and unit-tested on the host: EFeru frames, BNO055 decoding, cascade balance law. |
+| `pico2w/fw/` | Rust firmware for the Pico 2 W (section 5). Separate Cargo workspace; owns the HAL and the Embassy tasks. |
+| `pico2w/core/` | `no_std`, I/O-free logic used by `fw/` and unit-tested on the host: EFeru frames, BNO055 decoding, cascade balance law. |
 
 ## 1.1. Hardware in scope
 
@@ -338,7 +338,7 @@ This step is done when all of the following hold on the bench:
 
 ## 5. Bring-up step 2: Pico 2 W firmware
 
-The balance controller is Rust on the Pico 2 W, in `firmware/pico2w/`. The
+The balance controller is Rust on the Pico 2 W, in `firmware/pico2w/fw/`. The
 mainboard is not rewritten: it keeps the pinned EFeru C and its validated 16 kHz
 FOC core.
 
@@ -442,7 +442,7 @@ Rules:
 
 ### 5.7. Repository rules
 
-`firmware/pico2w` is its own Cargo workspace so that the root workspace
+`firmware/pico2w/fw` is its own Cargo workspace so that the root workspace
 keeps building for the host. The root `.gitignore` ignores every
 `.cargo/config.toml`, so the embedded target configuration needs an explicit
 exception. `firmware/stm32f103/eferu-foc/` vendors the pinned C tree and the
@@ -451,7 +451,7 @@ must not be pushed.
 
 ### 5.8. Foundation firmware (implemented)
 
-The first Rust image is in `firmware/pico2w/`. It owns the clock tree
+The first Rust image is in `firmware/pico2w/fw/`. It owns the clock tree
 (150 MHz), UART0, I2C1, USB, GPIO and the hardware watchdog. Five embassy tasks
 run:
 
@@ -463,7 +463,7 @@ run:
 | `usb_task` | event | Runs the RP2350 USB stack for the CDC-ACM console |
 | `console_task` | event | Serves the line protocol: commands in, telemetry out at the requested rate |
 
-The balance law and the wire format live in `firmware/pico_core`, a separate
+The balance law and the wire format live in `firmware/pico2w/core`, a separate
 `no_std` crate with host tests, so control and protocol changes are verified
 without hardware.
 
@@ -476,7 +476,7 @@ Build and flash (the Pico must be in BOOTSEL mode: hold BOOTSEL while plugging
 USB in, or hold it while pressing RUN):
 
 ```sh
-cd firmware/pico2w
+cd firmware/pico2w/fw
 cargo build --release
 cargo run --release          # picotool load -u -v -x -t elf
 ```
@@ -553,7 +553,7 @@ runs in tests and headless jobs. The native Rust console in `crates/jbot_console
 Host checks for the shared logic:
 
 ```sh
-cd firmware/pico_core
+cd firmware/pico2w/core
 cargo test
 cargo clippy --all-targets -- -D warnings
 ```

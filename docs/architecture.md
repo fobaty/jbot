@@ -704,7 +704,7 @@ Rules:
 - `jbot_protocol`: `no_std`-compatible message definitions, `postcard` schema, CRC framing, shared with firmware.
 - `jbot_safety`: state machine, fault codes, watchdog policy, limit checks.
 - `jbot_teleop`: joystick/gamepad and web teleoperation.
-- `firmware/pico-bridge/`: separate embedded Cargo workspace for the Pico 2 W
+- `firmware/pico2w/fw/`: separate embedded Cargo workspace for the Pico 2 W
   balance controller; not a member of the host workspace. See
   [`docs/pico-bridge.md`](pico-bridge.md).
 - `firmware/stm32f103/eferu-foc/eferu/`: upstream C firmware on the F103 mainboard, pinned and
@@ -720,7 +720,7 @@ Rules:
 | `jbot_hardware` | UART/USB transports, sensor and actuator drivers | Skeleton; provisional BNO055 and CRSF link |
 | `jbot_navigation` | Costmaps, global/local planning, path tracking | Skeleton |
 | `jbot_node` | Runtime composition, middleware, supervision, CLI | Skeleton |
-| `firmware/pico-bridge` | Pico 2 W balance controller: CRSF, BNO055, control, safety | Planned; see `docs/pico-bridge.md` |
+| `firmware/pico2w/fw` | Pico 2 W balance controller: CRSF, BNO055, control, safety | Planned; see `docs/pico-bridge.md` |
 | `firmware/stm32f103/eferu-foc/eferu` | F103 torque actuator node: FOC, limits, timeout | Pinned upstream C, patched |
 | `firmware/hoverboard-rs` | Optional F103 Rust replacement | Deferred |
 
@@ -805,7 +805,7 @@ The robot uses a **Zenoh-first** data plane and bridges to ROS2 where the ecosys
 | Graph/search | `petgraph`, `pathfinding` | Planning and graph utilities | Proposed |
 | Testing | `proptest`, `insta`, `mockall` | Property, snapshot, and mock testing | Proposed |
 
-**Firmware stack (Pico 2 W, `firmware/pico-bridge`)**
+**Firmware stack (Pico 2 W, `firmware/pico2w/fw`)**
 
 | Area | Crate | Purpose |
 |---|---|---|
@@ -829,7 +829,7 @@ generated fixed-point C, and a rewrite would have to be re-validated from
 scratch. The optional `firmware/hoverboard-rs` replacement would use
 `stm32f1xx-hal` 0.11 and RTIC 2 with the C core behind one FFI boundary.
 
-> Firmware dependencies live in `firmware/pico-bridge/`, a separate embedded
+> Firmware dependencies live in `firmware/pico2w/fw/`, a separate embedded
 > workspace. They are not members of the host workspace.
 
 ### 6.6. Task/data architecture
@@ -887,7 +887,7 @@ LiDAR ──► driver ──► point cloud ──► scan matching / SLAM ─�
 ### 6.9. Build, deployment, and update
 
 - **Mission-computer target:** `aarch64-unknown-linux-gnu`; cross-compile with `cross` or `cargo-zigbuild`; ship as a static-ish binary with a known glibc baseline or use musl where compatible.
-- **Pico 2 W target:** `thumbv8m.main-none-eabihf` (Cortex-M33 with FPU); build in `firmware/pico-bridge` with `cargo build --release`, flash with `probe-rs` or a UF2 over BOOTSEL.
+- **Pico 2 W target:** `thumbv8m.main-none-eabihf` (Cortex-M33 with FPU); build in `firmware/pico2w/fw` with `cargo build --release`, flash with `probe-rs` or a UF2 over BOOTSEL.
 - **Mainboard target:** upstream C, built with PlatformIO (`pio run -e VARIANT_USART`), flashed over SWD with `pio run -t upload`. A Rust replacement target would be `thumbv7m-none-eabi` and is deferred.
 - **Process management:** systemd units for `jbot-node`, `zenohd`, sensor drivers, and the ROS2 bridge. Restart policy with backoff; watchdog integration.
 - **Filesystem:** read-only root where practical; separate writable partition for logs and maps. A/B updates or atomic image updates.

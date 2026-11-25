@@ -9,7 +9,7 @@
 | Status | Planned; not implemented |
 | Scope | Balance control, radio ingest, IMU, mainboard torque link, mission link, safety |
 
-This document specifies the firmware in `firmware/pico-bridge/`. It is the
+This document specifies the firmware in `firmware/pico2w/fw/`. It is the
 authority for the Pico's pin map, task schedule, wire protocols, and safety
 behaviour. The architecture rationale is in
 [`docs/architecture.md`](architecture.md) §3.2; the physical pin table is in
@@ -428,7 +428,7 @@ in deci-degrees, and a CRC-32 over the first 28 bytes. A blank sector, a
 foreign image, a different version, a CRC mismatch or an out-of-range value all
 decode to "no record", and the firmware then falls back to the compiled
 defaults. The current format version is 3: it adds the pose table and refuses
-version-2 records. The decoder lives in `firmware/pico_core/src/nvm.rs` and is
+version-2 records. The decoder lives in `firmware/pico2w/core/src/nvm.rs` and is
 unit-tested on the host.
 
 What happens at boot:
@@ -543,7 +543,7 @@ the lift limit without touching the code.
 ## 9. Build, flash, debug
 
 ```sh
-cd firmware/pico-bridge
+cd firmware/pico2w/fw
 cargo build --release                     # thumbv8m.main-none-eabihf
 cargo run --release                       # flash via probe-rs, RTT attached
 ```

@@ -198,6 +198,8 @@ jbot/
 │   │   │   └── eferu-balance.patch
 │   │   └── rust/               # Rust torque-node firmware
 │   └── pico2w/                 # Pico 2 W Rust firmware (separate workspace)
+│       ├── fw/                 # Firmware crate: HAL, Embassy tasks, wiring
+│       └── core/               # Pure logic: control, filters, wire contracts
 └── docs/
     ├── specification.md        # System Requirements Specification (SRS-001)
     ├── architecture.md         # System architecture and safety concept
@@ -260,7 +262,7 @@ Wiring, recovery from a read-protected chip, and the bench checklist are in
 ### Pico firmware
 
 ```bash
-cd firmware/pico2w
+cd firmware/pico2w/fw
 cargo run --release                  # flash over SWD via probe-rs, RTT attached
 ```
 

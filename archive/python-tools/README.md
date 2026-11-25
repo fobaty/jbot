@@ -3,7 +3,7 @@
 Everything in this directory is **legacy reference material**. The project no
 longer builds, tests or uses Python tools. The active stack is:
 
-* Pico 2 W firmware: `firmware/pico2w` (Rust, its own Cargo workspace);
+* Pico 2 W firmware: `firmware/pico2w/fw` (Rust, its own Cargo workspace);
 * bench console: `crates/jbot_console` (Rust);
 * offline analysis: `crates/jbot_analysis` (Rust).
 

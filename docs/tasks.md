@@ -195,7 +195,7 @@ stage-2 hip actuators use their own drivers. CAN is not routed and stays a defer
 
 **Inputs:** `docs/architecture.md` sections 3.2, 5, 7; `docs/pico-bridge.md`;
 `docs/specification.md` sections 3, 5, 8, 9; `docs/hardware.md`; `firmware/README.md` sections 2.10, 5.
-**Outputs:** `firmware/pico-bridge`, `eferu-balance.patch`, `jbot_protocol`, bench records,
+**Outputs:** `firmware/pico2w/fw`, `eferu-balance.patch`, `jbot_protocol`, bench records,
 actuator/jitter/latency/E-stop protocols.
 
 ### 4.1. Firmware architecture and bring-up
@@ -203,7 +203,7 @@ actuator/jitter/latency/E-stop protocols.
 | ID | Task | Priority | Depends on | Acceptance criterion |
 |---|---|---|---|---|
 | [ ] M3-01 | Confirm the two-tier split (Pico for balance, F103 for FOC) and record ADR-011: 150 MHz with FPU, 16 kHz FOC, 200 Hz balance headroom, flash/RAM map, pin budget | P1 | — | 200 Hz balance with 16 kHz FOC measured on the pair; the ADR records that no new MCU is bought |
-| [ ] M3-02 | Create `firmware/pico-bridge` as its own workspace: `thumbv8m.main-none-eabihf`, `embassy-rp`, `embassy-executor`, `defmt`, `probe-rs`, build and memory map | P1 | M3-01, M2-06 | Firmware builds, flashes and starts on the Pico; `.cargo/config.toml` is tracked despite the root ignore rule |
+| [ ] M3-02 | Create `firmware/pico2w/fw` as its own workspace: `thumbv8m.main-none-eabihf`, `embassy-rp`, `embassy-executor`, `defmt`, `probe-rs`, build and memory map | P1 | M3-01, M2-06 | Firmware builds, flashes and starts on the Pico; `.cargo/config.toml` is tracked despite the root ignore rule |
 | [ ] M3-03 | Implement initialization of the clock tree (150 MHz), the 200 Hz timer, UART0/UART1, I2C1, the PIO UART, GPIO and the hardware watchdog | P1 | M3-02 | All peripherals pass the startup self-test |
 | [ ] M3-04 | Ensure safe default states: zero torque after reset, outputs in a known state, no motor output before the first valid command | P1 | M3-03 | Verified with an oscilloscope on the UART and the GP10 marker; complies with SAF-10 |
 

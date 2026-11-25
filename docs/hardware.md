@@ -49,6 +49,10 @@ which CRSF telemetry replaces.
 
 ## 2. Mainboard
 
+Annotated board pinout:
+
+![STM32F103 mainboard pinout](../firmware/stm32f103/mainboard_pinout.png)
+
 ### 2.1. Capabilities
 
 | Function | Detail |
@@ -110,6 +114,10 @@ timeout shortened from 160 to 20 ticks (100 ms). No pin remap is needed: the
 `VARIANT_USART` build already puts the protocol on USART2.
 
 ## 3. Pico 2 W
+
+Annotated board pinout:
+
+![Pico 2 W pinout](../firmware/pico2w/pico2w-pinout.svg)
 
 ### 3.1. Capabilities
 

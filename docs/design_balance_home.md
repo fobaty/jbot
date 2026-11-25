@@ -209,7 +209,7 @@ outside the envelope and is aborted by the range guard rather than chased.
 ## 6. Simulation evidence
 
 All numbers below come from the clean planar model
-(`firmware/pico_core/src/plant.rs`, mirrored in the scratch harness
+(`firmware/pico2w/core/src/plant.rs`, mirrored in the scratch harness
 `jbot_sim/plant13.py` with keyword-only arguments). The Rust suite reproduces the
 headline cases.
 
@@ -429,7 +429,7 @@ Change (M3-42, partial):
   4 KiB erase block of the QSPI flash. `memory.x` ends `FLASH` at `4092K`, so
   the record cannot overlap the image.
 * The record is 32 bytes with magic, version, CRC-32 and range checks
-  (`firmware/pico_core/src/nvm.rs`, host-tested). Blank, foreign, truncated or
+  (`firmware/pico2w/core/src/nvm.rs`, host-tested). Blank, foreign, truncated or
   out-of-range content decodes to "no record" and the compiled defaults apply.
 * The **mount is restored at boot**. `zero` and `level` are stored but not
   applied: both must still be captured in the current session, and the arm

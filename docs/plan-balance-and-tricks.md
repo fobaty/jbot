@@ -31,7 +31,7 @@ and still excludes full side/upside-down recovery. It is simulation-only.
   `max_torque_nm=5.0`); the loaded dead zone is provisionally 120-160 units.
   The `home 3` run at `pscale=0.30, slew=100` reported about 80 units and
   diverged, which is below that provisional dead zone.
-* The plant in `firmware/pico_core/src/plant.rs` is linearized around upright:
+* The plant in `firmware/pico2w/core/src/plant.rs` is linearized around upright:
   `lift_limit=53.1 deg`, guard at 30 deg, `LYING_RAD=45 deg`. It has dead zone
   and transport delay but no large-angle geometry or motor speed/torque envelope.
 * There is no open-loop `test <u>` command for torque identification and no
@@ -55,7 +55,7 @@ and still excludes full side/upside-down recovery. It is simulation-only.
 ### WP0 — Measure the drive (bench, no control-law change)
 
 The open-loop commands already exist: `test <u> [u]` in
-`firmware/pico2w/src/console.rs` and the host driver
+`firmware/pico2w/fw/src/console.rs` and the host driver
 `archive/python-tools/pico/jbot_torque_id.py`, which spins the wheels free and derives
 `M = I*alpha` from the hall feedback. Hold the robot by hand on the bench and
 run that driver over several levels; it writes results into `csv/`. Derive the
@@ -184,8 +184,8 @@ step-by-step approval. Nothing is pushed without explicit approval.
 
 Local: `docs/design_balance_home.md`, `docs/audit-2026-11-22.md`,
 `docs/research-balancing-tricks-2026-11-22.md`, `config/robot.toml`,
-`firmware/pico_core/src/{control,plant,eferu}.rs`,
-`firmware/pico2w/src/{console,main,state}.rs`,
+`firmware/pico2w/core/src/{control,plant,eferu}.rs`,
+`firmware/pico2w/fw/src/{console,main,state}.rs`,
 `firmware/stm32f103/eferu-foc/eferu-jbot-config.h`.
 
 External: `github.com/mahowik/BalancingWii`, `github.com/mjbots/hoverbot`,

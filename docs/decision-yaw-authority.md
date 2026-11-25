@@ -10,7 +10,7 @@ variant `STEER_COEFFICIENT` has no override, so it falls back to
 `VARIANT_PWM`, not to the flashed image.
 
 The Pico inverse `Command::from_wheel_torque`
-(`firmware/pico_core/src/eferu.rs:74`) computes `speed = (L+R)/2` and
+(`firmware/pico2w/core/src/eferu.rs:74`) computes `speed = (L+R)/2` and
 `steer = (L-R)/2`, assuming a unit steer coefficient. The mainboard mixer
 (`Src/util.c:1706-1722`, called from `Src/main.c:361`) applies
 `cmdL = speed + 0.5*steer` and `cmdR = speed - 0.5*steer`.

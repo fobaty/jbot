@@ -191,7 +191,7 @@ mod tests {
     use super::*;
 
     // Mount matrices exactly as implemented by the firmware (see
-    // firmware/pico_core/src/mount.rs). The gravity vector in the robot
+    // firmware/pico2w/core/src/mount.rs). The gravity vector in the robot
     // frame is g_robot; the sensor reports g_sensor = Mᵀ * g_robot and the
     // candidate mount re-maps it with its own matrix.
     const MATRICES: [[[f32; 3]; 3]; MOUNT_COUNT] = [

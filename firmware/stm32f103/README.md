@@ -18,6 +18,10 @@ there**. The JBOT patches live next to it in `eferu-foc/`:
 When the mainboard is reflashed, update the config snapshot and patch in the
 same commit.
 
+## Board pinout
+
+![STM32F103 mainboard pinout](mainboard_pinout.png)
+
 ## Flashed configuration (reflashed 2026-11-24)
 
 | Parameter | Value | Note |
