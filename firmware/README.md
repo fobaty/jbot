@@ -17,6 +17,11 @@ self-balancing robot. All firmware workspaces are separate from the `jbot`
 Cargo workspace, each with its own toolchain, so they never affect
 `cargo test --workspace`.
 
+> **Start here.** The active mainboard firmware, its build checks and the
+> flashing procedure are documented in
+> [`stm32f103/README.md`](stm32f103/README.md). Section 2 below describes the
+> historical EFeru C baseline and is kept as a hardware reference only.
+
 > **Change in 0.2 (ADR-011).** The balance loop moved off the mainboard to the
 > Pico 2 W. The mainboard is now a torque actuator node: it keeps the 16 kHz FOC
 > current loop, the current limits, the power latch, and an independent 100 ms

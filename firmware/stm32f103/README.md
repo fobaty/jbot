@@ -68,74 +68,21 @@ Do not use `st-flash --connect-under-reset` with this wiring.
 
 ## Reference C firmware (`eferu-foc/`)
 
-The nested checkout `eferu-foc/eferu/` is pinned at commit `4f141cb` from
-`https://github.com/EFeru/hoverboard-firmware-hack-FOC.git`. **Do not push
-there.** It is kept because it contains measured hardware facts that the Rust
-port depends on: timer topology, ADC/DMA trigger alignment, dead time, hall and
-phase mappings, current scales, board variants, schematics, pinout photos and a
-working `VARIANT_USART` configuration.
+The pinned upstream checkout `eferu-foc/eferu/` (commit `4f141cb`) is kept as a
+hardware reference and rollback artifact, **not** as the active firmware. Do not
+push to its upstream remote. It documents measured facts the Rust port relies
+on: timer and ADC/DMA topology, dead time, hall/phase mapping, current scales,
+board variants, schematics and photos in `eferu-foc/eferu/docs/`.
 
-It is a working hoverboard controller, but it is not suitable for this robot:
+It is a working `VARIANT_USART` / `FOC_CTRL` / `TRQ_MODE` build for a normal
+hoverboard (10 A / 12 A / 400 rpm, `SERIAL_TIMEOUT = 160`, legacy 8/18-byte
+frames on USART2, debug text on USART3). It is not suitable for a self-balancing
+robot: link loss ends in `OPEN_MODE` freewheel only after about 800 ms,
+inactivity or low battery latches power off, the protocol has only an XOR
+checksum, and balancing is marked `TODO` in the upstream source.
 
-- on serial-link loss it requests `OPEN_MODE` (freewheel) only after about
-  800 ms, which lets a balancing robot fall;
-- it latches power off on inactivity, dead battery or overheat, removing torque
-  while the robot still needs it;
-- the wire protocol has only an XOR checksum, no sequence, timestamp or version,
-  and very little telemetry;
-- balancing is marked `TODO` for `VARIANT_HOVERBOARD`, and the generated C FOC
-  core cannot be tuned or extended without re-validating the Simulink output.
-
-The Rust firmware replaces those behaviours while keeping the validated pin
-map and 16 kHz current-loop structure.
-
-### JBOT patches in the reference tree
-
-- `eferu-foc/eferu-config.patch` — current diff of `Inc/config.h` against the
-  pinned commit.
-- `eferu-foc/eferu-jbot-config.h` — full snapshot of the flashed `Inc/config.h`;
-  byte-identical to the patched file in the working tree.
-- `eferu-foc/eferu-jbot.patch` — earlier revision of the config change, kept for
-  history. Do not apply it on top of the current snapshot.
-- `eferu-foc/eferu-bench.patch` — bench-only Makefile `unlock` target fix; it is
-  not applied to the flashed source.
-
-### Historical C build profile
-
-This table documents the last known-good C image, **not** the active firmware:
-
-| Parameter | Value | Note |
-|---|---|---|
-| Build variant | `VARIANT_USART` | `make -e VARIANT=VARIANT_USART` |
-| Control | `FOC_CTRL`, `TRQ_MODE` | ±1000 → ±`I_MOT_MAX` |
-| `I_MOT_MAX` / `I_DC_MAX` | 10 A / 12 A | Conservative bench limits |
-| `N_MOT_MAX` | 400 rpm | Bench speed ceiling |
-| `SERIAL_TIMEOUT` | 160 ticks ≈ 0.8 s | Too slow for balancing |
-| USART2 | `FEEDBACK_SERIAL_USART2` | PA2/PA3, 115200 8N1, 8-byte command / 18-byte feedback |
-| USART3 | `DEBUG_SERIAL_USART3` | PB10/PB11, 115200 8N1, text debug |
-| Inputs | `PRI_INPUT1/2 = 3, -1000, 0, 1000, 0` | Serial, no deadband |
-| `FLASH_WRITE_KEY` | `0x1002` | No dual inputs |
-| `FILTER` | `19661` | α ≈ 0.3 |
-| `SPEED_COEFFICIENT` / `STEER_COEFFICIENT` | 16384 / 8192 | 0.5 yaw halves differential |
-| `TANK_STEERING`, `INVERT_L/R_DIRECTION` | Not defined | Stock mixer and directions |
-
-Do not raise `I_MOT_MAX` towards 15 A without measured MOSFET and pack
-temperatures.
-
-### Reference build and restore
-
-```sh
-cd firmware/stm32f103/eferu-foc/eferu
-make -e VARIANT=VARIANT_USART          # build/hover.bin
-make flash                             # same button-held SWD procedure
-```
-
-To restore the patched configuration:
-
-```sh
-cp firmware/stm32f103/eferu-foc/eferu-jbot-config.h \
-   firmware/stm32f103/eferu-foc/eferu/Inc/config.h
-```
-
-Alternatively, apply `eferu-foc/eferu-config.patch` to the pinned `Inc/config.h`.
-Do not apply the patch on top of the full snapshot.
+The JBOT configuration files live next to the checkout:
+`eferu-config.patch`, `eferu-jbot-config.h`, `eferu-jbot.patch` (history) and
+`eferu-bench.patch` (not applied). Build, restore and flashing details are in
+`eferu-foc/README.md`; keep `I_MOT_MAX` at 10 A unless MOSFET and pack
+temperatures have been measured.
