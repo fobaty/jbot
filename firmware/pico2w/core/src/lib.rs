@@ -18,3 +18,4 @@ pub mod plant;
 pub mod predictor;
 pub mod reference;
 pub mod spin;
+pub mod text;

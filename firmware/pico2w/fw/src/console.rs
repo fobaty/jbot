@@ -735,8 +735,8 @@ async fn handle_command(class: &mut Console, flash: &mut Store, line: &[u8]) -> 
         }
         "dbg" => {
             // Bench-only bridge to the STM32 debug serial on USART3. `dbg on`
-            // forwards its output to this console; any other argument is sent
-            // verbatim as a debug command line.
+            // forwards its output to this console; the rest of the line is
+            // sent verbatim as one debug command.
             match argument {
                 None => {
                     reply(
@@ -760,10 +760,11 @@ async fn handle_command(class: &mut Console, flash: &mut Store, line: &[u8]) -> 
                     state::set_debug_bridge(false);
                     reply(class, format_args!("ok dbg off")).await;
                 }
-                Some(text) => {
-                    crate::debug_bridge::push_tx(text.as_bytes());
+                Some(_) => {
+                    let payload = jbot_pico_core::text::command_tail(text);
+                    crate::debug_bridge::push_tx(payload.as_bytes());
                     crate::debug_bridge::push_tx(b"\r");
-                    reply(class, format_args!("ok dbg tx {}", text.len())).await;
+                    reply(class, format_args!("ok dbg tx {}", payload.len())).await;
                 }
             }
         }
