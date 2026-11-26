@@ -104,7 +104,16 @@ The mainboard is powered on: `mb=ok`, `bat=36.45` V, `fb_ok=1`, `fb=11777`,
 `fb_drop=0`, `rx=211986`. The IMU is live (`imu=ok`, fresh samples, one
 transient I2C error since boot with code `1`). The drive stays safe with
 `estop=1`, `armed=0`, `L=0 R=0`, `al=0 ar=0`. The ST-Link is disconnected.
-No motors were driven and no balance trial was run.
+No balance trial was run.
+
+After a USB re-enumeration the applied-command feedback was checked with
+`test 10 10` and `test 0 0`: `al`/`ar` followed both requests, with 114 ms
+rise and 57 ms fall in the command-reporting path. A subsequent dead-zone probe
+up to 60 units gave non-repeatable, asymmetric wheel motion, so no `db` value
+was changed. A one-wheel spin-up identification gave 210–241 units/Nm in the
+usable 60/80-unit steps, close to the compiled 200 units/Nm; `tmax` was left at
+5.0 Nm. The bench was returned to `estop=1`, `armed=0`, `L=R=0`, `al=ar=0`.
+See `docs/precision-control-2026-11-25.md`.
 
 ## Source-level analysis of the regression
 

@@ -93,6 +93,104 @@ Do all of this with the robot supported and the balance law disarmed.
    actuator. Re-measure the delay with the applied-command telemetry before
    raising it.
 
+## Applied-command check (2026-11-25)
+
+The Pico CDC console stopped replying after a host session closed the port;
+physically re-enumerating USB restored it without a reflash. The symptom
+matches the historical tooling note in `docs/wp0-torque-identification.md`.
+
+With the balance law disarmed and the wheels stationary, the console sequence
+was `estop`, `stream 100`, `clear`, `test 5 5`, `test 0 0`, `estop`. The `test`
+command takes two numeric arguments; its reply is formatted as
+`ok test l=<left> r=<right>`. `cwl`/`cwr` mirror the request immediately, while
+`al`/`ar` come from the mainboard feedback words:
+
+| Request | First matching `al`/`ar` | Observation |
+|---|---|---|
+| `test 10 10` | 114 ms after the command | `al=10 ar=10`, `L=R=0` |
+| `test 0 0` | 57 ms after the command | `al=0 ar=0` |
+
+Telemetry arrived at about 90 lines/s, so the resolution is roughly 10 ms.
+The rise figure includes the 200 Hz Pico command interval, the mainboard input
+filter and the feedback frame interval; it bounds the command-reporting path
+and is not a measurement of actuator transport delay. Both wheels stayed at
+zero rpm at 5 and 10 units, so no torque constant or breakaway value was
+derived. The bench was returned to `estop=1`, `armed=0`, `L=R=0`, `al=ar=0`.
+
+## Dead-zone probe (2026-11-25)
+
+A 5-unit ramp from 5 to 60 units was applied with a 400 ms hold and an explicit
+zero between steps. First motion appeared at `test 20 20`: the left wheel
+reached 16 rpm while the right wheel stayed at zero. A confirmation pass over
+16, 18, 20, 22 and -20 units was not repeatable: 20 units produced no motion
+in that pass, while -20 turned the left wheel to -17 rpm. The wheel also kept
+reporting -16 rpm briefly after the command returned to zero, which matches
+the known hall-speed measurement lag.
+
+This confirms the earlier WP0 note that a hand-held/bench rig is not a valid
+fixture: neither the breakaway threshold nor its sign symmetry is repeatable.
+No `db` value was changed; Kt and dead-zone compensation still require a
+locked wheel, a known lever arm and a force measurement.
+
+## Torque-scale identification without external tools
+
+The primary method is spin-up: with the body held and the wheels free, apply a
+short `test N 0` command and take the least-squares slope of the left-wheel rpm
+from the 200 Hz telemetry. With the per-wheel inertia `0.0078 kg m^2` from
+`config/robot.toml`, `M = I · alpha` and `units_per_nm = N / M`. The tool is
+`archive/python-tools/pico/one_wheel_spin_id.py`; it drives one wheel only,
+never arms the balance
+law, zeroes the command and latches `estop` at the end.
+
+Historical spin-up data in `docs/wp0-torque-identification.md` gives 170–186
+units/Nm from 99/120/150-unit steps, i.e. close to the compiled 200 units/Nm
+and a full-scale budget near 5.7 Nm. That does **not** support the 3.2x error
+hypothesis behind `tmax = 16`.
+
+The measurement was repeated on the current firmware with the body held and
+the left wheel free:
+
+| Command | alpha, rad/s² | M, Nm | units/Nm | Reading |
+|---:|---:|---:|---:|---|
+| 40 | 14.7 | 0.114 | 350 | Inflated by breakaway friction |
+| 60 | 31.9 | 0.249 | 241 | Usable |
+| 80 | 48.9 | 0.381 | 210 | Usable |
+| 100 | 34.0 | 0.265 | 377 | Invalid: torque-speed envelope |
+
+The 100-unit step is discarded because acceleration fell below the 80-unit
+step. The asymptotic 60/80-unit points give 210–241 units/Nm, consistent with
+the compiled 200 units/Nm and the earlier 170–186 measurement. No `tmax` change
+is warranted; the 3.2x hypothesis remains unsupported.
+
+A hanging mass is an optional cross-check when a marked container is available:
+
+1. Measure the wheel radius `r` with a tape measure. The 6.5 in tire is about
+   0.0825 m; measure the diameter instead if the tire is not at nominal size.
+2. Weigh a mass `m` on a kitchen scale. One litre of water is 1 kg.
+3. Support the robot so one wheel hangs free. Wind a string around the tire and
+   hang the mass. Choose the command sign that opposes the fall.
+4. With `clear`, increase `test N N` in small steps until the mass neither
+   falls nor rises, then record `N`. Repeat for both wheels and both winding
+   directions. Re-latch `estop` after every hold and never arm the balance law.
+5. The load torque is `m · g · r`, so `units_per_nm = N / (m · g · r)` and the
+   new budget is `tmax = 1000 / units_per_nm`.
+   `archive/python-tools/pico/kt_calc.py` does the arithmetic.
+
+A 1 kg mass on a 0.0825 m wheel gives 0.81 Nm. If the current 200 units/Nm is
+correct, the holding command is about 162 units; if the 3.2x torque hypothesis
+is correct, it is about 50 units. Friction and hall-speed lag make a single
+balance point noisy, so repeat with 0.5, 1 and 2 kg and use a line fit if time
+allows.
+
+## F103 debug bridge (2026-11-25)
+
+`dbg on` forwards the mainboard's periodic USART3 telemetry, but the console
+parser forwards only the first whitespace token of a `dbg` line: `dbg $GET
+ANG_MEAS` sends just `$GET`, confirmed by `ok dbg tx 4`. No parameter reply
+appeared within 2 s. The `ANG_MEAS`/`FILT` A/B therefore could not be performed
+without changing the console forwarding and confirming the GP13-to-PB11 wiring.
+No F103 parameter was changed and `dbg` was returned to `off`.
+
 ## Verification performed
 
 - `cargo fmt --all -- --check`, `cargo check --workspace --all-targets`,
@@ -118,6 +216,6 @@ Do all of this with the robot supported and the balance law disarmed.
   torque budget. Re-arm and re-check the guards after every change.
 - `ANG_MEAS = 1` may trade standstill accuracy for hall-sector torque ripple.
   It must be judged on the bench, not assumed.
-- No Kt measurement, dead-zone sweep or hardware latency measurement was done
-  in this change. The numeric values above remain hypotheses until step 2–5
-  produce artifacts.
+- No Kt measurement, dead-zone sweep or actuator-delay measurement was done in
+  this change. The numeric values above remain hypotheses until step 2–5
+  produce artifacts; only the command-reporting latency is measured above.
