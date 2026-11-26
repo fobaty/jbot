@@ -218,6 +218,53 @@ breakaway fixture.
 A/B was possible. The command-reporting rise with the current build and
 `FILT=19661` is 104 ms, consistent with the earlier 114 ms measurement.
 
+## Balance trials (2026-11-25)
+
+All runs used `hold_sweep` at `tmax=5.0` and ended with `estop`. The bench
+scripts live in `bench-temp/` and are gitignored: `probe-pico.py` checks for a
+live console plus fresh `T`-line feedback (and restores `stream 200`, which a
+Pico reboot clears), `run-stand.sh` arms from a supported quiet pose and waits
+for a release, `ready-notify.sh` raises a macOS cue at ARM.
+
+Fixture qualification was attempted four times and never passed:
+
+| Artifact | Result |
+|---|---|
+| `csv/jbot-hold-1795656650515.json` | 0/3: two 20 s release timeouts, then no quiet baseline. The operator never removed the support. |
+| `csv/jbot-hold-1795657060916.json` | 0/3: cue 3.1 dps with 0.001 m travel and 3 wheel-active samples (load not transferred), then cue 11.7 dps with `pre_cue=10.2` and a fall. |
+| `csv/jbot-hold-1795657869027.json` | 1/3: first cue 0.2 dps but 0 wheel-active samples (still hanging); second cue 13.8 dps with `pre_cue=11.6` from re-tying the rope between profiles. |
+| `csv/jbot-hold-1795657299836.json` | No arm: the mainboard was asleep (`mb=none`, `bat=0.00`) after idling. |
+
+A hand-held rope and a hand-removed stand are unsuitable release methods:
+their cues were 11.7, 13.1, 13.8 and 19.2 dps, matching the 13-32 dps range in
+`docs/release-fixture.md`. Cutting a single thread under a rigid anchor is the
+only method that produced a clean cue: **0.7 dps** (pre 0.7 / post 0.5) in
+`csv/jbot-hold-1795658605321.csv`.
+
+Two further runs were invalid before the control law could be judged:
+
+- `csv/jbot-hold-1795658209552.csv`: the robot was already falling at ARM
+  (`gy=-7.75 dps` and accelerating), so the 10.7 dps cue came from a falling
+  body, not from the release. The strict gates `--quiet-gy 3 --quiet-pitch 3`
+  were added after this.
+- `csv/jbot-hold-1795658556143.csv`: ARM was quiet (`gy=0.94 dps`) but removing
+  the stand injected 13.1 dps.
+
+The single valid control result is `csv/jbot-hold-1795658605321.json`:
+`pscale=0.30`, `slew=100`, `db=0.00`, clean cue 0.7 dps, **FAIL** with the robot
+down at 20.13 deg. Travel was only 0.011 m with 93 wheel-active samples and 72
+consecutive still samples while leaning, so the gate marked it
+`externally_supported=1`. The likely limiter is `slew=100` units/s: reaching
+50-70 units of torque takes about half a second, too slow for an inverted
+pendulum. A repeat at `slew=300` (`csv/jbot-hold-1795658697895.csv`) was spoiled
+by a 19.2 dps cue and carries no information. No conclusion about `pscale` or
+`dscale` is justified yet.
+
+Operationally, the Pico CDC stopped answering after host sessions closed and
+the USB device repeatedly disappeared; recovery required a physical USB
+re-plug. The mainboard also fell asleep whenever the motors stayed idle for a
+while and needed a 2-3 s power-button hold until the beep.
+
 ## Verification performed
 
 - `cargo fmt --all -- --check`, `cargo check --workspace --all-targets`,

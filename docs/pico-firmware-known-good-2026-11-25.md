@@ -102,11 +102,23 @@ by `*.uf2` / `*.bin` and are **not committed**; the hashes below are the record.
 | Main Pico | `0x4cc40d29dc728687` | `4c3263de…` (built from `c297027`) | CDC after ~1.2 s, `ok ping`, `stat` with `tmax=5.0 al=0 ar=0`, `ok dbg tx 13` confirms the full-line debug forwarding |
 | Spare Pico | `0x7cb6b2c5535e6820` | `659d9155…` | CDC after ~1.2 s, `ok ping`, full `stat` |
 
-The mainboard is powered on: `mb=ok`, `bat=36.37` V, `fb_ok=1`, `fb_drop=0`,
-`rx` increasing. The IMU is live (`imu=ok`). The drive stays safe with
-`estop=1`, `armed=0`, `L=0 R=0`, `al=0 ar=0`. The ST-Link is connected but idle.
-No balance trial was run. The F103 debug protocol is live: `dbg $GET ANG_MEAS`
-returns `ANG_MEAS=0` and `dbg $GET FILT` returns `FILT=19661`.
+The mainboard is powered on: `mb=ok`, `bat≈36` V, `fb_ok=1`, `rx` increasing.
+The IMU is live (`imu=ok`). The drive is held at `estop=1`, `armed=0`,
+`L=0 R=0`, `al=0 ar=0`. The ST-Link is connected but idle. The F103 debug
+protocol is live: `dbg $GET ANG_MEAS` returns `ANG_MEAS=0` and `dbg $GET FILT`
+returns `FILT=19661`.
+
+Balance trials were then run with the corrected `tmax=5.0`. The only valid
+control result (`csv/jbot-hold-1795658605321.json`) failed at `pscale=0.30`,
+`slew=100`; all other runs were spoiled by release disturbance, a missing
+release, arming during a fall, or mainboard sleep. No `pscale`/`dscale` gain
+was changed and no firmware was reflashed. The last driver run ended with
+`estop`, so the drive should be disarmed, but the Pico CDC disappeared again
+before the runtime tuning could be restored to `pscale=1.00`, `dscale=1.00`,
+`slew=3000`, `db=0.00`. Those four values remain at the last trial settings
+(`pscale=0.30`, `slew=300`) until the port is available again; they are
+runtime-only and reset on the next Pico reboot. See
+`docs/precision-control-2026-11-25.md`.
 
 After a USB re-enumeration the applied-command feedback was checked with
 `test 10 10` and `test 0 0`: `al`/`ar` followed both requests, with 114 ms
