@@ -120,7 +120,7 @@ impl Frame {
         }
     }
 
-    pub fn encode(&self, out: &mut [u8; WIRE_MAX]) -> Option<usize> {
+    pub fn encode(&self, out: &mut [u8]) -> Option<usize> {
         let len = self.payload_len as usize;
         if len > PAYLOAD_MAX {
             return None;
@@ -175,11 +175,14 @@ pub struct FeedbackData {
 
 impl FeedbackData {
     /// Narrow the hardened frame to the same `Feedback` the legacy parser
-    /// produces, so the control task needs no protocol-specific branch.
+    /// produces, so the control task needs no protocol-specific branch. The
+    /// hardened producer reports its raw input echo in `cmd1`/`cmd2`; it does
+    /// not measure the post-filter command, so these fields are only an
+    /// approximation of the applied wheel command in that mode.
     pub fn to_eferu(self) -> crate::eferu::Feedback {
         crate::eferu::Feedback {
-            cmd_steer: self.cmd1,
-            cmd_speed: self.cmd2,
+            applied_left_units: self.cmd1,
+            applied_right_units: self.cmd2,
             speed_right_rpm: self.speed_right_rpm,
             speed_left_rpm: self.speed_left_rpm,
             battery_voltage_centivolts: self.battery_cv,
@@ -292,6 +295,7 @@ fn cobs_decode(input: &[u8], out: &mut [u8]) -> Option<usize> {
 /// Streaming decoder with the same counters and resync behaviour as the STM32.
 pub struct FrameDecoder {
     encoded: [u8; WIRE_MAX],
+    decoded: [u8; WIRE_MAX],
     len: usize,
     discarding: bool,
     pub crc_errors: u32,
@@ -310,6 +314,7 @@ impl FrameDecoder {
     pub fn new() -> Self {
         Self {
             encoded: [0; WIRE_MAX],
+            decoded: [0; WIRE_MAX],
             len: 0,
             discarding: false,
             crc_errors: 0,
@@ -352,8 +357,7 @@ impl FrameDecoder {
     }
 
     fn finish(&mut self) -> Option<Frame> {
-        let mut decoded = [0u8; WIRE_MAX];
-        let n = match cobs_decode(&self.encoded[..self.len], &mut decoded) {
+        let n = match cobs_decode(&self.encoded[..self.len], &mut self.decoded) {
             Some(n) => n,
             None => {
                 self.crc_errors = self.crc_errors.wrapping_add(1);
@@ -364,6 +368,7 @@ impl FrameDecoder {
             self.crc_errors = self.crc_errors.wrapping_add(1);
             return None;
         }
+        let decoded = &self.decoded;
         let expected = u16::from_le_bytes([decoded[n - 2], decoded[n - 1]]);
         if crc16(&decoded[..n - 2]) != expected {
             self.crc_errors = self.crc_errors.wrapping_add(1);
@@ -456,7 +461,7 @@ impl CommandEncoder {
         now_us: u32,
         steer: i16,
         speed: i16,
-        out: &mut [u8; WIRE_MAX],
+        out: &mut [u8],
     ) -> Option<usize> {
         match self.mode {
             ProtocolMode::Legacy => {

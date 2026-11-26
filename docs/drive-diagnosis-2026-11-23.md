@@ -163,6 +163,25 @@ train moving, a mechanical reduction of backlash/friction, or an open-loop
 identification on a suspended body. No gain or guard change should be treated
 as a fix until the release fixture exists.
 
+## Addendum — 2026-11-25 Rust torque node trial
+
+A Rust MOE-enabled build based on `ed8bb1e` was flashed on the suspended stand
+with the right-wheel sign and DC-overcurrent parity fixes applied. After the
+board auto-armed on near-zero commands, the stand produced a loud knock/bang and
+gear chatter from both wheels — the same stick-slip described above, now excited
+by an actively held zero torque. No balance run was attempted. The board was
+rolled back to the pinned C build (`eferu-foc/eferu/build/hover.bin`,
+`VARIANT_USART`, 34248 bytes). The rollback was verified with `fb_ok=1`,
+`proto=LEGACY8`, and the C USART3 debug print `-- Motors enabled --` with
+`cmdL=0 cmdR=0`.
+
+The conclusion above is unchanged: the blocker is mechanical stick-slip plus
+actuator lag, not the FOC implementation. Do not enable MOE on the Rust torque
+node for routine bench work until the gear train and release fixture are fixed
+and HIL sign-off exists. The MOE-off Rust image stays torque-free; wheels feel
+harder to turn than with the pack disconnected because the closed MOSFET bridge
+rectifies through body diodes into the DC link.
+
 ## Artifacts
 
 - `csv/jbot-hold-*`: hold trials with release grading fields.

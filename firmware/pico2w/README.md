@@ -28,6 +28,16 @@ cd ../fw
 cargo check
 ```
 
+## Mainboard link mode
+
+Both boards boot in `LEGACY8`. The Pico console has `protocol` for querying
+and `protocol legacy`; `protocol hardened` is rejected. The STM32 console has
+`$SET PROTOCOL LEGACY|HARDENED`, reachable from the Pico with `dbg <text>`.
+Linking the hardened path in `main.rs` reproducibly broke USB CDC enumeration
+on the bench, so the flashed image keeps the legacy path and the native
+`jbot-console` exposes only the `LEGACY8` switch. See `../../docs/pico-bridge.md`
+section 4.1.1.
+
 ## Build and flash
 
 Put the board into BOOTSEL mode, then from `fw/`:

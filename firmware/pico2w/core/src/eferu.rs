@@ -5,13 +5,15 @@
 //!
 //! * command, Pico -> mainboard, 8 bytes: `start u16`, `steer i16`, `speed i16`,
 //!   `checksum u16`, little-endian, checksum is the XOR of `start ^ steer ^ speed`;
-//! * feedback, mainboard -> Pico, 18 bytes: `start`, `cmd1`, `cmd2`,
+//! * feedback, mainboard -> Pico, 18 bytes: `start`, `appliedL`, `appliedR`,
 //!   `speedR`, `speedL`, `batVoltage`, `boardTemp`, `cmdLed`, `checksum`, all
 //!   16-bit little-endian, checksum is the XOR of every preceding word.
 //!
-//! `cmd1`/`cmd2` in the feedback are the parsed *inputs* (`steer`, `speed`), not
-//! the per-wheel torque that the F103 finally applies. They are still useful as
-//! a link-acceptance measurement because the F103 echoes what it accepted.
+//! `appliedL`/`appliedR` are the per-wheel commands the F103 actually feeds to
+//! its controller: they are taken after the rate limiter, the input low-pass
+//! filter and the mixer, and are zero while the drive is disabled. Unlike the
+//! old input echo, they expose the drive's real state to the balance loop, so
+//! dead-zone and latency measurements no longer need a hall-speed proxy.
 //!
 //! Torque requests use `TRQ_MODE`: `+/-1000` maps to `+/-I_MOT_MAX`. The F103
 //! applies its own mixer unless `TANK_STEERING` is enabled, so a desired wheel
@@ -122,10 +124,12 @@ impl Command {
 /// Feedback frame received from the mainboard.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Feedback {
-    /// Steering input the mainboard accepted, `-1000..=1000`.
-    pub cmd_steer: i16,
-    /// Speed input the mainboard accepted, `-1000..=1000`.
-    pub cmd_speed: i16,
+    /// Applied left wheel command after rate limiting, filtering and mixing,
+    /// `-1000..=1000`; zero while the mainboard drive is disabled.
+    pub applied_left_units: i16,
+    /// Applied right wheel command after rate limiting, filtering and mixing,
+    /// `-1000..=1000`; zero while the mainboard drive is disabled.
+    pub applied_right_units: i16,
     /// Right wheel speed, rpm.
     pub speed_right_rpm: i16,
     /// Left wheel speed, rpm.
@@ -146,8 +150,8 @@ impl Feedback {
     /// XOR checksum over every preceding 16-bit word.
     pub fn checksum(self) -> u16 {
         START_FRAME
-            ^ (self.cmd_steer as u16)
-            ^ (self.cmd_speed as u16)
+            ^ (self.applied_left_units as u16)
+            ^ (self.applied_right_units as u16)
             ^ (self.speed_right_rpm as u16)
             ^ (self.speed_left_rpm as u16)
             ^ (self.battery_voltage_centivolts as u16)
@@ -160,8 +164,8 @@ impl Feedback {
         let mut frame = [0u8; FB_FRAME_LEN];
         let words = [
             START_FRAME,
-            self.cmd_steer as u16,
-            self.cmd_speed as u16,
+            self.applied_left_units as u16,
+            self.applied_right_units as u16,
             self.speed_right_rpm as u16,
             self.speed_left_rpm as u16,
             self.battery_voltage_centivolts as u16,
@@ -188,8 +192,8 @@ impl Feedback {
             return Err(FrameError::BadStart);
         }
         let feedback = Self {
-            cmd_steer: words[1] as i16,
-            cmd_speed: words[2] as i16,
+            applied_left_units: words[1] as i16,
+            applied_right_units: words[2] as i16,
             speed_right_rpm: words[3] as i16,
             speed_left_rpm: words[4] as i16,
             battery_voltage_centivolts: words[5] as i16,
@@ -376,8 +380,8 @@ mod tests {
             0x00, 0x00, 0xA9, 0xBA,
         ];
         let feedback = Feedback::decode(&frame).expect("valid captured frame");
-        assert_eq!(feedback.cmd_steer, 0);
-        assert_eq!(feedback.cmd_speed, 0);
+        assert_eq!(feedback.applied_left_units, 0);
+        assert_eq!(feedback.applied_right_units, 0);
         assert_eq!(feedback.speed_left_rpm, 0);
         assert_eq!(feedback.speed_right_rpm, 0);
         assert_eq!(feedback.led, 0);
@@ -388,8 +392,8 @@ mod tests {
     #[test]
     fn feedback_round_trips() {
         let feedback = Feedback {
-            cmd_steer: -12,
-            cmd_speed: 300,
+            applied_left_units: -12,
+            applied_right_units: 300,
             speed_right_rpm: -45,
             speed_left_rpm: 46,
             battery_voltage_centivolts: 4198,
@@ -404,6 +408,21 @@ mod tests {
     }
 
     #[test]
+    fn applied_commands_occupy_the_legacy_command_words() {
+        // The wire length and word positions are unchanged; only the meaning
+        // of words 1 and 2 moved from the input echo to the applied command.
+        let feedback = Feedback {
+            applied_left_units: 137,
+            applied_right_units: -92,
+            ..Feedback::default()
+        };
+        let frame = feedback.encode();
+        assert_eq!(i16::from_le_bytes([frame[2], frame[3]]), 137);
+        assert_eq!(i16::from_le_bytes([frame[4], frame[5]]), -92);
+        assert_eq!(Feedback::decode(&frame), Ok(feedback));
+    }
+
+    #[test]
     fn feedback_rejects_bad_start_and_length() {
         let frame = Feedback::default().encode();
         assert_eq!(Feedback::decode(&frame[..17]), Err(FrameError::BadLength));
@@ -415,7 +434,7 @@ mod tests {
     #[test]
     fn parser_resynchronises_after_garbage() {
         let feedback = Feedback {
-            cmd_speed: 123,
+            applied_right_units: 123,
             battery_voltage_centivolts: 4200,
             board_temp_decideg_c: 251,
             ..Feedback::default()

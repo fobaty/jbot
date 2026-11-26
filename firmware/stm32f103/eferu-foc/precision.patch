@@ -1,0 +1,157 @@
+diff --git a/Inc/config.h b/Inc/config.h
+index 8f697f4..fe7cb40 100644
+--- a/Inc/config.h
++++ b/Inc/config.h
+@@ -155,13 +155,16 @@
+ 
+ // Control selections
+ #define CTRL_TYP_SEL    FOC_CTRL        // [-] Control type selection: COM_CTRL, SIN_CTRL, FOC_CTRL (default)
+-#define CTRL_MOD_REQ    VLT_MODE        // [-] Control mode request: OPEN_MODE, VLT_MODE (default), SPD_MODE, TRQ_MODE. Note: SPD_MODE and TRQ_MODE are only available for CTRL_FOC!
++#define CTRL_MOD_REQ    TRQ_MODE        // [-] Control mode request: OPEN_MODE, VLT_MODE (default), SPD_MODE, TRQ_MODE. Note: SPD_MODE and TRQ_MODE are only available for CTRL_FOC!
++#define ANGLE_MEAS_ENA  0               // [-] 0 = hall-speed-integrated electrical angle, 1 = measured hall angle. Runtime-settable as ANG_MEAS over the debug UART.
+ #define DIAG_ENA        1               // [-] Motor Diagnostics enable flag: 0 = Disabled, 1 = Enabled (default)
+ 
+ // Limitation settings
+-#define I_MOT_MAX       15              // [A] Maximum single motor current limit
+-#define I_DC_MAX        17              // [A] Maximum stage2 DC Link current limit for Commutation and Sinusoidal types (This is the final current protection. Above this value, current chopping is applied. To avoid this make sure that I_DC_MAX = I_MOT_MAX + 2A)
+-#define N_MOT_MAX       1000            // [rpm] Maximum motor speed limit
++// JBOT bench profile: conservative limits for the original 10s2p 4.4 Ah pack.
++// Raise I_MOT_MAX towards 15 A only after measuring MOSFET and pack temperature.
++#define I_MOT_MAX       10              // [A] Maximum single motor current limit
++#define I_DC_MAX        12              // [A] Maximum stage2 DC Link current limit for Commutation and Sinusoidal types (This is the final current protection. Above this value, current chopping is applied. To avoid this make sure that I_DC_MAX = I_MOT_MAX + 2A)
++#define N_MOT_MAX       400             // [rpm] Maximum motor speed limit
+ 
+ // Field Weakening / Phase Advance
+ #define FIELD_WEAK_ENA  0               // [-] Field Weakening / Phase Advance enable flag: 0 = Disabled (default), 1 = Enabled
+@@ -347,6 +350,16 @@
+   // #define TANK_STEERING              // use for tank steering, each input controls each wheel 
+   // #define SUPPORT_BUTTONS_LEFT       // use left sensor board cable for button inputs.  Disable DEBUG_SERIAL_USART2!
+   // #define SUPPORT_BUTTONS_RIGHT      // use right sensor board cable for button inputs. Disable DEBUG_SERIAL_USART3!
++
++  // Faster input response for the balance link. The default 0.1 (tau ~47 ms)
++  // dominates the measured 190-230 ms command-to-wheel dead time; 0.3 gives
++  // tau ~14 ms while keeping the current loop damped.
++  #define FILTER 19661
++
++  // Bench debug serial on USART3 (right cable). USART2 carries the control
++  // link and feedback, so debug must not share it. The Pico bridges GP12/GP13
++  // to this port and forwards the text to its USB console.
++  #define DEBUG_SERIAL_USART3
+ #endif
+ // ######################## END OF VARIANT_USART SETTINGS #########################
+ 
+@@ -448,6 +461,10 @@
+     #define PRI_INPUT2            3, -1000, 0, 1000, 100  // TYPE, MIN, MID, MAX, DEADBAND. See INPUT FORMAT section
+   #endif
+ 
++  // JBOT bench profile: debug output on the LEFT cable (USART2, PA2/PA3).
++  // The right cable is occupied by the PWM input, so USART3 debug is not available.
++  #define DEBUG_SERIAL_USART2
++
+   #define FILTER                  6553    // 0.1f [-] fixdt(0,16,16) lower value == softer filter [0, 65535] = [0.0 - 1.0].
+   #define SPEED_COEFFICIENT       16384   // 1.0f [-] fixdt(1,16,14) higher value == stronger. [0, 65535] = [-2.0 - 2.0]. In this case 16384 = 1.0 * 2^14
+   #define STEER_COEFFICIENT       16384   // 1.0f [-] fixdt(1,16,14) higher value == stronger. [0, 65535] = [-2.0 - 2.0]. In this case 16384 = 1.0 * 2^14. If you do not want any steering, set it to 0.
+diff --git a/Src/comms.c b/Src/comms.c
+index 71aa770..c95effa 100644
+--- a/Src/comms.c
++++ b/Src/comms.c
+@@ -66,6 +66,7 @@ extern int16_t right_dc_curr;
+ extern int16_t dc_curr;
+ extern int16_t cmdL; 
+ extern int16_t cmdR; 
++extern uint16_t filtCoef;
+ 
+ 
+ 
+@@ -91,6 +92,7 @@ const parameter_entry params[] = {
+     {PARAMETER  ,"CTRL_TYP"           ,ADD_PARAM(rtP_Left.z_ctrlTypSel)      ,&rtP_Right.z_ctrlTypSel   ,0          ,CTRL_TYP_SEL      ,0      ,0      ,2      ,0               ,0    ,0     ,NULL               ,"Ctrl type 0:COM 1:SIN 2:FOC"},
+     {PARAMETER  ,"I_MOT_MAX"          ,ADD_PARAM(rtP_Left.i_max)             ,&rtP_Right.i_max          ,1          ,I_MOT_MAX         ,1      ,1      ,40     ,A2BIT_CONV      ,0    ,4     ,NULL               ,"Max phase current A"},
+     {PARAMETER  ,"N_MOT_MAX"          ,ADD_PARAM(rtP_Left.n_max)             ,&rtP_Right.n_max          ,2          ,N_MOT_MAX         ,1      ,10     ,2000   ,0               ,0    ,4     ,NULL               ,"Max motor RPM"},
++    {PARAMETER  ,"ANG_MEAS"           ,ADD_PARAM(rtP_Left.b_angleMeasEna)    ,&rtP_Right.b_angleMeasEna ,0          ,ANGLE_MEAS_ENA     ,0      ,0      ,1      ,0               ,0    ,0     ,NULL               ,"0 estimated / 1 measured hall angle"},
+     {PARAMETER  ,"FI_WEAK_ENA"        ,ADD_PARAM(rtP_Left.b_fieldWeakEna)    ,&rtP_Right.b_fieldWeakEna ,0          ,FIELD_WEAK_ENA    ,0      ,0      ,1      ,0               ,0    ,0     ,NULL               ,"Enable field weak"},
+   	{PARAMETER  ,"FI_WEAK_HI"         ,ADD_PARAM(rtP_Left.r_fieldWeakHi)     ,&rtP_Right.r_fieldWeakHi  ,0          ,FIELD_WEAK_HI     ,1      ,0      ,1500   ,0               ,0    ,4     ,Input_Lim_Init     ,"Field weak high RPM"},
+ 	  {PARAMETER  ,"FI_WEAK_LO"         ,ADD_PARAM(rtP_Left.r_fieldWeakLo)     ,&rtP_Right.r_fieldWeakLo  ,0          ,FIELD_WEAK_LO     ,1      ,0      ,1000   ,0               ,0    ,4     ,Input_Lim_Init     ,"Field weak low RPM"},
+@@ -138,6 +140,7 @@ const parameter_entry params[] = {
+     {VARIABLE   ,"SPDL"               ,ADD_PARAM(rtY_Left.n_mot)             ,NULL                      ,0          ,0                 ,0      ,0      ,0      ,0               ,0    ,0     ,NULL               ,"Left Motor Measured RPM"},
+     {VARIABLE   ,"SPDR"               ,ADD_PARAM(rtY_Right.n_mot)            ,NULL                      ,0          ,0                 ,0      ,0      ,0      ,0               ,0    ,0     ,NULL               ,"Right Motor Measured RPM"},
+     {VARIABLE   ,"RATE"               ,0       , NULL                        ,NULL                      ,0          ,RATE              ,0      ,0      ,0      ,0               ,0    ,4     ,NULL               ,"Rate *10"},
++    {VARIABLE   ,"FILT"               ,ADD_PARAM(filtCoef)                  ,NULL                      ,0          ,FILTER            ,0      ,0      ,65535  ,0               ,0    ,0     ,NULL               ,"Input low-pass coefficient fixdt(0,16,16)"},
+     {VARIABLE   ,"SPD_COEF"           ,0       , NULL                        ,NULL                      ,0          ,SPEED_COEFFICIENT ,0      ,0      ,0      ,0               ,10   ,14    ,NULL               ,"Speed Coefficient *10"},
+     {VARIABLE   ,"STR_COEF"           ,0       , NULL                        ,NULL                      ,0          ,STEER_COEFFICIENT ,0      ,0      ,0      ,0               ,10   ,14    ,NULL               ,"Steer Coefficient *10"},
+     {VARIABLE   ,"BATV"               ,ADD_PARAM(batVoltageCalib)            ,NULL                      ,0          ,0                 ,0      ,0      ,0      ,0               ,0    ,0     ,NULL               ,"Calibrated Battery voltage *100"},       
+diff --git a/Src/main.c b/Src/main.c
+index d4ab511..85aad3d 100644
+--- a/Src/main.c
++++ b/Src/main.c
+@@ -110,6 +110,7 @@ int16_t board_temp_deg_c;        // global variable for calibrated temperature i
+ int16_t left_dc_curr;            // global variable for Left DC Link current 
+ int16_t right_dc_curr;           // global variable for Right DC Link current
+ int16_t dc_curr;                 // global variable for Total DC Link current 
++uint16_t filtCoef = FILTER;      // input low-pass coefficient, runtime-settable over debug UART
+ int16_t cmdL;                    // global variable for Left Command 
+ int16_t cmdR;                    // global variable for Right Command 
+ 
+@@ -124,8 +125,8 @@ extern int16_t odom_r;
+ #if defined(FEEDBACK_SERIAL_USART2) || defined(FEEDBACK_SERIAL_USART3)
+ typedef struct{
+   uint16_t  start;
+-  int16_t   cmd1;
+-  int16_t   cmd2;
++  int16_t   appliedL;       // Wheel command actually applied after rate limit, filter and mixer
++  int16_t   appliedR;       // Wheel command actually applied after rate limit, filter and mixer
+   int16_t   speedR_meas;
+   int16_t   speedL_meas;
+ #ifdef ENABLE_ODOMETRY
+@@ -328,8 +329,8 @@ int main(void) {
+       // ####### LOW-PASS FILTER #######
+       rateLimiter16(input1[inIdx].cmd, rate, &steerRateFixdt);
+       rateLimiter16(input2[inIdx].cmd, rate, &speedRateFixdt);
+-      filtLowPass32(steerRateFixdt >> 4, FILTER, &steerFixdt);
+-      filtLowPass32(speedRateFixdt >> 4, FILTER, &speedFixdt);
++      filtLowPass32(steerRateFixdt >> 4, filtCoef, &steerFixdt);
++      filtLowPass32(speedRateFixdt >> 4, filtCoef, &speedFixdt);
+       steer = (int16_t)(steerFixdt >> 16);  // convert fixed-point to integer
+       speed = (int16_t)(speedFixdt >> 16);  // convert fixed-point to integer
+ 
+@@ -521,8 +522,8 @@ int main(void) {
+     #if defined(FEEDBACK_SERIAL_USART2) || defined(FEEDBACK_SERIAL_USART3)
+       if (main_loop_counter % 2 == 0) {    // Send data periodically every 10 ms
+         Feedback.start	        = (uint16_t)SERIAL_START_FRAME;
+-        Feedback.cmd1           = (int16_t)input1[inIdx].cmd;
+-        Feedback.cmd2           = (int16_t)input2[inIdx].cmd;
++        Feedback.appliedL       = enable ? (int16_t)cmdL : 0;
++        Feedback.appliedR       = enable ? (int16_t)cmdR : 0;
+         Feedback.speedR_meas	  = (int16_t)rtY_Right.n_mot;
+         Feedback.speedL_meas	  = (int16_t)rtY_Left.n_mot;
+ #ifdef ENABLE_ODOMETRY
+@@ -535,7 +536,7 @@ int main(void) {
+         #if defined(FEEDBACK_SERIAL_USART2)
+           if(__HAL_DMA_GET_COUNTER(huart2.hdmatx) == 0) {
+             Feedback.cmdLed     = (uint16_t)sideboard_leds_L;
+-            Feedback.checksum   = (uint16_t)(Feedback.start ^ Feedback.cmd1 ^ Feedback.cmd2 ^ Feedback.speedR_meas ^ Feedback.speedL_meas
++            Feedback.checksum   = (uint16_t)(Feedback.start ^ Feedback.appliedL ^ Feedback.appliedR ^ Feedback.speedR_meas ^ Feedback.speedL_meas
+ #ifdef ENABLE_ODOMETRY
+                                            ^ Feedback.wheelR_cnt ^ Feedback.wheelL_cnt
+ #endif
+@@ -547,7 +548,7 @@ int main(void) {
+         #if defined(FEEDBACK_SERIAL_USART3)
+           if(__HAL_DMA_GET_COUNTER(huart3.hdmatx) == 0) {
+             Feedback.cmdLed     = (uint16_t)sideboard_leds_R;
+-            Feedback.checksum   = (uint16_t)(Feedback.start ^ Feedback.cmd1 ^ Feedback.cmd2 ^ Feedback.speedR_meas ^ Feedback.speedL_meas
++            Feedback.checksum   = (uint16_t)(Feedback.start ^ Feedback.appliedL ^ Feedback.appliedR ^ Feedback.speedR_meas ^ Feedback.speedL_meas
+ #ifdef ENABLE_ODOMETRY
+                                            ^ Feedback.wheelR_cnt ^ Feedback.wheelL_cnt
+ #endif
+diff --git a/Src/util.c b/Src/util.c
+index b147301..b95416c 100644
+--- a/Src/util.c
++++ b/Src/util.c
+@@ -231,7 +231,7 @@ static uint8_t standstillAcv = 0;
+ 
+ void BLDC_Init(void) {
+   /* Set BLDC controller parameters */ 
+-  rtP_Left.b_angleMeasEna       = 0;            // Motor angle input: 0 = estimated angle, 1 = measured angle (e.g. if encoder is available)
++  rtP_Left.b_angleMeasEna       = ANGLE_MEAS_ENA; // Motor angle input: 0 = estimated angle, 1 = measured hall angle
+   rtP_Left.z_selPhaCurMeasABC   = 0;            // Left motor measured current phases {Green, Blue} = {iA, iB} -> do NOT change
+   rtP_Left.z_ctrlTypSel         = CTRL_TYP_SEL;
+   rtP_Left.b_diagEna            = DIAG_ENA;

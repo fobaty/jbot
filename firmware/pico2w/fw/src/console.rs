@@ -258,7 +258,7 @@ async fn handle_command(class: &mut Console, flash: &mut Store, line: &[u8]) -> 
             reply(
                 class,
                 format_args!(
-                    "ok help: ping | stat | stream <hz> | speed <mps> | steer <deg/s> | trim <deg> | zero | level | pose [back|face|home] [deg] | mount <name> | home [deg] | vmax [deg/s] | pscale [0..2] | dscale [0..2] | slew [units/s] | ff [on|off] | db [Nm|off] | cal [left right] | cal l|r <units> | cal off | dither <units|off> | predict <ms|off> | arm | disarm | fall | test <units> [units] | reinit | estop | clear | save | forget | stats reset | reboot"
+                    "ok help: ping | stat | stream <hz> | speed <mps> | steer <deg/s> | trim <deg> | zero | level | pose [back|face|home] [deg] | mount <name> | home [deg] | vmax [deg/s] | tmax [Nm|off] | pscale [0..2] | dscale [0..2] | slew [units/s] | ff [on|off] | db [Nm|off] | cal [left right] | cal l|r <units> | cal off | dither <units|off> | predict <ms|off> | arm | disarm | fall | test <units> [units] | reinit | estop | clear | save | forget | stats reset | reboot"
                 ),
             )
             .await;
@@ -278,7 +278,7 @@ async fn handle_command(class: &mut Console, flash: &mut Store, line: &[u8]) -> 
             reply(
                 class,
                 format_args!(
-                    "stat up={:.1} loop={} stream={} trim={:.2} estop={} steps={} imu={} imu_err={} imu_code={} fb={} fb_drop={} rx={} fb_ok={} stop={} zero={:.2} zroll={:.2} level={:.2} mount={} nvm={} kpnm={:.1} kdnm={:.1} kpos={:.2} kv={:.2} ki={:.3} pdem={:.1} ptrm={:.1} armed={} zcapt={} lcapt={} home={:.2} fall={} vmax={:.2} pscale={:.2} dscale={:.2} slew={:.0} db={:.2} cbl={:.0} cbr={:.0} dth={:.0}",
+                    "stat up={:.1} loop={} stream={} trim={:.2} estop={} steps={} imu={} imu_err={} imu_code={} fb={} fb_drop={} rx={} fb_ok={} stop={} zero={:.2} zroll={:.2} level={:.2} mount={} nvm={} kpnm={:.1} kdnm={:.1} kpos={:.2} kv={:.2} ki={:.3} pdem={:.1} ptrm={:.1} armed={} zcapt={} lcapt={} home={:.2} fall={} vmax={:.2} pscale={:.2} dscale={:.2} slew={:.0} db={:.2} cbl={:.0} cbr={:.0} dth={:.0} tmax={:.1} al={} ar={}",
                     uptime_s,
                     state::loop_hz(),
                     state::stream_hz(),
@@ -321,6 +321,9 @@ async fn handle_command(class: &mut Console, flash: &mut Store, line: &[u8]) -> 
                     state::cal_left_units(),
                     state::cal_right_units(),
                     state::dither_units(),
+                    state::max_torque_nm(),
+                    state::feedback_applied().0,
+                    state::feedback_applied().1,
                 ),
             )
             .await;
@@ -636,28 +639,40 @@ async fn handle_command(class: &mut Console, flash: &mut Store, line: &[u8]) -> 
                 },
             }
         }
-        "protocol" => {
-            // Control-link frame format. Runtime-only, matching the STM32
-            // console switch, so a bench session cannot change the boot link.
+        "tmax" => {
+            // Common-mode torque budget in Nm. It drives the Nm-to-unit
+            // conversion, the torque limit and the derived guard thresholds
+            // at once. Runtime-only: the compiled plant value is restored at
+            // boot so a bench measurement cannot leak into a fresh session.
             match argument {
                 None => {
-                    reply(
-                        class,
-                        format_args!("ok protocol {}", state::protocol_mode().label()),
-                    )
-                    .await;
+                    reply(class, format_args!("ok tmax {:.1}", state::max_torque_nm())).await;
                 }
-                Some("legacy") => {
-                    state::set_protocol_mode(jbot_pico_core::hardened::ProtocolMode::Legacy);
-                    reply(class, format_args!("ok protocol LEGACY8")).await;
+                Some("off") => {
+                    let applied = state::set_max_torque_nm(f32::NAN);
+                    reply(class, format_args!("ok tmax {applied:.1}")).await;
                 }
-                Some("hardened") => {
-                    state::set_protocol_mode(jbot_pico_core::hardened::ProtocolMode::Hardened);
-                    reply(class, format_args!("ok protocol HARDENED")).await;
-                }
-                _ => {
-                    reply(class, format_args!("err protocol needs legacy|hardened")).await;
-                }
+                Some(value) => match parse_f32(value) {
+                    Some(nm)
+                        if nm.is_finite()
+                            && (state::MIN_MAX_TORQUE_NM..=state::MAX_MAX_TORQUE_NM)
+                                .contains(&nm) =>
+                    {
+                        let applied = state::set_max_torque_nm(nm);
+                        reply(class, format_args!("ok tmax {applied:.1}")).await;
+                    }
+                    _ => {
+                        reply(
+                            class,
+                            format_args!(
+                                "err tmax needs {:.0}..={:.0} Nm or off",
+                                state::MIN_MAX_TORQUE_NM,
+                                state::MAX_MAX_TORQUE_NM
+                            ),
+                        )
+                        .await;
+                    }
+                },
             }
         }
         "pscale" => {
@@ -1074,7 +1089,7 @@ fn format_telemetry<'a>(buffer: &'a mut [u8], telemetry: &Telemetry) -> &'a [u8]
     format(
         buffer,
         format_args!(
-            "T step={} loop={} imu={} cal={} pitch={:.2} roll={:.2} hdg={:.2} gy={:.2} gx={:.2} gz={:.2} err=0x{:02x} mb={} L={} R={} bat={:.2} tmp={:.1} age={} estop={} vset={:.2} wset={:.2} mnt={} zof={:.2} lvl={:.2} zro={:.2} arm={} tsl={:.0} tsr={:.0} trq={:.0} ref={:.2} dem={:.2} trm={:.2} x={:.3} mode={} gtlt={:.2} opm={} grace={:.2} ff={:.0} cbl={:.0} cbr={:.0} cwl={:.1} cwr={:.1} dth={:.0} dthv={:.1}",
+            "T step={} loop={} imu={} cal={} pitch={:.2} roll={:.2} hdg={:.2} gy={:.2} gx={:.2} gz={:.2} err=0x{:02x} mb={} L={} R={} bat={:.2} tmp={:.1} age={} estop={} vset={:.2} wset={:.2} mnt={} zof={:.2} lvl={:.2} zro={:.2} arm={} tsl={:.0} tsr={:.0} trq={:.0} ref={:.2} dem={:.2} trm={:.2} x={:.3} mode={} gtlt={:.2} opm={} grace={:.2} ff={:.0} cbl={:.0} cbr={:.0} cwl={:.1} cwr={:.1} dth={:.0} dthv={:.1} al={} ar={}",
             telemetry.control_steps,
             telemetry.loop_hz,
             if telemetry.imu_fresh { "ok" } else { "stale" },
@@ -1118,6 +1133,8 @@ fn format_telemetry<'a>(buffer: &'a mut [u8], telemetry: &Telemetry) -> &'a [u8]
             telemetry.cmd_right_units,
             telemetry.dither_units,
             telemetry.dither_applied_units,
+            telemetry.applied_left_units,
+            telemetry.applied_right_units,
         ),
     )
 }

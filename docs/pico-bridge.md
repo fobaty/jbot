@@ -106,6 +106,35 @@ Notes:
 
 Golden byte vectors for both directions belong in the test suite.
 
+#### 4.1.1. Hardened mainboard contract (optional)
+
+The active Rust torque node also accepts a framed contract, byte-for-byte
+mirrored by `jbot_pico_core::hardened`. Both boards boot in `LEGACY8`, so the
+stock link keeps working without any console action.
+
+**Status:** the codec is implemented and host-tested, but the Pico image
+currently links only the legacy command/feedback path. Every attempt to link
+the hardened path in `main.rs` reproducibly prevented USB CDC enumeration on
+the bench, so the Pico console rejects `protocol hardened`. Keep both boards in
+`LEGACY8` until that boot regression is isolated. The F103 accepts either mode.
+
+| Direction | Frame | Layout | Rate |
+|---|---|---|---|
+| Pico → mainboard | 16-byte decoded frame + COBS + `0x00` | version (2), type (1 = command), flags, seq u16, timestamp_us u32, payload_len (4), steer i16, speed i16, CRC-16/CCITT-FALSE over header + payload | 200 Hz |
+| Mainboard → Pico | 37-byte decoded frame + COBS + `0x00` | version (2), type (2 = feedback), flags, seq u16 (echo of the last accepted command), timestamp_us u32, payload_len (25), the seven legacy fields, err_code, hall L/R, dc L/R, duty L/R, CRC-16 | 100 Hz |
+
+The first seven feedback fields are identical to the legacy frame, so the
+control task consumes one `Feedback` type in either mode. `seq` must increase;
+gaps are diagnostics, duplicates and older frames are rejected. Both MCUs run
+free-running clocks, so the sender timestamp is diagnostic only: command age is
+measured from local receive time and expires after 100 ms on the mainboard.
+Switching the pair with `protocol hardened` on the Pico and `$SET PROTOCOL
+HARDENED` on the STM32 debug console is not available in the flashed image;
+`protocol hardened` returns an explicit error. A one-sided switch would reject
+commands and drop torque, so the native `jbot-console` exposes only the
+`LEGACY8` switch in its LINK panel. `stat proto` reports `LEGACY8` and
+`stat fb_crc` stays at zero in this image.
+
 ### 4.2. Radio link (CRSF)
 
 - CRSF frames at 420 kbaud on UART1: address, length, type, payload, CRC-8/DVB-S2.
@@ -236,7 +265,11 @@ answers each command with one `ok`/`err`/`stat` line and, while streaming, sends
 |---|---|---|
 | `help` / `?` | `ok help: ...` | Command list |
 | `ping` | `ok ping` | Liveness check |
-| `stat` | `stat up=... loop=... stream=... trim=... estop=... steps=... imu=... imu_err=... imu_code=... fb=... fb_drop=... rx=... fb_ok=... stop=... zero=... zroll=... level=... mount=... nvm=... kpnm=... kdnm=... kpos=... kv=... ki=... pdem=... ptrm=... armed=... zcapt=... lcapt=... home=... fall=... vmax=... pscale=...` | Counters, settings, and the SI gains derived from the plant (gains shown are the effective law, i.e. after `pscale`) |
+| `stat` | `stat up=... loop=... stream=... trim=... estop=... steps=... imu=... imu_err=... imu_code=... fb=... fb_drop=... fb_crc=... rx=... fb_ok=... proto=... stop=... zero=... zroll=... level=... mount=... nvm=... kpnm=... kdnm=... kpos=... kv=... ki=... pdem=... ptrm=... armed=... zcapt=... lcapt=... home=... fall=... vmax=... pscale=...` | Counters, settings, and the SI gains derived from the plant (gains shown are the effective law, i.e. after `pscale`) |
+| `protocol` | `ok protocol LEGACY8` | Query the mainboard link contract. Runtime-only; both boards boot in `LEGACY8` |
+| `protocol legacy` | `ok protocol LEGACY8` | Keep the legacy contract |
+| `protocol hardened` | `err protocol hardened unavailable in this image` | Rejected: the flashed Pico image links only the legacy path; see §4.1.1 |
+| `dbg` / `dbg on` / `dbg off` | `ok dbg ...` | Bench-only PIO UART bridge to the STM32 USART3 console on GP12/GP13. The entire remainder of the line is forwarded verbatim, e.g. `dbg $SET PROTOCOL HARDENED` |
 | `pscale [0..2]` | `ok pscale <value>` / `err pscale needs ...` | Query/set the bench power scale: a runtime multiplier on the angular-output gains (`kpnm`/`kdnm` and the yaw differential). `1.0` = compiled tuning, `0` = law inert. The fall guards, the torque budget and the trim do not scale. Runtime-only; resets to `1.0` at boot |
 | `stream` | `ok stream <hz>` | Query the current rate |
 | `stream <hz>` | `ok stream <hz>` | `0` disables the stream, clamped to `0..=200` |
@@ -277,6 +310,7 @@ Rejected input gets `err <reason>`: `err unknown command: <text>`,
 `err arm refused: capture zero first`, `err arm refused: capture level first`,
 `err home needs degrees in -5..5`,
 `err pscale needs 0..=2.0 (1.0 = compiled tuning, 0 = law inert)`,
+`err protocol needs legacy|hardened`, `err protocol hardened unavailable in this image`, `err dbg needs on, off or text`,
 `err zero needs a fresh IMU sample`, `err level needs a fresh IMU sample`,
 `err use: stats reset`, `err test needs units in -300..300`,
 `err test refused: e-stop latched`,
@@ -289,10 +323,12 @@ Rejected input gets `err <reason>`: `err unknown command: <text>`,
 latch state, `steps` the control ticks since boot, `imu`/`imu_err` the IMU
 sample and error counters, `imu_code` the last IMU error code,
 `fb`/`fb_drop` the valid feedback frames and the bytes discarded while
-resynchronising the parser, `rx` the raw bytes received on the link (so a
+resynchronising the parser, `fb_crc` the CRC/framing failures of the hardened
+feedback decoder, `rx` the raw bytes received on the link (so a
 silent wire and a framing mismatch can be told apart: `rx=0` means nothing
 arrives, `rx` growing with `fb=0` means the bytes are not valid frames), `fb_ok`
-whether the control loop currently sees fresh wheel-speed feedback, `stop` the
+whether the control loop currently sees fresh wheel-speed feedback, `proto`
+the active mainboard contract (`LEGACY8` or `HARDENED`), `stop` the
 last supervisor latch reason (`none`, `stale_feedback`, `lying`, `pose_error`,
 `range`, `speed`; cleared by a new `arm` or by `clear`), `zero`
 the applied pitch zero offset in degrees,

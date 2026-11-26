@@ -4,14 +4,13 @@
 //! lock-free surface they share. Atomics keep the control loop free of locks
 //! and let the USB console read the same values without disturbing it.
 
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
 
 use jbot_pico_core::calibration::MAX_BREAKAWAY_UNITS;
 use jbot_pico_core::control::{StopReason, Tuning, MAX_DSCALE, MAX_PSCALE};
-use jbot_pico_core::hardened::ProtocolMode;
 use jbot_pico_core::mount::Mount;
 use jbot_pico_core::plant::PlantParams;
 use jbot_pico_core::spin::SpinPair;
@@ -30,7 +29,9 @@ pub const PITCH_DAMPING: f32 = 1.6;
 /// the firmware carries a gain table. Replacing [`PlantParams::NOMINAL`] with
 /// a bench-identified plant changes the whole law coherently.
 pub fn tuning() -> Tuning {
-    Tuning::from_plant(&PlantParams::NOMINAL, PITCH_MARGIN, PITCH_DAMPING)
+    let mut plant = PlantParams::NOMINAL;
+    plant.max_torque_nm = max_torque_nm();
+    Tuning::from_plant(&plant, PITCH_MARGIN, PITCH_DAMPING)
 }
 
 /// Nominal control loop rate, in hertz.
@@ -41,18 +42,6 @@ pub const MAX_STREAM_HZ: u32 = CONTROL_HZ;
 const DEFAULT_STREAM_HZ: u32 = 1;
 /// Whether the STM32 debug bridge is forwarded to the USB console. Bench only.
 static DEBUG_BRIDGE: AtomicBool = AtomicBool::new(false);
-
-/// Control-link wire contract. Runtime-only: a bench switch must not leak into
-/// the next power-up, and the STM32 side defaults to the same legacy frame.
-static PROTOCOL_MODE: AtomicU8 = AtomicU8::new(ProtocolMode::DEFAULT.as_u8());
-
-pub fn set_protocol_mode(mode: ProtocolMode) {
-    PROTOCOL_MODE.store(mode.as_u8(), Ordering::Relaxed);
-}
-
-pub fn protocol_mode() -> ProtocolMode {
-    ProtocolMode::from_u8(PROTOCOL_MODE.load(Ordering::Relaxed)).unwrap_or(ProtocolMode::DEFAULT)
-}
 
 /// Enable or disable forwarding of the debug UART to the USB console.
 pub fn set_debug_bridge(enabled: bool) {
@@ -155,6 +144,10 @@ pub struct Telemetry {
     pub dither_units: f32,
     /// Dither actually added on this tick, command units.
     pub dither_applied_units: f32,
+    /// Per-wheel command the mainboard reports applying, command units.
+    pub applied_left_units: i16,
+    /// Per-wheel command the mainboard reports applying, command units.
+    pub applied_right_units: i16,
 }
 
 /// Balance mode values carried by [`Telemetry::balance_mode`].
@@ -266,6 +259,15 @@ static DSCALE_BITS: AtomicU32 = AtomicU32::new(1.0f32.to_bits());
 static DEADBAND_NM_BITS: AtomicU32 = AtomicU32::new(0);
 /// Largest dead-zone compensation the console accepts, newton-metres.
 pub const MAX_DEADBAND_NM: f32 = 0.6;
+/// Common-mode torque budget in Nm used to convert the control law into
+/// EFeru command units. `PlantParams::NOMINAL` is only a placeholder until
+/// the wheel torque constant is measured on the bench; the console can
+/// override it at runtime with `tmax`.
+static MAX_TORQUE_NM_BITS: AtomicU32 = AtomicU32::new(PlantParams::NOMINAL.max_torque_nm.to_bits());
+/// Smallest torque budget the console accepts, Nm.
+pub const MIN_MAX_TORQUE_NM: f32 = 1.0;
+/// Largest torque budget the console accepts, Nm.
+pub const MAX_MAX_TORQUE_NM: f32 = 30.0;
 /// Per-wheel breakaway calibration, command units, stored as `f32` bits.
 /// Runtime-only: zero at boot, like [`PSCALE_BITS`] and [`DEADBAND_NM_BITS`].
 static CAL_LEFT_BITS: AtomicU32 = AtomicU32::new(0);
@@ -273,6 +275,9 @@ static CAL_RIGHT_BITS: AtomicU32 = AtomicU32::new(0);
 /// Calibrated wheel torque sent on the latest control tick, `f32` bits.
 static CMD_LEFT_BITS: AtomicU32 = AtomicU32::new(0);
 static CMD_RIGHT_BITS: AtomicU32 = AtomicU32::new(0);
+/// Per-wheel command the mainboard last reported applying, as `f32` bits.
+static FB_APPLIED_L_BITS: AtomicU32 = AtomicU32::new(0);
+static FB_APPLIED_R_BITS: AtomicU32 = AtomicU32::new(0);
 /// Dither amplitude, command units, `f32` bits. Runtime-only and zero at boot.
 static DITHER_BITS: AtomicU32 = AtomicU32::new(0);
 /// Largest dither amplitude the console accepts, command units. Roughly the
@@ -311,8 +316,6 @@ pub static CONTROL_STEPS: AtomicU32 = AtomicU32::new(0);
 pub static FALL_EVENTS: AtomicU32 = AtomicU32::new(0);
 /// Bytes discarded while resynchronising the feedback parser.
 pub static FB_DISCARDED: AtomicU32 = AtomicU32::new(0);
-/// CRC or framing failures of the hardened feedback decoder.
-pub static FB_CRC_ERRORS: AtomicU32 = AtomicU32::new(0);
 /// Raw bytes received from the mainboard link, including bytes that never
 /// become a frame. Distinguishes a dead wire from a framing mismatch.
 pub static LINK_BYTES: AtomicU32 = AtomicU32::new(0);
@@ -461,6 +464,38 @@ pub fn set_deadband_nm(value: f32) -> f32 {
         0.0
     };
     DEADBAND_NM_BITS.store(clamped.to_bits(), Ordering::Relaxed);
+    clamped
+}
+
+/// Applied per-wheel command last reported by the mainboard, command units.
+pub fn feedback_applied() -> (i16, i16) {
+    (
+        f32::from_bits(FB_APPLIED_L_BITS.load(Ordering::Relaxed)) as i16,
+        f32::from_bits(FB_APPLIED_R_BITS.load(Ordering::Relaxed)) as i16,
+    )
+}
+
+/// Publish the applied command decoded from the latest mainboard frame.
+pub fn set_feedback_applied(left: i16, right: i16) {
+    FB_APPLIED_L_BITS.store(f32::from(left).to_bits(), Ordering::Relaxed);
+    FB_APPLIED_R_BITS.store(f32::from(right).to_bits(), Ordering::Relaxed);
+}
+
+/// Torque budget in Nm that the control law currently assumes.
+pub fn max_torque_nm() -> f32 {
+    f32::from_bits(MAX_TORQUE_NM_BITS.load(Ordering::Relaxed))
+}
+
+/// Set the torque budget, clamped to `MIN_MAX_TORQUE_NM..=MAX_MAX_TORQUE_NM`.
+/// A non-finite value restores the compiled plant budget. Returns the stored
+/// value so the caller can report exactly what the law will use.
+pub fn set_max_torque_nm(value: f32) -> f32 {
+    let clamped = if value.is_finite() {
+        value.clamp(MIN_MAX_TORQUE_NM, MAX_MAX_TORQUE_NM)
+    } else {
+        PlantParams::NOMINAL.max_torque_nm
+    };
+    MAX_TORQUE_NM_BITS.store(clamped.to_bits(), Ordering::Relaxed);
     clamped
 }
 
@@ -812,7 +847,6 @@ pub fn reset_counters() {
     IMU_LAST_ERROR.store(0, Ordering::Relaxed);
     FB_FRAMES.store(0, Ordering::Relaxed);
     FB_DISCARDED.store(0, Ordering::Relaxed);
-    FB_CRC_ERRORS.store(0, Ordering::Relaxed);
     LINK_BYTES.store(0, Ordering::Relaxed);
     STOP_REASON.store(0, Ordering::Relaxed);
     FALL_EVENTS.store(0, Ordering::Relaxed);

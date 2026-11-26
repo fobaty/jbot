@@ -198,3 +198,6 @@ opencode.jsonc
 continue/
 
 # Bench session recordings live in logs/ and csv/ (see archive/python-tools/bench_paths.py)
+
+# Visible scratch area for one-off build and rollback artifacts; never committed
+bench-temp/

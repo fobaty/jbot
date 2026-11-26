@@ -1,10 +1,36 @@
 # STM32F103 mainboard firmware
 
-The active firmware for the STM32F103RCT6 torque node is the Rust workspace in
-`rust/`. The C tree in `eferu-foc/` is a pinned upstream reference with the JBOT
-patches. It stays in the repository because it documents the hardware and is a
-known-good hoverboard build, **not** because it is the firmware for this
-self-balancing robot.
+The repository targets the Rust workspace in `rust/` as the eventual torque
+node. The C tree in `eferu-foc/` is a pinned upstream reference with the JBOT
+patches and documents the hardware. It also serves as the rollback artifact.
+
+**Current bench state (2026-11-25): the board is flashed with the pinned C
+build from `eferu-foc/`, not Rust.** The Rust MOE build is not production-ready:
+enabling MOE produced a strong knock/bang from both wheel gear trains on the
+suspended stand, so it was rolled back. Keep the C image on the board until the
+drive stick-slip blocker is resolved and HIL sign-off exists.
+
+## Current bench state — 2026-11-25 rollback to C
+
+- The Rust torque node is kept for further work, but its `moe` feature must not
+  be flashed for normal bench operation. With MOE low it is torque-free; wheels
+  still feel harder to turn than with the pack disconnected because the closed
+  MOSFET bridge rectifies through body diodes into the DC link.
+- A MOE build based on commit `ed8bb1e` (right-wheel sign and DC-overcurrent
+  parity fixes) was flashed briefly on the suspended stand. After auto-arming
+  on near-zero commands it excited the known gear-train stick-slip: a loud
+  knock/bang and gear chatter from both wheels. No balance run was attempted.
+- Rolled back to `eferu-foc/eferu/build/hover.bin` (`VARIANT_USART`, `TRQ_MODE`,
+  `FILTER=19661`, 34248 bytes), written and verified with OpenOCD. Do not use
+  `make flash` or `st-flash --connect-under-reset` on this wiring.
+- Verified after rollback: Pico `stat` reports `fb_ok=1`, `proto=LEGACY8`,
+  `estop=0`, `armed=0`; the STM32 USART3 debug bridge prints
+  `-- Motors enabled --` and `in1:0 in2:0 cmdL:0 cmdR:0 ...`.
+- Root cause is the mechanical/control interaction already documented in
+  `../../docs/drive-diagnosis-2026-11-23.md` and
+  `../../docs/latency-and-slew-2026-11-23.md`: breakaway around 34-69 units,
+  command-to-wheel lag 115-230 ms, and a dead-zone inverse that behaves like a
+  relay. The Rust sign/DC fixes do not remove it.
 
 ## Layout
 

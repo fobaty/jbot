@@ -1022,6 +1022,22 @@ mod tests {
     }
 
     #[test]
+    fn torque_budget_sets_the_unit_conversion_inversely() {
+        // A wrong torque constant scales every command but leaves the Nm-domain
+        // gains and the plant geometry unchanged. That is why `tmax` is the
+        // single knob that corrects the whole law after a Kt measurement.
+        let mut plant = PlantParams::NOMINAL;
+        let nominal = Tuning::from_plant(&plant, 4.0, 1.6);
+        plant.max_torque_nm = 16.0;
+        let measured = Tuning::from_plant(&plant, 4.0, 1.6);
+        assert!((nominal.units_per_nm / measured.units_per_nm - 3.2).abs() < 1e-4);
+        assert!((nominal.pitch_kp_nm_per_rad - measured.pitch_kp_nm_per_rad).abs() < 1e-6);
+        assert!((nominal.pitch_kd_nm_per_rad_s - measured.pitch_kd_nm_per_rad_s).abs() < 1e-6);
+        // The lift guard follows the budget, so it must be re-checked after tmax.
+        assert!(measured.lift_limit_rad() > nominal.lift_limit_rad());
+    }
+
+    #[test]
     fn scaled_by_preserves_shape_and_fail_safe() {
         let base = tuning();
         let half = base.scaled_by(0.5);

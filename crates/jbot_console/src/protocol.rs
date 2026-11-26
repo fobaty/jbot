@@ -157,8 +157,12 @@ pub struct Stat {
     pub fb_frames: u32,
     /// Bytes discarded while resynchronising the feedback parser.
     pub fb_discarded: u32,
+    /// CRC or framing failures of the hardened feedback decoder.
+    pub fb_crc_errors: Option<u32>,
     /// Raw bytes received on the mainboard link.
     pub link_bytes: Option<u32>,
+    /// Active mainboard link contract: `LEGACY8` or `HARDENED`.
+    pub link_protocol: Option<String>,
     /// Whether the control loop currently has fresh wheel-speed feedback.
     pub link_fresh: Option<bool>,
     /// Last reason the balance supervisor latched off, if any.
@@ -382,6 +386,12 @@ pub fn parse_stat(line: &str) -> Option<Stat> {
                     recognised = true;
                 }
             }
+            "fb_crc" => {
+                if let Some(parsed) = parse_u32(value) {
+                    stat.fb_crc_errors = Some(parsed);
+                    recognised = true;
+                }
+            }
             "rx" => {
                 if let Some(parsed) = parse_u32(value) {
                     stat.link_bytes = Some(parsed);
@@ -391,6 +401,12 @@ pub fn parse_stat(line: &str) -> Option<Stat> {
             "fb_ok" => {
                 if let Some(parsed) = parse_flag(value) {
                     stat.link_fresh = Some(parsed);
+                    recognised = true;
+                }
+            }
+            "proto" => {
+                if matches!(value, "LEGACY8" | "HARDENED") {
+                    stat.link_protocol = Some(value.to_owned());
                     recognised = true;
                 }
             }
@@ -699,7 +715,7 @@ mod tests {
 
     #[test]
     fn parses_stat_reply() {
-        let line = "stat up=12.5 loop=200 stream=20 trim=0.50 estop=0 steps=2500 imu=2500 imu_err=2 imu_code=1 fb=100 fb_drop=7 rx=1800 fb_ok=1 stop=pose_error zero=1.75 zroll=-0.50 level=0.30 mount=1 armed=1 kpnm=28.6 kdnm=7.2 kpos=0.40 kv=1.80 ki=0.010 pdem=8.0 ptrm=20.0 zcapt=1 lcapt=1 home=0.00 fall=2 vmax=10.00 pscale=0.50";
+        let line = "stat up=12.5 loop=200 stream=20 trim=0.50 estop=0 steps=2500 imu=2500 imu_err=2 imu_code=1 fb=100 fb_drop=7 fb_crc=3 rx=1800 fb_ok=1 proto=HARDENED stop=pose_error zero=1.75 zroll=-0.50 level=0.30 mount=1 armed=1 kpnm=28.6 kdnm=7.2 kpos=0.40 kv=1.80 ki=0.010 pdem=8.0 ptrm=20.0 zcapt=1 lcapt=1 home=0.00 fall=2 vmax=10.00 pscale=0.50";
         let stat = parse_stat(line).expect("stat should parse");
         assert!((stat.uptime_s - 12.5).abs() < 1e-6);
         assert_eq!(stat.loop_hz, 200);
@@ -707,8 +723,10 @@ mod tests {
         assert!((stat.trim_deg - 0.5).abs() < 1e-6);
         assert_eq!(stat.imu_errors, 2);
         assert_eq!(stat.fb_discarded, 7);
+        assert_eq!(stat.fb_crc_errors, Some(3));
         assert_eq!(stat.link_bytes, Some(1800));
         assert_eq!(stat.link_fresh, Some(true));
+        assert_eq!(stat.link_protocol.as_deref(), Some("HARDENED"));
         assert_eq!(stat.stop_reason.as_deref(), Some("pose_error"));
         assert_eq!(stat.zero_deg, Some(1.75));
         assert_eq!(stat.zroll_deg, Some(-0.50));
@@ -733,7 +751,15 @@ mod tests {
         let legacy = parse_stat("stat up=1.0 fb=2").expect("legacy stat");
         assert_eq!(legacy.link_bytes, None);
         assert_eq!(legacy.link_fresh, None);
+        assert_eq!(legacy.link_protocol, None);
+        assert_eq!(legacy.fb_crc_errors, None);
         assert_eq!(legacy.stop_reason, None);
+    }
+
+    #[test]
+    fn rejects_unknown_link_protocol_label() {
+        let stat = parse_stat("stat up=1.0 proto=OTHER").expect("stat with known up field");
+        assert_eq!(stat.link_protocol, None);
     }
 
     #[test]

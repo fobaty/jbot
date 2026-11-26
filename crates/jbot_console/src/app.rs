@@ -470,11 +470,12 @@ impl ConsoleApp {
                     .link_fresh
                     .map_or("?", |fresh| if fresh { "1" } else { "0" });
                 let stop = stat.stop_reason.as_deref().unwrap_or("none");
+                let proto = stat.link_protocol.as_deref().unwrap_or("?");
                 if !quiet {
                     self.log(
                         Level::Rx,
                         format!(
-                            "stat up={:.1}s loop={}Hz stream={}Hz imu_err={} fb={} rx={} drop={} fb_ok={} stop={} estop={}",
+                            "stat up={:.1}s loop={}Hz stream={}Hz imu_err={} fb={} rx={} drop={} fb_crc={} fb_ok={} proto={} stop={} estop={}",
                             stat.uptime_s,
                             stat.loop_hz,
                             stat.stream_hz,
@@ -482,7 +483,9 @@ impl ConsoleApp {
                             stat.fb_frames,
                             rx,
                             stat.fb_discarded,
+                            stat.fb_crc_errors.map_or_else(|| "?".to_owned(), |v| v.to_string()),
                             fb_ok,
+                            proto,
                             stop,
                             u8::from(stat.estop),
                         ),
@@ -618,6 +621,10 @@ impl ConsoleApp {
             if let Ok(value) = rest.trim().parse::<f32>() {
                 self.home_bias_deg = value;
             }
+        } else if text.starts_with("ok protocol ") {
+            // The mainboard switch is sent through the Pico debug bridge, so
+            // refresh diagnostics from the firmware after either side moves.
+            self.send("stat");
         }
     }
 
@@ -709,8 +716,10 @@ impl ConsoleApp {
             imu_code: 0,
             fb_frames: (t * 100.0) as u32,
             fb_discarded: 0,
+            fb_crc_errors: Some(0),
             link_bytes: Some((t * 1800.0) as u32),
             link_fresh: Some(true),
+            link_protocol: Some("LEGACY8".to_owned()),
             stop_reason: Some("none".to_owned()),
             zero_deg: Some(self.zero_offset_deg.unwrap_or(1.8)),
             zroll_deg: Some(self.roll_zero_offset_deg.unwrap_or(-0.6)),
@@ -1516,6 +1525,27 @@ impl ConsoleApp {
                 );
             }
         });
+        let protocol = self
+            .stat
+            .as_ref()
+            .and_then(|stat| stat.link_protocol.clone())
+            .unwrap_or_else(|| "--".to_owned());
+        ui.horizontal(|ui| {
+            ui.label(format!("Mainboard link: {protocol}"));
+            if ui.button("Both → LEGACY8").clicked() {
+                self.send("dbg $SET PROTOCOL LEGACY");
+                self.send("protocol legacy");
+                self.send("stat");
+            }
+            ui.add_enabled(false, egui::Button::new("HARDENED unavailable"));
+        });
+        ui.label(
+            RichText::new(
+                "Both boards boot in LEGACY8. The flashed Pico image rejects the hardened switch: enabling it there prevents USB enumeration. Keep both sides in LEGACY8; `dbg on` shows the F103 reply.",
+            )
+            .size(9.0)
+            .color(theme::MUTED),
+        );
     }
 
     fn drive_controls(&mut self, ui: &mut egui::Ui) {
@@ -3154,8 +3184,13 @@ fn debug_rows(telemetry: Option<&Telemetry>, stat: Option<&Stat>) -> Vec<(&'stat
             row("stat.imu_code", s.imu_code.to_string());
             row("stat.fb_frames", s.fb_frames.to_string());
             row("stat.fb_discarded", s.fb_discarded.to_string());
+            row("stat.fb_crc_errors", opt_f32_u32(s.fb_crc_errors));
             row("stat.rx_bytes", opt_f32_u32(s.link_bytes));
             row("stat.fb_ok", yes_no(s.link_fresh));
+            row(
+                "stat.link_protocol",
+                s.link_protocol.clone().unwrap_or_else(|| "--".to_owned()),
+            );
             row(
                 "stat.stop_reason",
                 s.stop_reason.clone().unwrap_or_else(|| "--".to_owned()),
