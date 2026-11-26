@@ -40,10 +40,21 @@ apply a wrong value.
 | `ANG_MEAS` | parameter | `0..=1` | 0 = hall-speed-integrated angle estimator, 1 = measured hall angle |
 | `FILT` | variable | `0..=65535` | input low-pass coefficient in `fixdt(0,16,16)`; `65535` disables the filter |
 
-`GET ANG_MEAS`, `SET ANG_MEAS 1`, `GET FILT`, `SET FILT 65535`, `INIT <index>`
-restores the compiled default. Both are runtime-only (no EEPROM address, so a
-bench value does not survive power-up); `INIT` restores `ANG_MEAS` from
-`ANGLE_MEAS_ENA` and `FILT` from `FILTER`.
+`GET ANG_MEAS` and `SET ANG_MEAS 1` work at runtime. `FILT` is a **variable**,
+not a parameter: `SET FILT 65535` is rejected with
+`Err3:"This command cannot be used with a Variable"`. `INIT <name>` is also
+rejected (`Err2:"Parameter not found"`); restore `ANG_MEAS` with
+`SET ANG_MEAS 0`. Both values are runtime-only and disappear on power-up;
+changing `FILT` requires recompiling `FILTER` and reflashing the F103.
+
+`DEBUG_SERIAL_PROTOCOL` is now enabled inside `VARIANT_USART` in `Inc/config.h`;
+the C changes are kept in `firmware/stm32f103/eferu-foc/precision.patch` because
+the `eferu/` checkout is upstream. The image is
+`eferu/build/precision-proto/hover.bin` (SHA-256 `267322b5…`, 40408 bytes),
+flashed and verified with OpenOCD. The Pico bridge fix in commit `c297027`
+forwards the whole command line: `dbg $GET ANG_MEAS` returns
+`ok dbg tx 13` and the F103 replies `# name:"ANG_MEAS" value:0 init:0 min:0 max:1`.
+`dbg $GET FILT` returns `value:19661`. Both values are runtime defaults.
 
 ### Runtime torque budget on the Pico
 
@@ -79,11 +90,12 @@ Do all of this with the robot supported and the balance law disarmed.
    and note the first `al`/`ar` that produces wheel motion. The measured
    breakaway should replace `deadband_nm = breakaway_units / units_per_nm`.
 4. **A/B the angle source.** `SET ANG_MEAS 1` on the debug port, repeat step 3
-   and compare the breakaway and the low-speed torque quality. Keep the value
-   that gives the lower, more repeatable breakaway.
-5. **A/B the input filter.** `SET FILT 65535`, repeat a 1-degree reference
-   step and compare settling. The Pico already slews at 3000 units/s, so the
-   mainboard filter is likely redundant.
+   and compare the breakaway and the low-speed torque quality. Restore with
+   `SET ANG_MEAS 0`.
+5. **A/B the input filter.** Not possible at runtime: `FILT` is a read-only
+   variable in this protocol. Two images with different `FILTER` values would
+   be needed. The Pico already slews at 3000 units/s, so the mainboard filter
+   may be redundant, but this is unproven.
 6. **Re-derive the gains.** With the corrected `tmax`, sweep `pscale`
    0.6 / 0.8 / 1.0 and `dscale` 1.0 / 1.4 / 1.8. The previous ladder stopped
    at `pscale 0.25`; if the torque budget was the cause, the full-gain point
@@ -184,12 +196,27 @@ allows.
 
 ## F103 debug bridge (2026-11-25)
 
-`dbg on` forwards the mainboard's periodic USART3 telemetry, but the console
-parser forwards only the first whitespace token of a `dbg` line: `dbg $GET
-ANG_MEAS` sends just `$GET`, confirmed by `ok dbg tx 4`. No parameter reply
-appeared within 2 s. The `ANG_MEAS`/`FILT` A/B therefore could not be performed
-without changing the console forwarding and confirming the GP13-to-PB11 wiring.
-No F103 parameter was changed and `dbg` was returned to `off`.
+`dbg on` forwards the mainboard's periodic USART3 telemetry. The console
+originally sent only the first whitespace token: `dbg $GET ANG_MEAS` became
+`$GET` (`ok dbg tx 4`). Commit `c297027` forwards the full remainder, verified
+on the rebuilt and flashed Pico (`ok dbg tx 13`). The mainboard now accepts `GET`/`SET` because
+`DEBUG_SERIAL_PROTOCOL` is enabled in the flashed build; the GP13-to-PB11 path
+is working. No F103 parameter was changed during verification and `dbg` was
+returned to `off`.
+
+## F103 A/B result (2026-11-25)
+
+`ANG_MEAS` was switched from 0 to 1 with the wheels idle, `estop` latched and
+the balance law disarmed. Pico pitch stayed at -1.12 deg in both states (sd
+0.000), and the gyro scatter changed from 0.080 to 0.070 rad/s sd, which is not
+a meaningful difference. The value was restored to 0 with `SET ANG_MEAS 0` and
+verified with `GET`. `ANG_MEAS` selects the F103 electrical angle source, so
+body pitch is not a sensitive comparator; a real A/B still needs a repeatable
+breakaway fixture.
+
+`FILT` is a variable and `SET FILT 65535` is rejected with `Err3`, so no filter
+A/B was possible. The command-reporting rise with the current build and
+`FILT=19661` is 104 ms, consistent with the earlier 114 ms measurement.
 
 ## Verification performed
 

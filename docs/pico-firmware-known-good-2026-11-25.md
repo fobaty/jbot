@@ -87,24 +87,26 @@ by `*.uf2` / `*.bin` and are **not committed**; the hashes below are the record.
 
 | Target | Artifact | SHA-256 | Status |
 |---|---|---|---|
-| Pico, active | `firmware/pico2w/fw/pico2w-working.uf2` | `985f6e0a35edb43e753552ad035a49e25ba1f0be4db24493931219fc3883522b` | Built from the main tree, flashed to the main Pico and verified |
+| Pico, active | `firmware/pico2w/fw/pico2w-dbg-fix.uf2` | `4c3263de16f80cdd66becb0b7d8a78be9cbc38fb448994742d4cbf51e50f6235` | Built from `c297027`, flashed and verified on 2026-11-25 |
+| Pico, previous good | `firmware/pico2w/fw/pico2w-working.uf2` | `985f6e0a35edb43e753552ad035a49e25ba1f0be4db24493931219fc3883522b` | Verified rollback image |
 | Pico, precision alt | `bench-temp/pico-precision-build-8f95b46/firmware/pico2w/precision-on-8f95b46.uf2` | `a851ad25439911f4be3a6dba20f641ab73773ecc38627efdfdcf99d5a8651516` | Same source, different build path; booted and verified before the main-tree build |
 | Pico, plain known-good | `bench-temp/pico-known-good-8f95b46/firmware/pico2w/known-good.uf2` | `659d91554b3e1aa8b8177f568721bd809bd611502f000951bdbb90479fdefcb6` | On the spare Pico; verified rollback image |
-| F103, active | `firmware/stm32f103/eferu-foc/eferu/build/precision/hover.bin` | `fcf938732606e888a8742db24d98a9392c62a301d53a43ea5f41da381fe04883` | 34272 bytes, flashed and verified with OpenOCD |
+| F103, active | `firmware/stm32f103/eferu-foc/eferu/build/precision-proto/hover.bin` | `267322b536509ecd6fc34e4d21baa1056f86196a6a23e0ea75e0178ca8b00dbe` | 40408 bytes, `DEBUG_SERIAL_PROTOCOL` enabled, flashed and verified with OpenOCD |
+| F103, previous good | `firmware/stm32f103/eferu-foc/eferu/build/precision/hover.bin` | `fcf938732606e888a8742db24d98a9392c62a301d53a43ea5f41da381fe04883` | 34272 bytes, output-only debug console |
 | F103, pinned rollback | `firmware/stm32f103/eferu-foc/eferu/build/hover.bin` | `056ec69151f9dbc4edd092eb08dabe2a2a7afa9b0eeddf9d10c59cb490a047df` | Pinned C build, not overwritten by the precision build |
 
 ## Current bench state
 
 | Board | Chip ID | Image | Evidence |
 |---|---|---|---|
-| Main Pico | `0x4cc40d29dc728687` | `985f6e0a…` (built from `firmware/pico2w`) | CDC after ~1.2 s, `ok ping`, `stat` with `tmax=5.0 al=0 ar=0`, `imu_err=1`, `nvm=1`, saved zero `2.94` deg |
+| Main Pico | `0x4cc40d29dc728687` | `4c3263de…` (built from `c297027`) | CDC after ~1.2 s, `ok ping`, `stat` with `tmax=5.0 al=0 ar=0`, `ok dbg tx 13` confirms the full-line debug forwarding |
 | Spare Pico | `0x7cb6b2c5535e6820` | `659d9155…` | CDC after ~1.2 s, `ok ping`, full `stat` |
 
-The mainboard is powered on: `mb=ok`, `bat=36.45` V, `fb_ok=1`, `fb=11777`,
-`fb_drop=0`, `rx=211986`. The IMU is live (`imu=ok`, fresh samples, one
-transient I2C error since boot with code `1`). The drive stays safe with
-`estop=1`, `armed=0`, `L=0 R=0`, `al=0 ar=0`. The ST-Link is disconnected.
-No balance trial was run.
+The mainboard is powered on: `mb=ok`, `bat=36.37` V, `fb_ok=1`, `fb_drop=0`,
+`rx` increasing. The IMU is live (`imu=ok`). The drive stays safe with
+`estop=1`, `armed=0`, `L=0 R=0`, `al=0 ar=0`. The ST-Link is connected but idle.
+No balance trial was run. The F103 debug protocol is live: `dbg $GET ANG_MEAS`
+returns `ANG_MEAS=0` and `dbg $GET FILT` returns `FILT=19661`.
 
 After a USB re-enumeration the applied-command feedback was checked with
 `test 10 10` and `test 0 0`: `al`/`ar` followed both requests, with 114 ms
@@ -114,6 +116,13 @@ was changed. A one-wheel spin-up identification gave 210–241 units/Nm in the
 usable 60/80-unit steps, close to the compiled 200 units/Nm; `tmax` was left at
 5.0 Nm. The bench was returned to `estop=1`, `armed=0`, `L=R=0`, `al=ar=0`.
 See `docs/precision-control-2026-11-25.md`.
+
+With the pinned C firmware the mainboard goes to sleep when the motors have
+not been driven for a while. While asleep it sends no feedback frames and no
+USART3 debug output: Pico `stat` shows `mb=none`, `bat=0.00`, `fb_ok=0`, a
+stopped `rx` counter and `age=4294967295`. A brief wheel command after `clear`
+wakes it; this is not a Pico link failure. The state was observed after the
+2026-11-25 Pico reflash while the wheels stayed idle.
 
 ## Source-level analysis of the regression
 
