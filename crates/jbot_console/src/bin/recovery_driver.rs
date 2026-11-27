@@ -383,6 +383,29 @@ fn timestamp_ms() -> u128 {
         .as_millis()
 }
 
+/// End a session without parking the console task: stop the stream and wait
+/// past the firmware's 1 s reply deadline before the port is closed.
+fn finish(
+    serial: &mut Box<dyn SerialPort>,
+    buffer: &mut Vec<u8>,
+    csv: &mut BufWriter<File>,
+    started: &Instant,
+) {
+    let _ = serial.write_all(b"estop\n");
+    let _ = serial.flush();
+    let _ = serial.write_all(b"stream 0\n");
+    let _ = serial.flush();
+    let _ = pump(
+        serial,
+        buffer,
+        csv,
+        started,
+        0,
+        Duration::from_millis(3_000),
+        None,
+    );
+}
+
 fn main() {
     let mut args = std::env::args().skip(1);
     let mut run = false;
@@ -515,6 +538,7 @@ fn main() {
     println!("opening {path} at {BAUD} baud");
     let mut serial = match serialport::new(&path, BAUD)
         .timeout(Duration::from_millis(20))
+        .dtr_on_open(true)
         .open()
     {
         Ok(port) => port,
@@ -600,7 +624,7 @@ fn main() {
         .is_none()
         {
             println!("pitch never settled or was outside the home range; aborting");
-            send(&mut serial, "estop");
+            finish(&mut serial, &mut buffer, &mut csv, &started);
             let _ = csv.flush();
             return;
         }
@@ -615,7 +639,7 @@ fn main() {
             loose_baseline,
         ) {
             println!("pitch never settled; aborting without arming");
-            send(&mut serial, "estop");
+            finish(&mut serial, &mut buffer, &mut csv, &started);
             let _ = csv.flush();
             return;
         }
@@ -649,7 +673,7 @@ fn main() {
         for line in arm.iter().take(4) {
             println!("  {line}");
         }
-        send(&mut serial, "estop");
+        finish(&mut serial, &mut buffer, &mut csv, &started);
         let _ = csv.flush();
         println!("aborted; recording: {}", csv_path.display());
         return;
@@ -664,7 +688,7 @@ fn main() {
         loose_baseline,
     ) else {
         println!("no stable upright baseline with turning wheels; release the body and retry");
-        send(&mut serial, "estop");
+        finish(&mut serial, &mut buffer, &mut csv, &started);
         let _ = csv.flush();
         println!("aborted; recording: {}", csv_path.display());
         return;
@@ -701,7 +725,7 @@ fn main() {
             u8::from(stats.fall_latch),
             u8::from(stats.disarmed),
         );
-        send(&mut serial, "estop");
+        finish(&mut serial, &mut buffer, &mut csv, &started);
         let _ = csv.flush();
         println!("estop sent; recording: {}", csv_path.display());
         return;
@@ -768,7 +792,7 @@ fn main() {
         }
     }
 
-    send(&mut serial, "estop");
+    finish(&mut serial, &mut buffer, &mut csv, &started);
     let _ = csv.flush();
     println!(
         "passed {passed}/{trials} trials; estop sent; recording: {}",

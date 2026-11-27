@@ -789,7 +789,7 @@ fn main() {
         &mut buffer,
         &mut csv,
         &started,
-        Duration::from_millis(200),
+        Duration::from_millis(1_500),
         "done",
     );
     let _ = csv.flush();

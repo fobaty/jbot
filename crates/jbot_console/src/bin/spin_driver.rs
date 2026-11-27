@@ -234,6 +234,7 @@ fn main() {
     println!("opening {path} at {BAUD} baud");
     let mut serial = match serialport::new(&path, BAUD)
         .timeout(Duration::from_millis(20))
+        .dtr_on_open(true)
         .open()
     {
         Ok(port) => port,
@@ -371,6 +372,17 @@ fn main() {
     }
 
     send(&mut serial, "estop");
+    // Stop the stream and drain long enough for the console's 1 s reply
+    // deadline before closing, otherwise a pending write parks the task.
+    send(&mut serial, "stream 0");
+    pump(
+        &mut serial,
+        &mut buffer,
+        &mut csv,
+        &mut latest,
+        &started,
+        Duration::from_millis(1_500),
+    );
     let _ = csv.flush();
     println!("estop sent; recording: {}", csv_path.display());
     println!(

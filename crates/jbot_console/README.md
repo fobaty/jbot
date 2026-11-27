@@ -35,11 +35,13 @@ event log as an error.
 
 ## Headless drivers
 
-Two binaries share the same serial link for bench gates that the GUI cannot
+Three binaries share the same serial link for bench gates that the GUI cannot
 score: `hold_sweep` (undisturbed 10 s hold over a `pscale`/`slew` ladder, see
-`docs/pscale-ladder.md`) and `axis_check` (live sign and axis verification after
-an IMU or wiring change, see `docs/axis-sign-check.md`). Both refuse to run
-without `--run` and end with `estop`.
+`docs/pscale-ladder.md`), `axis_check` (live sign and axis verification after an
+IMU or wiring change, see `docs/axis-sign-check.md`), and `auto_tune` (bounded
+runtime-only profile search from a tilt back to `home`, see
+`docs/bench-2026-11-26.md`). All refuse to run without `--run` and end each
+profile with `estop`.
 
 ```bash
 cargo run -q -p jbot_console --bin axis_check --release -- --run

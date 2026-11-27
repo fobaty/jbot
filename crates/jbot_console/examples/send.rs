@@ -38,4 +38,19 @@ fn main() {
             }
         }
     }
+
+    // Closing while the 200 Hz stream is active parks the console task: a
+    // pending USB write is cancelled and leaves the IN endpoint unavailable.
+    // Stop the stream and drain before the port is closed.
+    let _ = port.write_all(b"stream 0\n");
+    let _ = port.flush();
+    let mut buf = [0_u8; 4096];
+    let started = std::time::Instant::now();
+    while started.elapsed() < Duration::from_millis(1_500) {
+        if let Ok(n) = port.read(&mut buf) {
+            if n > 0 {
+                let _ = n;
+            }
+        }
+    }
 }

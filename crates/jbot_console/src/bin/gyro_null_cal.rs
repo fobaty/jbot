@@ -373,6 +373,7 @@ fn main() {
     println!("opening {path} at {BAUD} baud");
     let mut serial = match serialport::new(&path, BAUD)
         .timeout(Duration::from_millis(20))
+        .dtr_on_open(true)
         .open()
     {
         Ok(port) => port,
@@ -688,6 +689,24 @@ fn main() {
     }
 
     send(&mut serial, "estop");
+    // Stop and drain the stream before closing: a host that leaves while the
+    // console is writing 200 Hz telemetry parks its task until USB re-enum.
+    send(&mut serial, "stream 0");
+    let _ = pump(
+        &mut serial,
+        &mut buffer,
+        &mut csv,
+        &started,
+        Duration::from_millis(1_500),
+        RowCtx {
+            phase: "close",
+            probe_units: 0.0,
+            alpha: 0.0,
+            pitch_at_probe: 0.0,
+            hold_torque: 0.0,
+            rpm_abs: 0.0,
+        },
+    );
     let _ = csv.flush();
     write_json(&json_path, dead_zone, &points, abort.as_deref());
     if let Some(reason) = &abort {

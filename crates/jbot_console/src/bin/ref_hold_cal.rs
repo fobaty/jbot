@@ -20,6 +20,8 @@
 //! Usage: ref_hold_cal --run [--port PATH] [--pscale 0.25] [--slew 100]
 //!                     [--angles -5,-4,-3,-2,-1,0,1,2,3,4,5]
 //!                     [--settle-ms 1500] [--hold-ms 800] [--tol 1.0]
+//!                     [--torque-source applied|requested] [--db 0.25]
+//!                     [--cal LEFT RIGHT] [--dither 30]
 
 use std::fs::File;
 use std::io::{BufWriter, Read, Write};
@@ -29,7 +31,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use serialport::SerialPort;
 
 const BAUD: u32 = 115200;
-const HEADER: &str = "t_ms,step,loop_hz,imu_fresh,pitch_deg,roll_deg,heading_deg,gy_dps,gx_dps,gz_dps,left_rpm,right_rpm,bat_v,age_ms,estop,vset,wset,torque_units,test_left_units,test_right_units,ref_deg,demand_deg,trim_deg,position_m,mode,phase,angle_cmd,hold_torque,settled";
+const HEADER: &str = "t_ms,step,loop_hz,imu_fresh,pitch_deg,roll_deg,heading_deg,gy_dps,gx_dps,gz_dps,left_rpm,right_rpm,bat_v,age_ms,estop,vset,wset,torque_units,test_left_units,test_right_units,cmd_left_units,cmd_right_units,applied_left_units,applied_right_units,ref_deg,demand_deg,trim_deg,position_m,mode,phase,angle_cmd,hold_torque,settled";
 
 /// Latch or guard state in the `mode` telemetry field.
 const MODE_LIMIT: f64 = 3.5;
@@ -38,6 +40,14 @@ const MODE_LIMIT: f64 = 3.5;
 const RUNAWAY_DPS: f64 = 250.0;
 /// Abort before the machine leaves the test zone, metres.
 const TRAVEL_LIMIT_M: f64 = 0.4;
+/// Mirror `hold_sweep`: a lean with motionless wheels is an external support.
+const SUPPORT_PITCH_DEG: f64 = 0.8;
+const SUPPORT_STILL_SAMPLES: usize = 40;
+
+/// A leaning body whose wheels are not turning is being held from outside.
+fn supported_sample(pitch: f64, level: f64, left_rpm: f64, right_rpm: f64) -> bool {
+    left_rpm.abs() <= 2.0 && right_rpm.abs() <= 2.0 && (pitch - level).abs() > SUPPORT_PITCH_DEG
+}
 
 fn field<'a>(line: &'a str, key: &str) -> Option<&'a str> {
     line.split_whitespace()
@@ -92,6 +102,10 @@ fn csv_row(line: &str, t_ms: u64, ctx: RowCtx<'_>) -> String {
         format!("{:.1}", n("trq")),
         format!("{:.1}", n("tsl")),
         format!("{:.1}", n("tsr")),
+        format!("{:.1}", n("cwl")),
+        format!("{:.1}", n("cwr")),
+        n("al").to_string(),
+        n("ar").to_string(),
         format!("{:.4}", n("ref")),
         format!("{:.4}", n("dem")),
         format!("{:.4}", n("trm")),
@@ -165,23 +179,64 @@ fn pick_port(explicit: Option<String>) -> String {
         .unwrap_or_else(|| "/dev/cu.usbmodemJBOT_PICO_011".to_owned())
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TorqueSource {
+    Requested,
+    Applied,
+}
+
+impl TorqueSource {
+    fn parse(text: &str) -> Option<Self> {
+        match text {
+            "applied" => Some(Self::Applied),
+            "requested" => Some(Self::Requested),
+            _ => None,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Requested => "requested",
+            Self::Applied => "applied",
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 struct Hold {
     angle: f64,
     pitch: f64,
     torque: f64,
+    applied: f64,
+}
+
+/// Common-mode holding torque in command units. The mainboard reports the
+/// commands it actually applied per wheel; their mean cancels the yaw
+/// differential and is the torque the body experienced.
+fn hold_torque(line: &str, source: TorqueSource) -> f64 {
+    match source {
+        TorqueSource::Requested => num(line, "trq"),
+        TorqueSource::Applied => (num(line, "al") + num(line, "ar")) / 2.0,
+    }
+}
+
+fn hold_value(point: &Hold, source: TorqueSource) -> f64 {
+    match source {
+        TorqueSource::Requested => point.torque,
+        TorqueSource::Applied => point.applied,
+    }
 }
 
 /// Least-squares slope of torque against settled pitch, with intercept.
-fn fit_slope(points: &[Hold]) -> Option<(f64, f64)> {
+fn fit_slope(points: &[Hold], source: TorqueSource) -> Option<(f64, f64)> {
     if points.len() < 3 {
         return None;
     }
     let n = points.len() as f64;
     let sx: f64 = points.iter().map(|p| p.pitch).sum();
-    let sy: f64 = points.iter().map(|p| p.torque).sum();
+    let sy: f64 = points.iter().map(|p| hold_value(p, source)).sum();
     let sxx: f64 = points.iter().map(|p| p.pitch * p.pitch).sum();
-    let sxy: f64 = points.iter().map(|p| p.pitch * p.torque).sum();
+    let sxy: f64 = points.iter().map(|p| p.pitch * hold_value(p, source)).sum();
     let det = n * sxx - sx * sx;
     if det.abs() < 1e-9 {
         return None;
@@ -215,7 +270,18 @@ fn settlement(
     }
 }
 
-fn write_json(path: &PathBuf, pscale: f64, points: &[Hold], abort: Option<&str>) {
+#[derive(Clone, Copy)]
+struct Profile {
+    pscale: f64,
+    slew: f64,
+    db: f64,
+    cal_l: f64,
+    cal_r: f64,
+    dither: f64,
+    source: TorqueSource,
+}
+
+fn write_json(path: &PathBuf, profile: &Profile, points: &[Hold], abort: Option<&str>) {
     let mut file = match File::create(path) {
         Ok(file) => BufWriter::new(file),
         Err(error) => {
@@ -224,7 +290,17 @@ fn write_json(path: &PathBuf, pscale: f64, points: &[Hold], abort: Option<&str>)
         }
     };
     let _ = writeln!(file, "{{");
-    let _ = writeln!(file, "  \"pscale\": {pscale:.2},");
+    let _ = writeln!(file, "  \"pscale\": {:.2},", profile.pscale);
+    let _ = writeln!(file, "  \"slew\": {:.0},", profile.slew);
+    let _ = writeln!(file, "  \"db\": {:.2},", profile.db);
+    let _ = writeln!(file, "  \"cal_left_units\": {:.0},", profile.cal_l);
+    let _ = writeln!(file, "  \"cal_right_units\": {:.0},", profile.cal_r);
+    let _ = writeln!(file, "  \"dither_units\": {:.0},", profile.dither);
+    let _ = writeln!(
+        file,
+        "  \"torque_source\": \"{}\",",
+        profile.source.as_str()
+    );
     let _ = writeln!(
         file,
         "  \"abort\": {},",
@@ -235,8 +311,8 @@ fn write_json(path: &PathBuf, pscale: f64, points: &[Hold], abort: Option<&str>)
         let comma = if index + 1 == points.len() { "" } else { "," };
         let _ = writeln!(
             file,
-            "    {{\"angle_cmd\": {:.2}, \"pitch_deg\": {:.3}, \"torque_units\": {:.2}}}{comma}",
-            point.angle, point.pitch, point.torque
+            "    {{\"angle_cmd\": {:.2}, \"pitch_deg\": {:.3}, \"torque_units\": {:.2}, \"applied_units\": {:.2}}}{comma}",
+            point.angle, point.pitch, point.torque, point.applied
         );
     }
     let _ = writeln!(file, "  ]");
@@ -255,6 +331,11 @@ fn main() {
     let mut hold_ms = 800_u64;
     let mut tol = 1.0_f64;
     let mut vmax = 2.0_f64;
+    let mut db = 0.0_f64;
+    let mut cal_l = 0.0_f64;
+    let mut cal_r = 0.0_f64;
+    let mut dither = 0.0_f64;
+    let mut source = TorqueSource::Applied;
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--run" => run = true,
@@ -266,7 +347,7 @@ fn main() {
             }
             "--slew" => {
                 if let Some(value) = args.next().and_then(|v| v.parse::<f64>().ok()) {
-                    slew = value.clamp(20.0, 200.0);
+                    slew = value.clamp(20.0, 3000.0);
                 }
             }
             "--angles" => {
@@ -294,8 +375,39 @@ fn main() {
                     vmax = value.clamp(0.2, 60.0);
                 }
             }
+            "--db" => {
+                if let Some(value) = args.next().and_then(|v| v.parse::<f64>().ok()) {
+                    db = value.clamp(0.0, 0.6);
+                }
+            }
+            "--cal" => {
+                let left = args.next().and_then(|v| v.parse::<f64>().ok());
+                let right = args.next().and_then(|v| v.parse::<f64>().ok());
+                match (left, right) {
+                    (Some(left), Some(right)) => {
+                        cal_l = left.clamp(0.0, 150.0);
+                        cal_r = right.clamp(0.0, 150.0);
+                    }
+                    _ => {
+                        eprintln!("--cal needs two values: left right");
+                        return;
+                    }
+                }
+            }
+            "--dither" => {
+                if let Some(value) = args.next().and_then(|v| v.parse::<f64>().ok()) {
+                    dither = value.clamp(0.0, 60.0);
+                }
+            }
+            "--torque-source" => {
+                let Some(value) = args.next().and_then(|v| TorqueSource::parse(&v)) else {
+                    eprintln!("--torque-source needs applied or requested");
+                    return;
+                };
+                source = value;
+            }
             "--help" | "-h" => {
-                println!("usage: ref_hold_cal --run [--port PATH] [--pscale 0.25] [--slew 100] [--angles -5,-4,-3,-2,-1,0,1,2,3,4,5] [--settle-ms 1500] [--hold-ms 800] [--tol 1.0]");
+                println!("usage: ref_hold_cal --run [--port PATH] [--pscale 0.25] [--slew 100] [--angles -5,-4,-3,-2,-1,0,1,2,3,4,5] [--settle-ms 1500] [--hold-ms 800] [--tol 1.0] [--torque-source applied|requested] [--db 0.25] [--cal LEFT RIGHT] [--dither 30]");
                 return;
             }
             other => {
@@ -371,10 +483,23 @@ fn main() {
     send(&mut serial, "ff off");
     send(&mut serial, &format!("pscale {pscale:.2}"));
     send(&mut serial, &format!("slew {slew:.0}"));
+    send(&mut serial, &format!("db {db:.2}"));
+    if cal_l > 0.0 || cal_r > 0.0 {
+        send(&mut serial, &format!("cal {:.0} {:.0}", cal_l, cal_r));
+    } else {
+        send(&mut serial, "cal off");
+    }
+    if dither > 0.0 {
+        send(&mut serial, &format!("dither {dither:.0}"));
+    } else {
+        send(&mut serial, "dither off");
+    }
     // A slow reference ramp is what makes the deviation smooth enough for a
     // weak bench profile to follow without exciting the pendulum.
     send(&mut serial, &format!("vmax {vmax:.2}"));
-    println!("safe profile: pscale {pscale:.2}, slew {slew:.0}, vmax {vmax:.2} deg/s, ff off");
+    println!(
+        "safe profile: pscale {pscale:.2}, slew {slew:.0}, db {db:.2}, cal {cal_l:.0}/{cal_r:.0}, dither {dither:.0}, vmax {vmax:.2} deg/s, ff off"
+    );
 
     // A reflash can leave the level reference uncaptured, which makes `arm`
     // refuse silently. Capture it from the current upright pose first.
@@ -384,7 +509,11 @@ fn main() {
     let mut armed = false;
     let mut origin_x = 0.0_f64;
     let mut upright_pitch = 0.0_f64;
-    for _ in 0..8 {
+    let mut upright_level = 0.0_f64;
+    let mut still_run = 0_usize;
+    let mut max_still_run = 0_usize;
+    let mut quiet = false;
+    for _ in 0..12 {
         let probe = pump(
             &mut serial,
             &mut buffer,
@@ -398,34 +527,77 @@ fn main() {
                 settled: false,
             },
         );
-        if let Some(line) = probe.iter().rev().find(|line| is_telemetry(line)) {
+        for line in probe.iter().filter(|line| is_telemetry(line)) {
+            let pitch = num(line, "pitch");
+            let level = num(line, "lvl");
             origin_x = num(line, "x");
-            upright_pitch = num(line, "pitch");
+            upright_pitch = pitch;
+            upright_level = level;
             armed = num(line, "arm") > 0.5;
-            if armed {
-                break;
+            if supported_sample(pitch, level, num(line, "L"), num(line, "R")) {
+                still_run += 1;
+                max_still_run = max_still_run.max(still_run);
+            } else {
+                still_run = 0;
             }
+            quiet = (pitch - level).abs() <= tol && num(line, "gy").abs() <= 8.0;
+        }
+        if armed && quiet && max_still_run <= SUPPORT_STILL_SAMPLES {
+            break;
         }
     }
-    if !armed {
-        println!("arm refused; check zero/level capture, link and e-stop");
+    let baseline_reason = if !armed {
+        Some("arm refused; check zero/level capture, link and e-stop".to_owned())
+    } else if !quiet {
+        Some(format!(
+            "level capture failed: pitch {upright_pitch:.2}, level {upright_level:.2}"
+        ))
+    } else if max_still_run > SUPPORT_STILL_SAMPLES {
+        Some(format!(
+            "externally supported baseline: lean {:.2} deg with still wheels",
+            upright_pitch - upright_level
+        ))
+    } else if upright_pitch.abs() > 15.0 {
+        Some(format!("not upright at start (pitch {upright_pitch:.1})"))
+    } else {
+        None
+    };
+    if let Some(reason) = &baseline_reason {
+        println!("{reason}; stand the robot on its wheels and retry");
         send(&mut serial, "home 0");
         send(&mut serial, "estop");
-        let _ = csv.flush();
-        write_json(&json_path, pscale, &[], Some("arm refused"));
-        return;
-    }
-    if upright_pitch.abs() > 15.0 {
-        println!(
-            "not upright at start (pitch {upright_pitch:.1}); stand the robot on its wheels and retry"
+        send(&mut serial, "stream 0");
+        let _ = pump(
+            &mut serial,
+            &mut buffer,
+            &mut csv,
+            &started,
+            Duration::from_millis(1_500),
+            RowCtx {
+                phase: "close",
+                angle_cmd: 0.0,
+                hold_torque: 0.0,
+                settled: false,
+            },
         );
-        send(&mut serial, "home 0");
-        send(&mut serial, "estop");
         let _ = csv.flush();
-        write_json(&json_path, pscale, &[], Some("not upright at start"));
+        write_json(
+            &json_path,
+            &Profile {
+                pscale,
+                slew,
+                db,
+                cal_l,
+                cal_r,
+                dither,
+                source,
+            },
+            &[],
+            Some(reason.as_str()),
+        );
         return;
     }
-    println!("upright baseline pitch {upright_pitch:.2} deg");
+    println!("upright baseline pitch {upright_pitch:.2} deg, level {upright_level:.2} deg");
 
     let mut points: Vec<Hold> = Vec::new();
     let mut abort: Option<String> = None;
@@ -442,6 +614,7 @@ fn main() {
         let mut window_max = f64::NEG_INFINITY;
         let mut state = Settlement::Pending;
         let mut hold_sum = 0.0_f64;
+        let mut hold_applied_sum = 0.0_f64;
         let mut hold_n = 0_u64;
 
         while Instant::now() < angle_deadline {
@@ -455,7 +628,11 @@ fn main() {
                     phase: "angle",
                     angle_cmd: angle,
                     hold_torque: if state == Settlement::Settled {
-                        hold_sum / hold_n.max(1) as f64
+                        let sum = match source {
+                            TorqueSource::Requested => hold_sum,
+                            TorqueSource::Applied => hold_applied_sum,
+                        };
+                        sum / hold_n.max(1) as f64
                     } else {
                         0.0
                     },
@@ -467,11 +644,16 @@ fn main() {
             };
             let pitch = num(line, "pitch");
             let rate = num(line, "gy");
+            // Applied words describe the last mainboard frame. They must not be
+            // fitted from stale feedback when the law is still running.
+            let feedback_stale = source == TorqueSource::Applied
+                && (field(line, "mb") != Some("ok") || num(line, "age") > 300.0);
             let guard = num(line, "estop") > 0.5
                 || num(line, "mode") > MODE_LIMIT
                 || num(line, "arm") < 0.5
                 || rate.abs() > RUNAWAY_DPS
-                || (num(line, "x") - origin_x).abs() > TRAVEL_LIMIT_M;
+                || (num(line, "x") - origin_x).abs() > TRAVEL_LIMIT_M
+                || feedback_stale;
             if guard {
                 abort = Some(format!(
                     "guard at angle {angle:+.1}: pitch {pitch:.1}, rate {rate:.1}"
@@ -505,22 +687,35 @@ fn main() {
                         );
                         window_start = Instant::now();
                         hold_sum = 0.0;
+                        hold_applied_sum = 0.0;
                         hold_n = 0;
                     }
                 }
                 Settlement::Settled => {
                     hold_sum += num(line, "trq");
+                    hold_applied_sum += hold_torque(line, TorqueSource::Applied);
                     hold_n += 1;
                     if window_start.elapsed() >= Duration::from_millis(hold_ms) {
                         let torque = hold_sum / hold_n.max(1) as f64;
+                        let applied = hold_applied_sum / hold_n.max(1) as f64;
+                        let measured = if source == TorqueSource::Applied {
+                            applied
+                        } else {
+                            torque
+                        };
                         println!(
-                            "angle {:+.1}: pitch {:+.2}, torque {:+.1} units",
-                            angle, pitch, torque
+                            "angle {:+.1}: pitch {:+.2}, {} torque {:+.1} units (requested {:+.1})",
+                            angle,
+                            pitch,
+                            source.as_str(),
+                            measured,
+                            torque
                         );
                         points.push(Hold {
                             angle,
                             pitch,
                             torque,
+                            applied,
                         });
                         break;
                     }
@@ -544,8 +739,11 @@ fn main() {
         abort = Some("fewer than three stable holds".to_owned());
     }
 
-    if let Some((slope, intercept)) = fit_slope(&points) {
-        println!("measured holding torque T(pitch) = {slope:.2}*pitch + {intercept:.1} units");
+    if let Some((slope, intercept)) = fit_slope(&points, source) {
+        println!(
+            "measured holding torque from {}: T(pitch) = {slope:.2}*pitch + {intercept:.1} units",
+            source.as_str()
+        );
         println!("feedforward to apply: ff(pitch) = {slope:.2}*pitch + {intercept:.1} units");
         println!("current firmware uses +3.23 units/deg relative to home -2.5 deg");
     } else {
@@ -554,8 +752,37 @@ fn main() {
 
     send(&mut serial, "home 0");
     send(&mut serial, "estop");
+    // Stop and drain the stream before closing, otherwise the console task
+    // parks on a pending write for the next host.
+    send(&mut serial, "stream 0");
+    let _ = pump(
+        &mut serial,
+        &mut buffer,
+        &mut csv,
+        &started,
+        Duration::from_millis(1_500),
+        RowCtx {
+            phase: "done",
+            angle_cmd: 0.0,
+            hold_torque: 0.0,
+            settled: false,
+        },
+    );
     let _ = csv.flush();
-    write_json(&json_path, pscale, &points, abort.as_deref());
+    write_json(
+        &json_path,
+        &Profile {
+            pscale,
+            slew,
+            db,
+            cal_l,
+            cal_r,
+            dither,
+            source,
+        },
+        &points,
+        abort.as_deref(),
+    );
     if let Some(reason) = &abort {
         println!("ABORT: {reason}; home 0 and estop sent");
     } else {
@@ -609,20 +836,52 @@ mod tests {
                 angle: -2.0,
                 pitch: -2.0,
                 torque: -8.0,
+                applied: -7.0,
             },
             Hold {
                 angle: 0.0,
                 pitch: 0.0,
                 torque: 0.0,
+                applied: 0.0,
             },
             Hold {
                 angle: 2.0,
                 pitch: 2.0,
                 torque: 8.0,
+                applied: 7.0,
             },
         ];
-        let (slope, intercept) = fit_slope(&points).unwrap();
+        let (slope, intercept) = fit_slope(&points, TorqueSource::Requested).unwrap();
         assert!((slope - 4.0).abs() < 1e-6);
         assert!(intercept.abs() < 1e-6);
+        let (slope, intercept) = fit_slope(&points, TorqueSource::Applied).unwrap();
+        assert!((slope - 3.5).abs() < 1e-6);
+        assert!(intercept.abs() < 1e-6);
+    }
+
+    #[test]
+    fn applied_torque_is_the_mean_of_both_wheels() {
+        let line = "T step=1 al=40 ar=-20 trq=9 cwl=10 cwr=10";
+        assert_eq!(hold_torque(line, TorqueSource::Requested), 9.0);
+        assert_eq!(hold_torque(line, TorqueSource::Applied), 10.0);
+    }
+
+    #[test]
+    fn supported_baseline_requires_a_lean_with_still_wheels() {
+        assert!(supported_sample(5.0, 0.0, 0.0, 0.0));
+        assert!(!supported_sample(5.0, 5.0, 0.0, 0.0));
+        assert!(!supported_sample(5.0, 0.0, 30.0, -30.0));
+        assert!(!supported_sample(0.2, 0.0, 0.0, 0.0));
+    }
+
+    #[test]
+    fn torque_source_parses_both_modes() {
+        assert_eq!(TorqueSource::parse("applied"), Some(TorqueSource::Applied));
+        assert_eq!(
+            TorqueSource::parse("requested"),
+            Some(TorqueSource::Requested)
+        );
+        assert_eq!(TorqueSource::parse("other"), None);
+        assert_eq!(TorqueSource::Applied.as_str(), "applied");
     }
 }
