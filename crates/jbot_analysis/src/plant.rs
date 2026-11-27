@@ -56,6 +56,7 @@ mod tests {
             stuck_max_units: 100.0,
             moving_min_units: 300.0,
             samples: 50,
+            from_applied: false,
         };
         let plant = IdentifiedPlant::from_fit_and_breakaway(&fit, &breakaway);
         assert!((plant.gravity_torque_per_rad - 6.0).abs() < 1e-9);

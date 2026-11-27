@@ -90,6 +90,12 @@ pub struct Sample {
     pub test_left_units: f64,
     /// Applied spin-test torque, right wheel, EFeru units.
     pub test_right_units: f64,
+    /// Command the mainboard reported applying to the left wheel, EFeru units.
+    pub applied_left_units: f64,
+    /// Command the mainboard reported applying to the right wheel, EFeru units.
+    pub applied_right_units: f64,
+    /// The applied-command columns exist in this recording.
+    pub applied_present: bool,
     /// Applied (ramped) pitch reference, degrees.
     pub ref_deg: f64,
     /// Outer-loop pitch demand, degrees.
@@ -126,6 +132,12 @@ impl Sample {
     /// True while a bench spin test was applying torque.
     pub fn spin_test(&self) -> bool {
         self.test_left_units != 0.0 || self.test_right_units != 0.0
+    }
+
+    /// Common-mode command the mainboard actually applied, when recorded.
+    pub fn applied_common_units(&self) -> Option<f64> {
+        self.applied_present
+            .then_some(0.5 * (self.applied_left_units + self.applied_right_units))
     }
 }
 
@@ -366,6 +378,8 @@ struct Columns {
     torque_units: usize,
     test_left_units: Option<usize>,
     test_right_units: Option<usize>,
+    applied_left_units: Option<usize>,
+    applied_right_units: Option<usize>,
     ref_deg: Option<usize>,
     demand_deg: Option<usize>,
     trim_deg: Option<usize>,
@@ -399,6 +413,8 @@ impl Columns {
             torque_units: position(names, "torque_units")?,
             test_left_units: optional(names, "test_left_units"),
             test_right_units: optional(names, "test_right_units"),
+            applied_left_units: optional(names, "applied_left_units"),
+            applied_right_units: optional(names, "applied_right_units"),
             ref_deg: optional(names, "ref_deg"),
             demand_deg: optional(names, "demand_deg"),
             trim_deg: optional(names, "trim_deg"),
@@ -429,6 +445,10 @@ impl Columns {
             torque_units: number(fields, self.torque_units, "torque_units", line)?,
             test_left_units: optional_number(fields, self.test_left_units),
             test_right_units: optional_number(fields, self.test_right_units),
+            applied_left_units: optional_number(fields, self.applied_left_units),
+            applied_right_units: optional_number(fields, self.applied_right_units),
+            applied_present: self.applied_left_units.is_some()
+                && self.applied_right_units.is_some(),
             ref_deg: optional_number(fields, self.ref_deg),
             demand_deg: optional_number(fields, self.demand_deg),
             trim_deg: optional_number(fields, self.trim_deg),

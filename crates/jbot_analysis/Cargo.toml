@@ -22,3 +22,19 @@ path = "src/bin/recovery_sweep.rs"
 [[bin]]
 name = "spin-fit"
 path = "src/bin/spin_fit.rs"
+
+[[bin]]
+name = "command_path"
+path = "src/bin/command_path.rs"
+
+[[bin]]
+name = "gain-sweep"
+path = "src/bin/gain_sweep.rs"
+
+[[bin]]
+name = "hold-step-sweep"
+path = "src/bin/hold_step_sweep.rs"
+
+[[bin]]
+name = "outer-sweep"
+path = "src/bin/outer_sweep.rs"

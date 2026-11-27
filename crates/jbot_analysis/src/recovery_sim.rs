@@ -451,6 +451,66 @@ impl Strategy {
 }
 
 /// Linear pitch reference of the `StandUp` strategy, radians.
+/// Response of the full mirror controller to a constant pitch-reference step.
+///
+/// Unlike `gain_sweep`, this includes the position and speed loops that fight
+/// the pitch demand on hardware. It is the design check for a `home` step.
+pub fn hold_step(
+    params: &SimParams,
+    pscale: f32,
+    dscale: f32,
+    reference_deg: f32,
+) -> (f32, f32, f32, f32) {
+    hold_step_with_outer(params, pscale, dscale, 0.4, 1.8, 8.0, reference_deg)
+}
+
+/// Same as [`hold_step`] with explicit outer-loop gains, for the runtime knobs
+/// `posg`, `velg` and `demlim`.
+pub fn hold_step_with_outer(
+    params: &SimParams,
+    pscale: f32,
+    dscale: f32,
+    position_gain: f32,
+    velocity_gain: f32,
+    demand_limit_deg: f32,
+    reference_deg: f32,
+) -> (f32, f32, f32, f32) {
+    let mut tuning = SimTuning::from_geometry(&params.plant);
+    tuning.kp *= pscale.max(0.0);
+    tuning.kd *= dscale.max(0.0);
+    tuning.position_gain = position_gain.max(0.0);
+    tuning.velocity_gain = velocity_gain.max(0.0);
+    tuning.demand_limit_rad = demand_limit_deg.max(0.0).to_radians();
+    let mut balance = SimBalance::new();
+    let mut plant = NonlinearPlant::new(*params, 0.0);
+    let reference = reference_deg.to_radians();
+    let dt = CONTROL_DT_S;
+    let steps: usize = 1_600;
+    let mut peak_pitch = 0.0_f32;
+    let mut peak_torque = 0.0_f32;
+    for _ in 0..steps {
+        let state = plant.state();
+        let sample = BalanceSample {
+            pitch_rad: state.pitch_rad,
+            pitch_rate_rad_s: state.pitch_rate_rad_s,
+            reference_rad: reference,
+            position_m: state.position_m,
+            speed_mps: state.speed_mps,
+        };
+        let command = balance.update(&sample, &tuning, dt);
+        let next = plant.step(command, dt);
+        peak_pitch = peak_pitch.max(next.pitch_rad.abs());
+        peak_torque = peak_torque.max(next.applied_torque_nm.abs());
+    }
+    let final_state = plant.state();
+    (
+        final_state.pitch_rad.to_degrees(),
+        peak_pitch.to_degrees(),
+        final_state.position_m.abs(),
+        peak_torque,
+    )
+}
+
 pub fn stand_up_reference(start_rad: f32, rate_dps: f32, elapsed_s: f32) -> f32 {
     let remaining = start_rad.abs() - rate_dps.to_radians() * elapsed_s.max(0.0);
     start_rad.signum() * remaining.max(0.0)

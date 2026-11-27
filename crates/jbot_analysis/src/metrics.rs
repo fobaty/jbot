@@ -359,6 +359,8 @@ pub struct Breakaway {
     pub moving_min_units: f64,
     /// Samples the two numbers are based on.
     pub samples: usize,
+    /// The applied per-wheel commands were used instead of the requested torque.
+    pub from_applied: bool,
 }
 
 impl Breakaway {
@@ -379,12 +381,19 @@ pub fn breakaway<'a>(samples: impl Iterator<Item = &'a Sample>) -> Option<Breaka
     let mut moving_min = f64::INFINITY;
     let mut stuck = 0;
     let mut moving = 0;
+    let mut from_applied = false;
 
     for sample in samples {
         if !sample.armed() || sample.spin_test() {
             continue;
         }
-        let torque = sample.torque_units.abs();
+        if sample.applied_present {
+            from_applied = true;
+        }
+        let torque = sample
+            .applied_common_units()
+            .unwrap_or(sample.torque_units)
+            .abs();
         let left = sample.left_rpm.abs();
         let right = sample.right_rpm.abs();
         if left < REST_RPM && right < REST_RPM {
@@ -403,6 +412,7 @@ pub fn breakaway<'a>(samples: impl Iterator<Item = &'a Sample>) -> Option<Breaka
         stuck_max_units: stuck_max,
         moving_min_units: moving_min,
         samples: stuck + moving,
+        from_applied,
     })
 }
 
@@ -853,6 +863,31 @@ mod tests {
         assert!(bracket.stuck_max_units <= 150.0);
         assert!(bracket.moving_min_units > 150.0);
         assert!(bracket.is_bracketed());
+    }
+
+    #[test]
+    fn breakaway_prefers_applied_command_when_recorded() {
+        let mut samples = Vec::new();
+        for step in 0..100 {
+            let moving = step >= 50;
+            let applied = if moving { 60.0 } else { 10.0 };
+            samples.push(Sample {
+                t_ms: step * 5,
+                imu_fresh: true,
+                torque_units: 200.0,
+                applied_left_units: applied,
+                applied_right_units: applied,
+                applied_present: true,
+                left_rpm: if moving { 120.0 } else { 0.0 },
+                right_rpm: if moving { 120.0 } else { 0.0 },
+                mode: 2,
+                ..Sample::default()
+            });
+        }
+        let bracket = breakaway(samples.iter()).expect("breakaway");
+        assert!(bracket.from_applied);
+        assert_eq!(bracket.stuck_max_units, 10.0);
+        assert_eq!(bracket.moving_min_units, 60.0);
     }
 
     #[test]

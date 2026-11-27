@@ -371,13 +371,17 @@ fn print_breakaway(session: &Session) {
             stuck_max_units,
             moving_min_units,
             samples,
+            from_applied,
         }) => {
             let bracket = if moving_min_units > stuck_max_units {
                 "bracketed"
             } else {
                 "overlapping (the drive was commanded while rolling)"
             };
-            println!("  drive breakaway ({samples} armed samples)");
+            println!(
+                "  drive breakaway ({samples} armed samples, {} command)",
+                if from_applied { "applied" } else { "requested" }
+            );
             println!(
                 "    stuck up to {stuck_max_units:.0} units, moving from {moving_min_units:.0} units -> {bracket}",
             );

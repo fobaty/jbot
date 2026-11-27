@@ -21,6 +21,7 @@ pub mod session;
 pub use session::{Action, Error, Sample, Segment, Session};
 
 pub mod balancer_model;
+pub mod gain_sweep;
 pub mod plant;
 pub mod recovery_sim;
 pub mod spinfit;
