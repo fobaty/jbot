@@ -13,6 +13,24 @@ pitch-rate derivative. A host sweep with a 50 ms measurement delay selects
 `pscale 0.75 / dscale 0.60` as the only settling point
 (`docs/hold-id-audit-2026-11-26.md:114-121`).
 
+## Bench results, 2026-11-27
+
+All runs were made with the paired firmware: Pico 200 Hz raw-gyro image
+`a0893f42…` and F103 `lag-fix` `9867b4aa…`. None achieved the 10 s hold.
+
+| Profile | Armed | Peak pitch | Result |
+|---|---|---|---|
+| A | 0.49 s | -62.9 deg | Fall, guard latch; 0.49 s oscillation period |
+| B | 0.45 s | 43.2 deg | Fall, faster 0.23 s period; predictor over-compensates |
+| C | 0.81 s | -32.8 deg | Best duration, still fell; minimal law alone insufficient |
+| E | 0.51 s | -64.3 deg | Fall; kp fit 19.6 Nm/rad matches the model (R2 0.95), 1.2 % torque saturation, 502 rpm peak |
+
+Conclusion: the balance law itself is correct at full gains, but the machine
+cannot stay upright with the measured loaded breakaway (90–118 units,
+0.45–0.59 Nm) and the available 5 Nm torque budget. Profiles D/F are unlikely
+to help because prediction already made B worse. Further gain tuning is not
+the blocker; the mechanical drive path is.
+
 ## Profiles
 
 | Profile | Knobs | Question |
@@ -108,10 +126,18 @@ profiles fail:
 
 The prepared artifacts are:
 
+Earlier builds from the `firmware/pico2w/fw` workspace failed to boot on the
+bench Pico. Bisection on the known-good `8f95b46` base traced the failure to
+the four separate console command handlers: they enlarged the shared task
+stack enough to crash at startup. The shipped image keeps the same runtime
+knobs but dispatches them from one compact arm. Both `iscale`, `posg`, `velg`
+and `demlim` reply correctly, and gyro propagation plus the health-gated
+watchdog are retained.
+
 | Board | Artifact | SHA-256 | Size |
 |---|---|---|---|
-| Pico 2 W, 200 Hz | `firmware/pico2w/fw/pico2w-lag-fix.uf2` | `460bfd763688631e3aec94a87a9fd38043a3207aa30345d9e0c42d2ba49aded1` | 291,328 B |
-| Pico 2 W, 400 Hz | `firmware/pico2w/fw/pico2w-lag-fix-400hz.uf2` | `ddfdb668578456338a6a35e3ad5ec4ea9b8769ff18dfb3a0458adf62542fd8a6` | 291,328 B |
+| Pico 2 W, 200 Hz | `firmware/pico2w/fw/pico2w-lag-fix.uf2` | `a0893f424ff8be965b2dcf9fc51772f22cf83e01d27d4118bc6dc5e682dc7abe` | verified booting 2026-11-27 |
+| Pico 2 W, 400 Hz | `firmware/pico2w/fw/pico2w-lag-fix-400hz.uf2` | `38409664147c8a7d7a72edb5cf008d8b75cd30a500d9ed0db10a76ce2b17a576` | built from the same source, not yet flashed |
 | STM32F103, baseline | `firmware/stm32f103/eferu-foc/eferu/build/lag-fix/hover.bin` | `9867b4aa8965dd9cd300d5c35be08833d46f03e494b61d1019bbb262f5a205db` | 40,328 B |
 | STM32F103, 1 kHz command | `firmware/stm32f103/eferu-foc/eferu/build/fast-command/hover.bin` | `95630d10a74b54ee13a590909d6cbf2e86e7dcc37d2242741ac2753333cd7b92` | 40,476 B |
 
