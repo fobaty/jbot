@@ -293,6 +293,41 @@ impl Tuning {
         self
     }
 
+    /// Scale only the pitch integral gain. The integrator removes the dead-zone
+    /// lean, but with a slow reference ramp it can wind up to its 1 Nm clamp
+    /// and dominate a small step. Zero leaves the proportional/derivative law
+    /// intact while making the response observable.
+    pub fn with_integral_scale(mut self, factor: f32) -> Self {
+        if factor.is_finite() {
+            self.pitch_ki_nm_per_rad_s *= factor.clamp(0.0, MAX_PSCALE);
+        }
+        self
+    }
+
+    /// Override the outer position/speed loops for bench identification.
+    ///
+    /// These gains are normally derived from the plant once and left alone.
+    /// A diagnostic may set them to zero to observe the pitch loop alone: a
+    /// saturated speed demand otherwise dominates a small `home` step. Values
+    /// are runtime-only; the compiled defaults are unchanged by this builder.
+    pub fn with_outer_loops(
+        mut self,
+        position_gain_per_s: f32,
+        velocity_gain_per_s: f32,
+        demand_limit_rad: f32,
+    ) -> Self {
+        if position_gain_per_s.is_finite() && position_gain_per_s >= 0.0 {
+            self.position_gain_per_s = position_gain_per_s;
+        }
+        if velocity_gain_per_s.is_finite() && velocity_gain_per_s >= 0.0 {
+            self.velocity_gain_per_s = velocity_gain_per_s;
+        }
+        if demand_limit_rad.is_finite() && demand_limit_rad >= 0.0 {
+            self.pitch_demand_limit_rad = demand_limit_rad;
+        }
+        self
+    }
+
     /// Scale only the pitch derivative gain. Raising `pscale` alone lifts both
     /// gains, so the extra proportional torque needed to cross the drive dead
     /// zone also amplifies gyro noise and actuator lag into a limit cycle. This
@@ -1075,6 +1110,32 @@ mod tests {
         assert_eq!(base.scaled_by(1.0), base);
         assert!(!base.scaled_by(0.0).is_active());
         assert!(base.scaled_by(1.0).is_active());
+    }
+
+    #[test]
+    fn integral_scale_only_changes_the_integrator() {
+        let base = tuning();
+        let off = base.with_integral_scale(0.0);
+        assert_eq!(off.pitch_ki_nm_per_rad_s, 0.0);
+        assert_eq!(off.pitch_kp_nm_per_rad, base.pitch_kp_nm_per_rad);
+        assert_eq!(off.pitch_kd_nm_per_rad_s, base.pitch_kd_nm_per_rad_s);
+        assert_eq!(base.with_integral_scale(f32::NAN), base);
+        let capped = base.with_integral_scale(99.0);
+        assert!(
+            (capped.pitch_ki_nm_per_rad_s - MAX_PSCALE * base.pitch_ki_nm_per_rad_s).abs() < 1e-6
+        );
+    }
+
+    #[test]
+    fn outer_loop_override_is_bounded_and_leaves_pitch_untouched() {
+        let base = tuning();
+        let isolated = base.with_outer_loops(0.0, 0.0, 0.0);
+        assert_eq!(isolated.position_gain_per_s, 0.0);
+        assert_eq!(isolated.velocity_gain_per_s, 0.0);
+        assert_eq!(isolated.pitch_demand_limit_rad, 0.0);
+        assert_eq!(isolated.pitch_kp_nm_per_rad, base.pitch_kp_nm_per_rad);
+        assert_eq!(isolated.pitch_kd_nm_per_rad_s, base.pitch_kd_nm_per_rad_s);
+        assert_eq!(base.with_outer_loops(f32::NAN, -1.0, -1.0), base);
     }
 
     #[test]

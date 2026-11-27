@@ -2,14 +2,14 @@
 //!
 //! This is the foundation stage of the Tier 1 controller described in
 //! `docs/pico-bridge.md`: it brings up the clock tree, the UART link to the
-//! STM32F103 torque node, the I2C link to the BNO055, the 200 Hz control tick,
+//! STM32F103 torque node, the I2C link to the BNO055, the control tick,
 //! and a USB console for bench work.
 //!
 //! Tasks:
 //!
 //! * [`imu_task`] samples the BNO055 at 100 Hz and publishes the latest sample.
 //! * [`link_rx_task`] parses EFeru feedback frames from the mainboard.
-//! * [`control_task`] runs at 200 Hz, computes the balance command, sends an
+//! * [`control_task`] runs at the compiled control rate, computes the balance command, sends an
 //!   8-byte frame to the mainboard, toggles the GP10 marker, and feeds the
 //!   hardware watchdog.
 //! * [`console::usb_task`] and [`console::console_task`] serve the USB console.
@@ -65,6 +65,7 @@ use jbot_pico_core::control::{
 };
 use jbot_pico_core::eferu::{Feedback, FeedbackParser};
 use jbot_pico_core::filters::{LowPass, SlewLimiter};
+use jbot_pico_core::health::{propagate_pitch_deg, watchdog_feed_allowed};
 use jbot_pico_core::mount::{self, Mount};
 use jbot_pico_core::plant::PlantParams;
 use jbot_pico_core::predictor::StatePredictor;
@@ -80,13 +81,22 @@ bind_interrupts!(struct Irqs {
     USBCTRL_IRQ => embassy_rp::usb::InterruptHandler<USB>;
 });
 
-/// Control loop period: 5 ms, that is 200 Hz.
+/// Control loop period: 5 ms (200 Hz) by default, 2.5 ms (400 Hz) with `rate400`.
+#[cfg(not(feature = "rate400"))]
 const CONTROL_PERIOD: Duration = Duration::from_micros(5_000);
+#[cfg(feature = "rate400")]
+const CONTROL_PERIOD: Duration = Duration::from_micros(2_500);
 /// Control loop period in seconds, for the rate limiters.
+#[cfg(not(feature = "rate400"))]
 const CONTROL_PERIOD_S: f32 = 0.005;
-/// Cut-off of the first-order low-pass filter on the pitch rate used by the
-/// derivative term.
-const D_FILTER_CUTOFF_HZ: f32 = 12.0;
+#[cfg(feature = "rate400")]
+const CONTROL_PERIOD_S: f32 = 0.0025;
+/// Cut-off of the low-pass filter on the pitch rate used by the derivative term.
+/// Zero makes `LowPass` a pass-through, so the D channel uses the raw mapped gyro
+/// like mjbots hoverbot. Gyro noise is handled by estimator quality, not by an
+/// extra lag in the D channel. The separate guard tilt filter is outside the
+/// control path and keeps its own cutoff.
+const D_FILTER_CUTOFF_HZ: f32 = 0.0;
 /// Separate, slower filter on the pitch angle used only by the fall guard. The
 /// control path keeps its own rate filter, so guard tuning cannot change the
 /// torque law.
@@ -97,8 +107,10 @@ const TORQUE_SLEW_PER_S: f32 = state::DEFAULT_TORQUE_SLEW_PER_S;
 const IMU_PERIOD: Duration = Duration::from_millis(10);
 /// An IMU sample older than this is not used for control.
 const IMU_MAX_AGE: Duration = Duration::from_millis(50);
-/// Mainboard watchdog period. Fed once per control step.
+/// Mainboard watchdog period. Fed once per completed, healthy control step.
 const WATCHDOG_PERIOD: Duration = Duration::from_millis(1_000);
+/// Minimum spacing between warnings about a withheld watchdog feed.
+const WATCHDOG_WARN_INTERVAL: Duration = Duration::from_millis(1_000);
 /// UART link baud rate, matching the EFeru `VARIANT_USART` build.
 const LINK_BAUD: u32 = 115_200;
 /// BNO055 I2C clock.
@@ -294,7 +306,7 @@ async fn link_rx_task(mut rx: BufferedUartRx<'static, UART0>) {
     }
 }
 
-/// 200 Hz balance and torque-link task.
+/// Balance and torque-link task at the compiled control rate.
 #[embassy_executor::task]
 async fn control_task(
     mut tx: BufferedUartTx<'static, UART0>,
@@ -308,6 +320,8 @@ async fn control_task(
     let mut ticker = Ticker::every(CONTROL_PERIOD);
     let mut last_imu = ImuSample::default();
     let mut last_imu_at: Option<Instant> = None;
+    // Fused pitch carried across the ticks between 100 Hz IMU samples.
+    let mut propagated_pitch_deg = 0.0_f32;
     let mut last_feedback = Feedback::default();
     let mut last_feedback_at: Option<Instant> = None;
     let mut spin = SpinTest::new();
@@ -328,6 +342,7 @@ async fn control_task(
     // Travel since arming, metres, from the wheel-speed feedback.
     let mut position_m = 0.0_f32;
     let mut feedback_gap_logged = false;
+    let mut last_watchdog_warn_at: Option<Instant> = None;
 
     // Loop-rate measurement over a fixed window of control steps.
     let mut window_at = Instant::now();
@@ -351,7 +366,16 @@ async fn control_task(
         let tuning = base_tuning
             .scaled_by(state::pscale())
             .with_deadband(state::deadband_nm())
-            .with_derivative_scale(state::dscale());
+            .with_derivative_scale(state::dscale())
+            .with_integral_scale(state::iscale())
+            // Diagnostic overrides: compiled defaults are unchanged, and the
+            // values are read per tick so a console change takes effect at
+            // once. Zeroing the outer loops isolates the pitch mode.
+            .with_outer_loops(
+                state::position_gain(),
+                state::velocity_gain(),
+                state::demand_limit_rad(),
+            );
 
         // Per-wheel breakaway calibration, read per tick like the other bench
         // knobs. Zero at boot, so an uncalibrated machine cannot get free
@@ -371,7 +395,9 @@ async fn control_task(
             predictor.set_delay_ticks(predict_ticks);
         }
 
+        let mut imu_sampled = false;
         if let Some(sample) = IMU_SIGNAL.try_take() {
+            imu_sampled = true;
             last_imu = sample;
             last_imu_at = Some(Instant::now());
             // Publish the mapped attitude on every sample, even while the
@@ -389,6 +415,20 @@ async fn control_task(
         state::set_imu_fresh(imu_fresh);
         let feedback_fresh = last_feedback_at.is_some_and(|at| at.elapsed() < FEEDBACK_MAX_AGE);
         state::set_link_fresh(feedback_fresh);
+
+        // Reset to the fused pitch on a new sample, then coast on the mapped
+        // gyro rate until the next one. A stale IMU is never propagated, so a
+        // gap cannot leave a plausible-looking angle in the control path.
+        if imu_fresh {
+            let attitude = attitude_of(&last_imu);
+            propagated_pitch_deg = propagate_pitch_deg(
+                propagated_pitch_deg,
+                attitude.pitch_deg,
+                attitude.pitch_rate_dps,
+                CONTROL_PERIOD_S,
+                imu_sampled,
+            );
+        }
 
         // A `fall` command is a one-shot request while armed. Disarming or an
         // e-stop always hands control back to the operator.
@@ -463,7 +503,9 @@ async fn control_task(
             WheelTorque::ZERO
         } else if armed {
             let attitude = attitude_of(&last_imu);
-            let pitch_zero = attitude.pitch_deg.to_radians() - state::zero_pitch_rad();
+            // The propagated angle is fresh on every control tick; the guard
+            // below still watches the raw fused sample independently.
+            let pitch_zero = propagated_pitch_deg.to_radians() - state::zero_pitch_rad();
             pitch_zero_rad = Some(pitch_zero);
 
             // Arming is refused when the torque link is blind, when the body
@@ -718,7 +760,24 @@ async fn control_task(
         let _ = tx.write_all(&command.encode()).await;
 
         marker.toggle();
-        watchdog.feed();
+        // Only a completed, healthy step keeps the board alive. A feedback gap
+        // while disarmed is benign because neutral commands still go out, but
+        // a missing attitude or an armed run without wheel feedback must stop
+        // feeding so the hardware reset clears any stale torque.
+        let armed_now = state::armed();
+        if watchdog_feed_allowed(imu_fresh, feedback_fresh, armed_now) {
+            watchdog.feed();
+            last_watchdog_warn_at = None;
+        } else if last_watchdog_warn_at.is_none_or(|at| at.elapsed() >= WATCHDOG_WARN_INTERVAL) {
+            defmt::warn!(
+                "watchdog feed withheld: imu={} feedback={} armed={} estop={}",
+                imu_fresh,
+                feedback_fresh,
+                armed_now,
+                state::estop()
+            );
+            last_watchdog_warn_at = Some(Instant::now());
+        }
 
         steps = steps.wrapping_add(1);
         state::count(&state::CONTROL_STEPS);

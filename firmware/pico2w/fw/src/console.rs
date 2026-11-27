@@ -16,7 +16,7 @@
 //!   rejected, plus a banner on connect.
 //!
 //! Nothing here is on the control path: a missing host only means lines are
-//! dropped, and a slow host cannot stall the 200 Hz loop. The console task
+//! dropped, and a slow host cannot stall the control loop. The console task
 //! survives a host closing the port: every write has a deadline, so a packet
 //! left waiting for a host that stopped draining is abandoned instead of
 //! parking the task. Any host can open or close the port without a USB
@@ -139,7 +139,19 @@ async fn write_bytes(class: &mut Console, bytes: &[u8]) -> Result<(), ()> {
 async fn write_bounded(class: &mut Console, bytes: &[u8], timeout: Duration) -> bool {
     match select(write_bytes(class, bytes), Timer::after(timeout)).await {
         Either::First(result) => result.is_ok(),
-        Either::Second(()) => false,
+        Either::Second(()) => {
+            // The cancelled write left its IN endpoint marked `available`: the
+            // hardware is still waiting for a host that has already closed the
+            // port. Every later write would park on that same flag. Clear it so
+            // the next session can write again. The console task is the only
+            // owner of these endpoints and EP0 stays owned by the USB stack.
+            for index in 1..16usize {
+                rp_pac::USB_DPRAM
+                    .ep_in_buffer_control(index)
+                    .modify(|w| w.set_available(0, false));
+            }
+            false
+        }
     }
 }
 
@@ -258,7 +270,7 @@ async fn handle_command(class: &mut Console, flash: &mut Store, line: &[u8]) -> 
             reply(
                 class,
                 format_args!(
-                    "ok help: ping | stat | stream <hz> | speed <mps> | steer <deg/s> | trim <deg> | zero | level | pose [back|face|home] [deg] | mount <name> | home [deg] | vmax [deg/s] | tmax [Nm|off] | pscale [0..2] | dscale [0..2] | slew [units/s] | ff [on|off] | db [Nm|off] | cal [left right] | cal l|r <units> | cal off | dither <units|off> | predict <ms|off> | arm | disarm | fall | test <units> [units] | reinit | estop | clear | save | forget | stats reset | reboot"
+                    "ok help: ping | stat | stream <hz> | speed <mps> | steer <deg/s> | trim <deg> | zero | level | pose [back|face|home] [deg] | mount <name> | home [deg] | vmax [deg/s] | tmax [Nm|off] | pscale [0..2] | dscale [0..2] | iscale [0..2] | posg [0..5|off] | velg [0..10|off] | demlim [deg|off] | slew [units/s] | ff [on|off] | db [Nm|off] | cal [left right] | cal l|r <units> | cal off | dither <units|off> | predict <ms|off> | arm | disarm | fall | test <units> [units] | reinit | estop | clear | save | forget | stats reset | reboot"
                 ),
             )
             .await;
@@ -731,6 +743,68 @@ async fn handle_command(class: &mut Console, flash: &mut Store, line: &[u8]) -> 
                         .await;
                     }
                 },
+            }
+        }
+        "iscale" => {
+            // Integral-only bench scale. Runtime-only, like `pscale`/`dscale`.
+            match argument {
+                None => {
+                    reply(class, format_args!("ok iscale {:.2}", state::iscale())).await;
+                }
+                Some(value) => match parse_f32(value) {
+                    Some(scale) if scale.is_finite() && (0.0..=2.0).contains(&scale) => {
+                        let applied = state::set_iscale(scale);
+                        reply(class, format_args!("ok iscale {:.2}", applied)).await;
+                    }
+                    _ => {
+                        reply(
+                            class,
+                            format_args!("err iscale needs 0..2 (1.0 = compiled)"),
+                        )
+                        .await;
+                    }
+                },
+            }
+        }
+        "posg" | "velg" | "demlim" => {
+            // Runtime outer-loop overrides for bench identification. `off`
+            // means zero for the gains and zero degrees for the demand cap.
+            let name = match command {
+                "posg" => "posg",
+                "velg" => "velg",
+                _ => "demlim",
+            };
+            match argument {
+                None => {
+                    let current = match name {
+                        "posg" => state::position_gain(),
+                        "velg" => state::velocity_gain(),
+                        _ => state::demand_limit_rad().to_degrees(),
+                    };
+                    reply(class, format_args!("ok {name} {current:.2}")).await;
+                }
+                Some(value) => {
+                    let applied = if value == "off" {
+                        match name {
+                            "posg" => state::set_position_gain(0.0),
+                            "velg" => state::set_velocity_gain(0.0),
+                            _ => state::set_demand_limit_deg(0.0),
+                        }
+                    } else {
+                        match parse_f32(value) {
+                            Some(number) if number.is_finite() && number >= 0.0 => match name {
+                                "posg" => state::set_position_gain(number),
+                                "velg" => state::set_velocity_gain(number),
+                                _ => state::set_demand_limit_deg(number),
+                            },
+                            _ => {
+                                reply(class, format_args!("err {name} needs 0.. or off")).await;
+                                return Action::Continue;
+                            }
+                        }
+                    };
+                    reply(class, format_args!("ok {name} {applied:.2}")).await;
+                }
             }
         }
         "dbg" => {

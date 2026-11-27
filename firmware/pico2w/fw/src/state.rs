@@ -35,7 +35,10 @@ pub fn tuning() -> Tuning {
 }
 
 /// Nominal control loop rate, in hertz.
+#[cfg(not(feature = "rate400"))]
 pub const CONTROL_HZ: u32 = 200;
+#[cfg(feature = "rate400")]
+pub const CONTROL_HZ: u32 = 400;
 /// Highest accepted telemetry rate, in hertz.
 pub const MAX_STREAM_HZ: u32 = CONTROL_HZ;
 /// Default telemetry rate: one line per second.
@@ -253,10 +256,20 @@ static PSCALE_BITS: AtomicU32 = AtomicU32::new(1.0f32.to_bits());
 /// Runtime scale on only the pitch derivative gain, stored as `f32` bits.
 /// Runtime-only like [`PSCALE_BITS`], so it cannot leak into a power-up.
 static DSCALE_BITS: AtomicU32 = AtomicU32::new(1.0f32.to_bits());
+/// Runtime scale on only the pitch integral gain. Runtime-only like the other
+/// bench scales, so it cannot leak into a power-up.
+static ISCALE_BITS: AtomicU32 = AtomicU32::new(1.0f32.to_bits());
 /// Runtime inverse of the measured drive dead zone, newton-metres, stored as
 /// `f32` bits. Off at boot like the feedforward gate: an empirical bench value
 /// must never change the compiled law on a fresh power-up.
 static DEADBAND_NM_BITS: AtomicU32 = AtomicU32::new(0);
+/// Runtime override for the outer position gain. Boot value mirrors
+/// `Tuning::from_plant`, so a bench session cannot leak into a power-up.
+static POS_GAIN_BITS: AtomicU32 = AtomicU32::new(0.4f32.to_bits());
+/// Runtime override for the outer velocity gain.
+static VEL_GAIN_BITS: AtomicU32 = AtomicU32::new(1.8f32.to_bits());
+/// Runtime override for the pitch demand limit, radians.
+static DEM_LIMIT_BITS: AtomicU32 = AtomicU32::new(8.0f32.to_radians().to_bits());
 /// Largest dead-zone compensation the console accepts, newton-metres.
 pub const MAX_DEADBAND_NM: f32 = 0.6;
 /// Common-mode torque budget in Nm used to convert the control law into
@@ -446,6 +459,74 @@ pub fn set_dscale(value: f32) -> f32 {
         1.0
     };
     DSCALE_BITS.store(clamped.to_bits(), Ordering::Relaxed);
+    clamped
+}
+
+/// Runtime outer position gain, 1/s.
+pub fn position_gain() -> f32 {
+    f32::from_bits(POS_GAIN_BITS.load(Ordering::Relaxed))
+}
+
+/// Set the outer position gain, clamped to `0..=5` 1/s. Non-finite input
+/// restores the compiled default. Returns the stored value.
+pub fn set_position_gain(value: f32) -> f32 {
+    let clamped = if value.is_finite() {
+        value.clamp(0.0, 5.0)
+    } else {
+        0.4
+    };
+    POS_GAIN_BITS.store(clamped.to_bits(), Ordering::Relaxed);
+    clamped
+}
+
+/// Runtime outer velocity gain, 1/s.
+pub fn velocity_gain() -> f32 {
+    f32::from_bits(VEL_GAIN_BITS.load(Ordering::Relaxed))
+}
+
+/// Set the outer velocity gain, clamped to `0..=10` 1/s. Non-finite input
+/// restores the compiled default. Returns the stored value.
+pub fn set_velocity_gain(value: f32) -> f32 {
+    let clamped = if value.is_finite() {
+        value.clamp(0.0, 10.0)
+    } else {
+        1.8
+    };
+    VEL_GAIN_BITS.store(clamped.to_bits(), Ordering::Relaxed);
+    clamped
+}
+
+/// Runtime pitch demand limit, radians.
+pub fn demand_limit_rad() -> f32 {
+    f32::from_bits(DEM_LIMIT_BITS.load(Ordering::Relaxed))
+}
+
+/// Set the pitch demand limit, clamped to `0..=20` degrees. Non-finite input
+/// restores the compiled default. Returns the stored value in degrees.
+pub fn set_demand_limit_deg(value: f32) -> f32 {
+    let clamped = if value.is_finite() {
+        value.clamp(0.0, 20.0)
+    } else {
+        8.0
+    };
+    DEM_LIMIT_BITS.store(clamped.to_radians().to_bits(), Ordering::Relaxed);
+    clamped
+}
+
+/// Runtime scale on the pitch integral gain only.
+pub fn iscale() -> f32 {
+    f32::from_bits(ISCALE_BITS.load(Ordering::Relaxed))
+}
+
+/// Set the integral-only scale, clamped to `0..=2`. Non-finite input restores
+/// the neutral 1.0. Returns the stored value.
+pub fn set_iscale(value: f32) -> f32 {
+    let clamped = if value.is_finite() {
+        value.clamp(0.0, 2.0)
+    } else {
+        1.0
+    };
+    ISCALE_BITS.store(clamped.to_bits(), Ordering::Relaxed);
     clamped
 }
 
