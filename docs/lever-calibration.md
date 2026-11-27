@@ -139,12 +139,104 @@ cargo run -q -p jbot_console --bin ref_hold_cal --release -- \
   --settle-ms 1500 --hold-ms 800 --tol 1.0
 ```
 
+`--slew` accepts up to 3000 units/s, `--db 0.25` sets runtime deadband
+compensation in newton-metres, `--cal LEFT RIGHT` sets per-wheel breakaway
+compensation, and `--dither 30` adds a 12 Hz triangle wave to hold the drive at
+the edge of stiction. All are recorded in the JSON next to `pscale`.
+
 It arms the balance law on the safe profile with `ff off`, steps the `home`
 reference through each angle, waits for the body to settle (pitch span within
-`tol`, rate below 8 dps), then records the mean applied balance torque `trq`
-over `hold-ms`. A least-squares fit gives `T(pitch)`, which is the feedforward
-that offloads the integral term the law currently uses to hold these angles.
-Output: `csv/jbot-refhold-<timestamp>.csv` and `.json`.
+`tol`, rate below 8 dps), then records the mean common-mode torque over
+`hold-ms`. By default the fit uses the **applied** commands reported by the
+mainboard, `(al + ar) / 2`, not the requested `trq`: the former is what the
+drive actually delivered. `--torque-source requested` reproduces the older
+method for an A/B comparison. A stale mainboard frame (`mb != ok` or `age >
+300 ms`) aborts the trial instead of fitting stale applied words.
+A least-squares fit gives `T(pitch)`, which is the feedforward that offloads
+the integral term the law currently uses to hold these angles.
+Output: `csv/jbot-refhold-<timestamp>.csv` and `.json`; both requested and
+applied per-wheel commands are recorded, plus `torque_source` in the JSON.
+The command-path delay and its spread can be scored from the same CSV:
+
+```sh
+cargo run -q -p jbot_analysis --bin command_path -- csv/jbot-refhold-<timestamp>.csv
+```
+
+First run (2026-11-26): `csv/jbot-refhold-1795718229688.csv` aborted at the
+first angle. The baseline pitch was 7.38 deg with the body externally supported,
+the wheels reached about 200 rpm, and `x` moved 0.428 m from the origin before
+the 0.4 m travel guard fired. No hold point was recorded, so no torque curve
+exists yet. `command_path` on that CSV reports 15 gradual command steps with a
+6-7 ms applied-word reporting delay; that is feedback-frame quantization, not
+actuator delay. The driver ended with `estop=1`, `armed=0`, `al=ar=0`. Retry
+only with both wheels on the floor and the body free to balance, the rope slack
+as a catch rather than a support.
+
+Second run (2026-11-26): `csv/jbot-refhold-1795718437631.csv` got no hold point
+either. The `level` command was silently refused, so the law saw a 5.8 deg error
+and ramped torque to +59 units while the wheels stayed still and the body was
+externally held; removing the support injected about 115 dps and the body fell
+to -17.3 deg. The driver now checks that `level` was captured and rejects a
+baseline with a lean and motionless wheels, mirroring `hold_sweep`'s
+`externally_supported` gate. No firmware was changed.
+
+Third run (2026-11-26): `csv/jbot-refhold-1795718675014.csv` passed the new
+baseline check (pitch 1.69 deg, level 1.62 deg) but still got no hold. During the
+`-3 deg` ramp the body stayed at about 1.9 deg while the applied command rose
+only to 30-34 units with both wheels at 0 rpm. That band is at or below the
+measured loaded breakaway of roughly 40-60 units, so the drive never broke away;
+when the external support was removed the body reached 22.9 deg at 272 dps and
+the guard fired. The limiter here is torque authority/dead zone and the 100
+units/s slew, not the reference ramp. A runtime trial with a higher slew and
+deadband compensation is needed before any curve can be measured.
+
+Fourth run (2026-11-26): `csv/jbot-refhold-1795718893508.csv` used `slew=300`
+and `db=0.25` and still got no hold. The wheels stayed at 0 rpm until the
+applied command passed roughly 40 units, then the body ran away to -33 deg.
+`jbot-analyze` reports a breakaway of 63 units (0.32 Nm nominal) and an
+oscillation period near 0.93 s; the fitted `kp 0.7 Nm/rad` is unreliable because
+most of the recording is an externally supported baseline. `db=0.25` sits below
+the observed breakaway. More runtime trials without a repeatable fixture only
+mix support artefacts with control behaviour, so the next step is the fixture in
+`docs/release-fixture.md`, not another gain change.
+
+Fifth run (2026-11-26): `csv/jbot-refhold-1795719007893.csv` used `db=0.35`
+(70 units) and still had both wheels at 0 rpm while the command oscillated
+within roughly +/-30 units; the body was released only when the operator let go
+and then fell to -29.8 deg. `jbot-analyze` reports an unpaired pitch angle/rate
+channel for this session and a breakaway of 50 units. Correction: the operator only supported the body lightly to keep it upright,
+not by clamping it. Motionless wheels at 30 units are therefore explained by
+the measured 50-63 unit breakaway, not by a rigid fixture. `db` and `slew` were
+the wrong knobs: the quadratic deadband term is small near equilibrium and a
+larger `db` subtracts torque above the threshold. The firmware already provides
+per-wheel breakaway compensation (`cal l|r`) and a 12 Hz dither that keeps the
+drive at the edge of stiction; both are now driver options
+(`--cal LEFT RIGHT`, `--dither UNITS`).
+
+Sixth run (2026-11-26): `csv/jbot-refhold-1795719670696.csv` used `cal 50 50`
+and `dither 30`. The wheels did break away (the inferred breakaway fell to 15
+units) but the applied command oscillated roughly between -76 and +106 units
+while `trq` stayed within +/-15 units, so the dither/cal combination overwhelmed
+the law: the body reached 23 deg and then -8.8 deg at -254 dps before the guard.
+`jbot-analyze` finds a 0.64 s oscillation and `kp 0.4 Nm/rad`. Next trial holds
+`cal` fixed and reduces only the dither amplitude.
+
+Seventh run (2026-11-26): `csv/jbot-refhold-1795719988511.csv` used `dither 10`
+with the same `cal 50 50`. Breakaway dropped to 13 units, but the applied
+command still swung between roughly -60 and +100 units while `trq` stayed
+within +/-15 units; the body reached 31 deg and then -3.2 deg at -300 dps.
+`kp` stays near 0.4 Nm/rad, far below the 5.39 Nm/rad stability floor, because
+the 100 units/s slew cannot ramp the requested torque before the body moves.
+The next single-variable change is `slew 300` with `cal` and `dither` unchanged;
+if that still fails, stop runtime trials and measure Kt/breakaway on a locked
+wheel before touching any gain again.
+
+Eighth run (2026-11-26): `csv/jbot-refhold-1795720087862.csv` used `slew 300`
+with `cal 50 50`, `dither 10`. `kp` rose to 1.0 Nm/rad but remained far below
+the 5.39 Nm/rad floor; the oscillation period shortened to 0.36 s and the body
+reached 15.8 deg at 278 dps in 0.8 s. All runtime knobs have now been tried in
+isolation; none produced a single stable hold. Runtime tuning is closed and WP0
+is the next step.
 
 The robot stays on its wheels throughout, so no reflash is needed and the
 200 Hz balance loop is untouched. Every run ends with `home 0` and `estop`.
