@@ -130,28 +130,14 @@ async fn write_bytes(class: &mut Console, bytes: &[u8]) -> Result<(), ()> {
 
 /// Write with a deadline.
 ///
-/// `write_packet` waits until the host drains the IN endpoint. A host that
-/// closes the port can leave that wait pending forever, parking the console
-/// task even though the endpoint is still enabled. Cancelling the wait is safe:
-/// the RP driver only touches the endpoint buffer after it reports ready, so a
-/// dropped future leaves no half-written packet behind. The line may be lost,
-/// which is the documented telemetry overflow policy.
+/// A host that stops draining the port must not park the console task on an
+/// IN write. Cancellation is safe: the USB driver owns the endpoint state and
+/// recovers when the host reconnects. The line may be lost, which is the
+/// documented telemetry overflow policy.
 async fn write_bounded(class: &mut Console, bytes: &[u8], timeout: Duration) -> bool {
     match select(write_bytes(class, bytes), Timer::after(timeout)).await {
         Either::First(result) => result.is_ok(),
-        Either::Second(()) => {
-            // The cancelled write left its IN endpoint marked `available`: the
-            // hardware is still waiting for a host that has already closed the
-            // port. Every later write would park on that same flag. Clear it so
-            // the next session can write again. The console task is the only
-            // owner of these endpoints and EP0 stays owned by the USB stack.
-            for index in 1..16usize {
-                rp_pac::USB_DPRAM
-                    .ep_in_buffer_control(index)
-                    .modify(|w| w.set_available(0, false));
-            }
-            false
-        }
+        Either::Second(()) => false,
     }
 }
 

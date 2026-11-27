@@ -27,11 +27,6 @@ embassy-sync = { version = "0.6", features = ["defmt"] }
 embedded-io-async = "0.6"
 static_cell = "2"
 
-# PAC access for clearing a stuck USB IN endpoint after a cancelled console
-# write. Already in the tree through `embassy-rp`; declared directly because
-# the console task needs the register block without going through the driver.
-rp-pac = { version = "7.0.0", features = ["rp235x"] }
-
 # Traits for the flash driver. Already in the tree through `embassy-rp`; the
 # settings record (`src/nvm.rs`) needs them in scope directly.
 embedded-storage = "0.3"

@@ -972,7 +972,6 @@ dependencies = [
  "embedded-io-async",
  "embedded-storage",
  "jbot_pico_core",
- "rp-pac",
  "static_cell",
 ]
 
