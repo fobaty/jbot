@@ -1,0 +1,161 @@
+diff --git a/Inc/util.h b/Inc/util.h
+index 714ef86..39efc66 100644
+--- a/Inc/util.h
++++ b/Inc/util.h
+@@ -92,6 +92,9 @@ void calcInputCmd(InputStruct *in, int16_t out_min, int16_t out_max);
+ void readInputRaw(void);
+ void handleTimeout(void);
+ void readCommand(void);
++#if defined(VARIANT_USART) && defined(CONTROL_SERIAL_USART2) && !defined(CONTROL_IBUS)
++void fastSerialInput(void);
++#endif
+ void usart2_rx_check(void);
+ void usart3_rx_check(void);
+ #if defined(DEBUG_SERIAL_USART2) || defined(DEBUG_SERIAL_USART3)
+diff --git a/Src/bldc.c b/Src/bldc.c
+index ccfb291..554c4fc 100644
+--- a/Src/bldc.c
++++ b/Src/bldc.c
+@@ -62,6 +62,7 @@ uint8_t buzzerFreq          = 0;
+ uint8_t buzzerPattern       = 0;
+ uint8_t buzzerCount         = 0;
+ volatile uint32_t buzzerTimer = 0;
++volatile uint8_t fast_cmd_pending = 0;  // 1 kHz tick flag consumed by the command path in main.c
+ static uint8_t  buzzerPrev  = 0;
+ static uint8_t  buzzerIdx   = 0;
+ 
+@@ -149,6 +150,12 @@ void DMA1_Channel1_IRQHandler(void) {
+ 
+   // Create square wave for buzzer and more
+   buzzerTimer++;
++
++  // Derive a 1 kHz command tick from the 16 kHz FOC tick. Processing stays in
++  // the main loop so no extra interrupt reenters or preempts the motor ISR.
++  if ((buzzerTimer & 15U) == 0U) {
++    fast_cmd_pending = 1;
++  }
+ #ifdef BUZZER_ENABLED
+   if (buzzerFreq != 0 && (buzzerTimer / 5000) % (buzzerPattern + 1) == 0) {
+     if (buzzerPrev == 0) {
+diff --git a/Src/main.c b/Src/main.c
+index e83bf92..de46dd9 100644
+--- a/Src/main.c
++++ b/Src/main.c
+@@ -81,6 +81,7 @@ extern volatile int pwml;               // global variable for pwm left. -1000 t
+ extern volatile int pwmr;               // global variable for pwm right. -1000 to 1000
+ 
+ extern uint8_t enable;                  // global variable for motor enable
++extern volatile uint8_t fast_cmd_pending; // 1 kHz command tick from the FOC ISR
+ 
+ extern int16_t batVoltage;              // global variable for battery voltage
+ 
+@@ -179,6 +180,37 @@ static uint16_t rate = RATE; // Adjustable rate to support multiple drive modes
+   static uint16_t max_speed;
+ #endif
+ 
++#if defined(VARIANT_USART) && defined(CONTROL_SERIAL_USART2) && !defined(CONTROL_IBUS)
++/*
++ * Apply the latest validated USART2 command at 1 kHz. Timeout qualification
++ * stays in the 5 ms main-loop tick; this path mirrors its zeroing so a timed
++ * out command cannot be reapplied between slow ticks. rate / 5 preserves the
++ * commanded slew per second of the original 5 ms rate limiter.
++ */
++static void fastCommandStep(void) {
++  fastSerialInput();                    // atomic command snapshot, scaling and timeout mirror
++
++  rateLimiter16(input1[inIdx].cmd, (int16_t)(rate / 5), &steerRateFixdt);
++  rateLimiter16(input2[inIdx].cmd, (int16_t)(rate / 5), &speedRateFixdt);
++  filtLowPass32(steerRateFixdt >> 4, filtCoef, &steerFixdt);
++  filtLowPass32(speedRateFixdt >> 4, filtCoef, &speedFixdt);
++  steer = (int16_t)(steerFixdt >> 16);
++  speed = (int16_t)(speedFixdt >> 16);
++  mixerFcn(speed << 4, steer << 4, &cmdR, &cmdL);
++
++  #ifdef INVERT_R_DIRECTION
++    pwmr = cmdR;
++  #else
++    pwmr = -cmdR;
++  #endif
++  #ifdef INVERT_L_DIRECTION
++    pwml = -cmdL;
++  #else
++    pwml = cmdL;
++  #endif
++}
++#endif
++
+ 
+ int main(void) {
+ 
+@@ -261,9 +293,20 @@ int main(void) {
+   #endif
+ 
+   while(1) {
++    #if defined(VARIANT_USART) && defined(CONTROL_SERIAL_USART2) && !defined(CONTROL_IBUS)
++    if (fast_cmd_pending) {                 // 1 kHz command path, independent of the 5 ms loop
++      fast_cmd_pending = 0;
++      fastCommandStep();
++    }
++    #endif
++
+     if (buzzerTimer - buzzerTimer_prev > 16*DELAY_IN_MAIN_LOOP) {   // 1 ms = 16 ticks buzzerTimer
+ 
++    #if defined(VARIANT_USART) && defined(CONTROL_SERIAL_USART2) && !defined(CONTROL_IBUS)
++    handleTimeout();                      // Timeout qualification stays at SERIAL_TIMEOUT 5 ms ticks
++    #else
+     readCommand();                        // Read Command: input1[inIdx].cmd, input2[inIdx].cmd
++    #endif
+     calcAvgSpeed();                       // Calculate average measured speed: speedAvg, speedAvgAbs
+ 
+     #ifndef VARIANT_TRANSPOTTER
+@@ -326,6 +369,7 @@ int main(void) {
+         }
+       #endif
+ 
++    #if !defined(VARIANT_USART) || !defined(CONTROL_SERIAL_USART2) || defined(CONTROL_IBUS)
+       // ####### LOW-PASS FILTER #######
+       rateLimiter16(input1[inIdx].cmd, rate, &steerRateFixdt);
+       rateLimiter16(input2[inIdx].cmd, rate, &speedRateFixdt);
+@@ -374,6 +418,7 @@ int main(void) {
+       #else
+         pwml = cmdL;
+       #endif
++    #endif // fast-command path owns these outputs for VARIANT_USART
+     #endif
+ 
+     #ifdef VARIANT_TRANSPOTTER
+diff --git a/Src/util.c b/Src/util.c
+index b95416c..f82f071 100644
+--- a/Src/util.c
++++ b/Src/util.c
+@@ -1083,6 +1083,30 @@ void readCommand(void) {
+     #endif
+ }
+ 
++#if defined(VARIANT_USART) && defined(CONTROL_SERIAL_USART2) && !defined(CONTROL_IBUS)
++/*
++ * Refresh the USART2 commands at the 1 kHz tick. Timeout qualification stays in
++ * handleTimeout() at the 5 ms tick, so only its zeroing is mirrored here.
++ */
++void fastSerialInput(void) {
++  SerialCommand cmd;
++
++  __disable_irq();                      // both int16 fields come from the Rx ISR as one snapshot
++  cmd = commandL;
++  __enable_irq();
++
++  input1[inIdx].raw = cmd.steer;
++  input2[inIdx].raw = cmd.speed;
++  calcInputCmd(&input1[inIdx], INPUT_MIN, INPUT_MAX);
++  calcInputCmd(&input2[inIdx], INPUT_MIN, INPUT_MAX);
++
++  if (timeoutFlgADC || timeoutFlgSerial || timeoutFlgGen) {
++    input1[inIdx].cmd = 0;
++    input2[inIdx].cmd = 0;
++  }
++}
++#endif
++
+ 
+ /*
+  * Check for new data received on USART2 with DMA: refactored function from https://github.com/MaJerle/stm32-usart-uart-dma-rx-tx
